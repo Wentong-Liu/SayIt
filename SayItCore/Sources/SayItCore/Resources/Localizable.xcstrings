@@ -91,6 +91,24 @@
         }
       }
     },
+    "hud.polishing" : {
+      "comment" : "Recording HUD: polish (LLM) phase in progress",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Polishing…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "润色中…"
+          }
+        }
+      }
+    },
     "hud.takingLonger" : {
       "comment" : "Recording HUD: polish phase is taking longer than usual (held at 90% cap)",
       "extractionState" : "manual",

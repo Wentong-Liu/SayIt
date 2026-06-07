@@ -125,6 +125,8 @@ final class RecordingStateTests: XCTestCase {
         // At the same progress (0.0), differing only in phase produces different copy.
         let t0 = RecordingState.processing(progress: 0.0, phase: .transcribing).displayText
         let p0 = RecordingState.processing(progress: 0.0, phase: .polishing).displayText
+        // The polish copy resolves through the in-bundle catalog (hud.polishing), not a raw key fallback.
+        XCTAssertNotEqual(p0, "hud.polishing", "不应回退成原始 key：本地化资源未命中")
         XCTAssertTrue(transcribing.contains(t0), "got \(t0)")
         XCTAssertTrue(polishing.contains(p0), "got \(p0)")
         XCTAssertNotEqual(t0, p0, "switching the phase must change the copy")

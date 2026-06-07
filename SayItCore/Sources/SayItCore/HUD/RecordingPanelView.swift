@@ -129,9 +129,11 @@ public struct RecordingPanelView: View {
         case (_?, let progress?):
             // Processing state (any phase). The progress bar only looks at progress, not the phase.
             if progress >= 1.0 {
-                // Backend returned the final result: snap from the current position (<=90%) to 100%, and cancel the "taking longer than usual" timer.
+                // Backend returned the final result: snap from the current position (<=90%) to 100%, cancel the "taking longer than usual" timer,
+                // and clear the elapsed-long flag so the completion (still .processing with phase non-nil during the snap fill) never flashes that copy.
                 longLabelTask?.cancel()
                 longLabelTask = nil
+                processingElapsedLong = false
                 withAnimation(.easeInOut(duration: Self.snapDuration)) {
                     displayedProgress = 1.0
                 }
