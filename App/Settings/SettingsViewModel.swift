@@ -29,8 +29,19 @@ final class SettingsViewModel {
     init(config: AppConfig = .shared, modelManager: ModelManager? = nil) {
         self.config = config
         self.modelManager = modelManager ?? ModelManager(model: config.localModel)
-        // 把可观察存储镜像初始化为持久化当前值（之后 write-through 到 config）。
+        // 把所有可观察存储镜像初始化为持久化当前值（之后 write-through 到 config）。
+        // 见下方各属性注释：用存储镜像而非计算转发，才能让 `@Observable` 追踪到写入、
+        // 即时失效 SwiftUI 视图，从而让 Picker 选中项随选择立即移动（不再显示旧值）。
+        self.triggerKey = config.triggerKey
+        self.interactionMode = config.interactionMode
+        self.uiLanguage = config.uiLanguage
         self.sttMode = config.sttMode
+        self.localModel = config.localModel
+        self.cloudSTTModel = config.cloudSTTModel
+        self.polishEnabled = config.polishEnabled
+        self.polishStyle = config.polishStyle
+        self.providerKind = config.providerKind
+        self.model = config.model
         // 初次进入面板时同步一次密钥与权限状态。
         reloadCredentials()
         refreshPermissions()
@@ -39,22 +50,34 @@ final class SettingsViewModel {
     // MARK: 通用
 
     /// 触发听写的修饰键。
+    ///
+    /// 这是 `@Observable` 追踪的**存储**属性（write-through 到 `config`），而非纯计算转发。
+    /// `@Observable` 宏只为存储属性注入 Observation 追踪（getter `access` / setter `withMutation`）；
+    /// 若改回读写 `config.triggerKey`（`AppConfig` 非 `@Observable`），Picker 写入不会触发视图失效，
+    /// 选中项不会移动（仍显示旧值）。存储于此即可即时反映 + 落盘。
     var triggerKey: TriggerKey {
-        get { config.triggerKey }
-        set { config.triggerKey = newValue }
+        didSet {
+            guard triggerKey != oldValue else { return }
+            config.triggerKey = triggerKey
+        }
     }
 
-    /// 触发交互方式（按住 / 单击切换）。
+    /// 触发交互方式（按住 / 单击切换）。存储镜像，理由同 ``triggerKey``。
     var interactionMode: InteractionMode {
-        get { config.interactionMode }
-        set { config.interactionMode = newValue }
+        didSet {
+            guard interactionMode != oldValue else { return }
+            config.interactionMode = interactionMode
+        }
     }
 
     /// 界面显示语言（English / 简体中文）。切换后立即写盘并发通知，根场景据此重定位 UI。
     /// 语音识别**不再**由此（或旧 `language`）字段驱动，恒自动检测（见 ``DictationCoordinator``）。
+    /// 存储镜像，理由同 ``triggerKey``。
     var uiLanguage: UILanguage {
-        get { config.uiLanguage }
-        set { config.uiLanguage = newValue }
+        didSet {
+            guard uiLanguage != oldValue else { return }
+            config.uiLanguage = uiLanguage
+        }
     }
 
     /// 界面语言可选项（仅英文与简体中文）；展示名为该语言自称，不本地化。
@@ -76,11 +99,12 @@ final class SettingsViewModel {
     }
 
     /// 本地 STT 模型标识。写入时同步让 ``modelManager`` 切到该模型并按本地缓存刷新状态。
+    /// 存储镜像，理由同 ``triggerKey``。
     var localModel: String {
-        get { config.localModel }
-        set {
-            config.localModel = newValue
-            modelManager.setModel(newValue)
+        didSet {
+            guard localModel != oldValue else { return }
+            config.localModel = localModel
+            modelManager.setModel(localModel)
         }
     }
 
@@ -115,10 +139,12 @@ final class SettingsViewModel {
         modelManager.cancelDownload()
     }
 
-    /// 云端 STT 模型标识。
+    /// 云端 STT 模型标识。存储镜像，理由同 ``triggerKey``。
     var cloudSTTModel: String {
-        get { config.cloudSTTModel }
-        set { config.cloudSTTModel = newValue }
+        didSet {
+            guard cloudSTTModel != oldValue else { return }
+            config.cloudSTTModel = cloudSTTModel
+        }
     }
 
     /// 本地模型候选：(id, 展示名)。WhisperKit 常见量化模型，默认 large-v3-turbo。
@@ -142,32 +168,40 @@ final class SettingsViewModel {
 
     // MARK: 润色
 
-    /// 是否对转写结果做 LLM 润色。
+    /// 是否对转写结果做 LLM 润色。存储镜像，理由同 ``triggerKey``。
     var polishEnabled: Bool {
-        get { config.polishEnabled }
-        set { config.polishEnabled = newValue }
-    }
-
-    /// 润色风格。
-    var polishStyle: PolishStyle {
-        get { config.polishStyle }
-        set { config.polishStyle = newValue }
-    }
-
-    /// 润色所用 Provider。切换 Provider 后把模型夹回该 Provider 默认模型，避免发错 model id。
-    var providerKind: ProviderKind {
-        get { config.providerKind }
-        set {
-            config.providerKind = newValue
-            // `AppConfig.model` 读时会夹回当前 Provider 默认模型；写一次默认值确保 UI 即时一致。
-            config.model = newValue.defaultModel
+        didSet {
+            guard polishEnabled != oldValue else { return }
+            config.polishEnabled = polishEnabled
         }
     }
 
-    /// 润色所用模型 id。
+    /// 润色风格。存储镜像，理由同 ``triggerKey``。
+    var polishStyle: PolishStyle {
+        didSet {
+            guard polishStyle != oldValue else { return }
+            config.polishStyle = polishStyle
+        }
+    }
+
+    /// 润色所用 Provider。切换 Provider 后把模型夹回该 Provider 默认模型，避免发错 model id。
+    /// 存储镜像，理由同 ``triggerKey``；并同步刷新 ``model`` 镜像，保证模型 Picker 即时显示新默认。
+    var providerKind: ProviderKind {
+        didSet {
+            guard providerKind != oldValue else { return }
+            config.providerKind = providerKind
+            // 切 Provider 后把模型夹回该 Provider 默认模型（避免把不属于该 Provider 的 model id 发给 API）。
+            // 经由 `model` 镜像的 didSet 写回 config，并触发模型 Picker 的 Observation 失效即时更新选中项。
+            model = providerKind.defaultModel
+        }
+    }
+
+    /// 润色所用模型 id。存储镜像，理由同 ``triggerKey``。
     var model: String {
-        get { config.model }
-        set { config.model = newValue }
+        didSet {
+            guard model != oldValue else { return }
+            config.model = model
+        }
     }
 
     // MARK: 凭据（Keychain）
