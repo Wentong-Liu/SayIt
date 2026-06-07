@@ -38,7 +38,7 @@ final class SettingsViewModel {
         set { config.interactionMode = newValue }
     }
 
-    /// 识别/润色目标语言；空字符串映射到 `AppConfig` 的 "auto"。
+    /// 识别/润色目标语言；存盘值即下拉项的 `code`（"auto" 表示自动跟随转写语言，由 `AppConfig` 缺省）。
     var language: String {
         get { config.language }
         set { config.language = newValue }
@@ -133,8 +133,11 @@ final class SettingsViewModel {
     /// OAuth 登录进行中（按钮置灰、显示进度）。
     private(set) var isLoggingIn: Bool = false
 
-    /// 上一次登录/凭据操作的提示文案（成功或失败原因）。供 UI 展示。
-    private(set) var credentialStatusMessage: String?
+    /// STT 凭据操作（云端转写密钥保存）的提示文案，仅在 STT 分页展示，与润色分页互不串。
+    private(set) var sttStatusMessage: String?
+
+    /// 润色凭据操作（各 Provider 密钥保存、ChatGPT 登录/登出）的提示文案，仅在润色分页展示。
+    private(set) var polishStatusMessage: String?
 
     /// 当前润色 Provider 对应的 API Key Keychain account；ChatGPT 走 OAuth 无 account。
     private var polishKeychainAccount: String? {
@@ -179,7 +182,7 @@ final class SettingsViewModel {
         let trimmed = cloudSTTAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let ok = KeychainStore.set(trimmed, account: KeychainStore.Account.openAIAPIKey)
-        credentialStatusMessage = ok ? "云端转写密钥已保存" : "云端转写密钥保存失败"
+        sttStatusMessage = ok ? "云端转写密钥已保存" : "云端转写密钥保存失败"
     }
 
     /// 保存当前润色 Provider 的 API Key。ChatGPT（OAuth）无 API Key，直接忽略。
@@ -188,7 +191,7 @@ final class SettingsViewModel {
         let trimmed = polishAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let ok = KeychainStore.set(trimmed, account: account)
-        credentialStatusMessage = ok ? "\(providerKind.displayName) 密钥已保存" : "\(providerKind.displayName) 密钥保存失败"
+        polishStatusMessage = ok ? "\(providerKind.displayName) 密钥已保存" : "\(providerKind.displayName) 密钥保存失败"
     }
 
     // MARK: ChatGPT OAuth
@@ -197,17 +200,17 @@ final class SettingsViewModel {
     func loginWithChatGPT() {
         guard !isLoggingIn else { return }
         isLoggingIn = true
-        credentialStatusMessage = "正在打开浏览器完成 ChatGPT 授权…"
+        polishStatusMessage = "正在打开浏览器完成 ChatGPT 授权…"
         CodexLoginService.shared.login { [weak self] result in
             guard let self else { return }
             self.isLoggingIn = false
             switch result {
             case .success:
                 self.isChatGPTLoggedIn = true
-                self.credentialStatusMessage = "ChatGPT 登录成功"
+                self.polishStatusMessage = "ChatGPT 登录成功"
             case .failure(let error):
                 self.isChatGPTLoggedIn = KeychainStore.loadChatGPTTokens() != nil
-                self.credentialStatusMessage = "ChatGPT 登录失败：\(error)"
+                self.polishStatusMessage = "ChatGPT 登录失败：\(error)"
             }
         }
     }
@@ -216,7 +219,7 @@ final class SettingsViewModel {
     func logoutChatGPT() {
         let ok = KeychainStore.clearChatGPTTokens()
         isChatGPTLoggedIn = KeychainStore.loadChatGPTTokens() != nil
-        credentialStatusMessage = ok ? "已退出 ChatGPT 登录" : "退出失败"
+        polishStatusMessage = ok ? "已退出 ChatGPT 登录" : "退出失败"
     }
 
     // MARK: 权限
