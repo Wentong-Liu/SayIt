@@ -151,6 +151,54 @@ final class CloudTranscriberTests: XCTestCase {
         XCTAssertNil(captured.bodyString.range(of: "name=\"language\""))
     }
 
+    // MARK: - User-dictionary Layer 1: prompt (glossary) field
+
+    func testPromptFieldSentWhenBiasTermsProvided() async throws {
+        let captured = Captured()
+        StubURLProtocol.responder = { req in
+            captured.store(req)
+            let body = #"{"text":"x"}"#.data(using: .utf8)!
+            return (Self.ok(body), body)
+        }
+        let transcriber = makeTranscriber()
+        _ = try await transcriber.transcribe([0.1], sampleRate: 16_000, language: nil,
+                                             options: TranscribeOptions(biasTerms: ["SwiftUI", "WhisperKit"]))
+        XCTAssertNotNil(captured.bodyString.range(of: "name=\"prompt\""), "提供偏置词时应附带 prompt 字段")
+        // The glossary string is the comma-joined canonical terms; both terms should appear in the body.
+        XCTAssertNotNil(captured.bodyString.range(of: "SwiftUI"))
+        XCTAssertNotNil(captured.bodyString.range(of: "WhisperKit"))
+        XCTAssertNotNil(captured.bodyString.range(of: "SwiftUI, WhisperKit"),
+                        "prompt 应为逗号+空格拼接的术语表")
+    }
+
+    func testPromptFieldOmittedWhenBiasTermsEmpty() async throws {
+        let captured = Captured()
+        StubURLProtocol.responder = { req in
+            captured.store(req)
+            let body = #"{"text":"x"}"#.data(using: .utf8)!
+            return (Self.ok(body), body)
+        }
+        let transcriber = makeTranscriber()
+        // No options arg -> .none -> empty bias terms -> prompt field omitted (byte-identical multipart to today).
+        _ = try await transcriber.transcribe([0.1], sampleRate: 16_000, language: nil)
+        XCTAssertNil(captured.bodyString.range(of: "name=\"prompt\""),
+                     "空词典时不应附带 prompt 字段（multipart 与改动前逐字节一致）")
+    }
+
+    func testPromptFieldOmittedWhenBiasTermsAllBlank() async throws {
+        let captured = Captured()
+        StubURLProtocol.responder = { req in
+            captured.store(req)
+            let body = #"{"text":"x"}"#.data(using: .utf8)!
+            return (Self.ok(body), body)
+        }
+        let transcriber = makeTranscriber()
+        _ = try await transcriber.transcribe([0.1], sampleRate: 16_000, language: nil,
+                                             options: TranscribeOptions(biasTerms: ["  ", ""]))
+        XCTAssertNil(captured.bodyString.range(of: "name=\"prompt\""),
+                     "全空白偏置词应被裁掉，glossary 为空 -> 省略 prompt 字段")
+    }
+
     // MARK: - WAV header correctness
 
     func testEncodedWAVHeaderIsValid() throws {
