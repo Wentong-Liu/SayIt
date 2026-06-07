@@ -53,12 +53,7 @@ struct DictionarySettingsView: View {
             switch context {
             case .add:
                 DictionaryEntryEditor(entry: nil) { saved in
-                    Task { await viewModel.add(
-                        canonical: saved.canonical,
-                        variants: saved.variants,
-                        caseSensitive: saved.caseSensitive,
-                        enabled: saved.enabled
-                    ) }
+                    Task { await viewModel.add(canonical: saved.canonical) }
                 }
             case .edit(let entry):
                 DictionaryEntryEditor(entry: entry) { saved in
@@ -115,7 +110,7 @@ struct DictionarySettingsView: View {
 
 // MARK: - Row
 
-/// A single dictionary entry row: canonical (bold) + variants (secondary), an enabled toggle, and an explicit
+/// A single dictionary entry row: just the word (Typeless-style flat list), an enabled toggle, and an explicit
 /// Edit / Delete in the context menu (macOS list swipe inside a `Form` is unreliable, so we expose explicit actions).
 private struct EntryRow: View {
     let entry: DictionaryEntry
@@ -125,15 +120,8 @@ private struct EntryRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.canonical)
-                    .fontWeight(.semibold)
-                if !entry.variants.isEmpty {
-                    Text(entry.variants.joined(separator: ", "))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Text(entry.canonical)
+                .fontWeight(.semibold)
             Spacer()
             // Per-row enabled toggle writes through immediately so the rewriter's `enabled` read stays in sync.
             Toggle("dictionary.field.enabled", isOn: Binding(
@@ -156,29 +144,23 @@ private struct EntryRow: View {
 
 // MARK: - Editor sheet
 
-/// The add / edit form. Returns the user's input via `onSave`; the caller decides whether it is a new entry
-/// (``DictionaryViewModel/add(canonical:variants:caseSensitive:enabled:)``) or an update of an existing one
-/// (``EditorResult/applied(to:)`` preserving id / createdAt / usageCount).
+/// The add / edit form. Single-word (Typeless-style): the user types only the word itself — its exact spelling and
+/// casing — and the matcher auto-derives the spoken/misheard forms. Returns the word via `onSave`; the caller decides
+/// whether it is a new entry (``DictionaryViewModel/add(canonical:)``) or an update of an existing one
+/// (``EditorResult/applied(to:)`` preserving id / createdAt / usageCount and any pre-existing variants / flags).
 private struct DictionaryEntryEditor: View {
-    /// The existing entry being edited, or `nil` when adding a new one (drives the title + initial field values).
+    /// The existing entry being edited, or `nil` when adding a new one (drives the title + initial field value).
     let entry: DictionaryEntry?
     let onSave: (EditorResult) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var canonical: String
-    /// Variants edited as free text, one per line; split + sanitized on save.
-    @State private var variantsText: String
-    @State private var caseSensitive: Bool
-    @State private var enabled: Bool
 
     init(entry: DictionaryEntry?, onSave: @escaping (EditorResult) -> Void) {
         self.entry = entry
         self.onSave = onSave
         _canonical = State(initialValue: entry?.canonical ?? "")
-        _variantsText = State(initialValue: (entry?.variants ?? []).joined(separator: "\n"))
-        _caseSensitive = State(initialValue: entry?.caseSensitive ?? false)
-        _enabled = State(initialValue: entry?.enabled ?? true)
     }
 
     private var trimmedCanonical: String {
@@ -197,23 +179,6 @@ private struct DictionaryEntryEditor: View {
                               text: $canonical,
                               prompt: Text("dictionary.field.canonical.placeholder"))
                 }
-
-                Section {
-                    TextEditor(text: $variantsText)
-                        .frame(minHeight: 80)
-                        .font(.body.monospaced())
-                } header: {
-                    Text("dictionary.field.variants")
-                } footer: {
-                    Text("dictionary.field.variants.hint")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section {
-                    Toggle("dictionary.field.enabled", isOn: $enabled)
-                    Toggle("dictionary.field.caseSensitive", isOn: $caseSensitive)
-                }
             }
             .formStyle(.grouped)
 
@@ -222,12 +187,7 @@ private struct DictionaryEntryEditor: View {
                 Button("dictionary.cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("dictionary.save") {
-                    onSave(EditorResult(
-                        canonical: trimmedCanonical,
-                        variants: variantsText.split(whereSeparator: \.isNewline).map(String.init),
-                        caseSensitive: caseSensitive,
-                        enabled: enabled
-                    ))
+                    onSave(EditorResult(canonical: trimmedCanonical))
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -235,26 +195,21 @@ private struct DictionaryEntryEditor: View {
             }
             .padding()
         }
-        .frame(width: 380, height: 360)
+        .frame(width: 380, height: 160)
     }
 }
 
-/// The editor's collected input. Variants are raw (line-split); sanitizing happens in the view-model so the
-/// add and update paths share one normalization point.
+/// The editor's collected input: just the word itself. Editing only changes the canonical spelling; any
+/// pre-existing variants / `caseSensitive` / `enabled` on the original entry are preserved (the editor no longer
+/// exposes them, and the persisted shape stays intact for legacy / learned entries).
 private struct EditorResult {
     let canonical: String
-    let variants: [String]
-    let caseSensitive: Bool
-    let enabled: Bool
 
-    /// Builds the updated entry from an existing one, preserving its id / createdAt / usageCount / scope / source
-    /// and applying the edited fields. Variants are sanitized against the new canonical.
+    /// Builds the updated entry from an existing one, preserving its id / createdAt / usageCount / scope / source /
+    /// variants / caseSensitive / enabled, applying only the edited word.
     func applied(to original: DictionaryEntry) -> DictionaryEntry {
         var copy = original
         copy.canonical = canonical
-        copy.variants = DictionaryViewModel.sanitize(variants, canonical: canonical)
-        copy.caseSensitive = caseSensitive
-        copy.enabled = enabled
         return copy
     }
 }
