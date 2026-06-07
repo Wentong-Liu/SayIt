@@ -11,8 +11,8 @@ import WhisperKit
 /// ## 下载目录一致性（关键正确性点）
 /// WhisperKit 下载与加载都以一个 `downloadBase` 为根：
 /// 缓存布局为 `downloadBase/models/<repo>/<variantFolder>/`，其中 repo 为
-/// `argmaxinc/whisperkit-coreml`，`variantFolder` 是诸如 `openai_whisper-large-v3_turbo`
-/// 这类仓库内文件夹名（`models/<repo>` 这层由 `HubApi.localRepoLocation` 自动拼接，
+/// `argmaxinc/whisperkit-coreml`，`variantFolder` 是诸如 `openai_whisper-large-v3-v20240930_turbo`
+/// 这类仓库内**真实**文件夹名（`models/<repo>` 这层由 `HubApi.localRepoLocation` 自动拼接，
 /// 仅取决于 `downloadBase` 这一根）。
 ///
 /// WhisperKit 的**默认** `downloadBase` 是 `~/Documents/huggingface`（见 `HubApi.init`），
@@ -105,13 +105,28 @@ public final class ModelManager {
 
     // MARK: - 友好名 → WhisperKit variant 映射
 
-    /// 把 ``AppConfig`` 的友好模型名映射到传给 WhisperKit 的 variant 标识。
+    /// 把 ``AppConfig`` 的友好模型名映射到传给 WhisperKit 的 **真实仓库文件夹名**（variant）。
     ///
-    /// 当前 sayit 暴露的本地模型名（large-v3-turbo / large-v3 / medium / small / base）即
-    /// WhisperKit `download(variant:)` 接受的 variant 串，映射为恒等；集中于此便于将来调整，
-    /// 且让路径匹配（``cachedModelFolder(for:)``）有单一入口。
+    /// 关键正确性点：`WhisperKit.download(variant:)` / `WhisperKitConfig(model:)` 接受的是
+    /// `argmaxinc/whisperkit-coreml` 仓库内的**真实文件夹名**（形如 `openai_whisper-large-v3-v20240930_turbo`），
+    /// 而非 sayit UI 暴露的友好名（`large-v3-turbo`）。早先把友好名当 variant 直接下发，WhisperKit
+    /// 无法解析到真实文件夹 → 目录建好却始终为空、下载“无声失败”。此处把友好名显式映射到
+    /// 经 HuggingFace 校验存在（HTTP 200）的真实文件夹名；未知名按既有约定加 `openai_whisper-` 前缀兜底。
+    ///
+    /// 集中于此便于将来调整，且让路径匹配（``cachedModelFolder(for:)``）与下载/加载共用单一入口。
     nonisolated public static func variant(for model: String) -> String {
-        model
+        switch model {
+        case "large-v3-turbo": return "openai_whisper-large-v3-v20240930_turbo"
+        case "large-v3":       return "openai_whisper-large-v3"
+        case "medium":         return "openai_whisper-medium"
+        case "small":          return "openai_whisper-small"
+        case "base":           return "openai_whisper-base"
+        case "tiny":           return "openai_whisper-tiny"
+        default:
+            // 已经是真实仓库文件夹名（含 `openai_whisper-` 前缀）则原样返回；
+            // 否则按仓库命名约定加前缀兜底。
+            return model.hasPrefix("openai_whisper-") ? model : "openai_whisper-\(model)"
+        }
     }
 
     // MARK: - 已下载检测
@@ -131,9 +146,11 @@ public final class ModelManager {
 
     /// 在指定 repo 根目录下查找本地已缓存且权重齐全的该模型文件夹（无则 nil）。
     ///
-    /// WhisperKit 仓库内文件夹名形如 `openai_whisper-large-v3_turbo`，与友好名（`large-v3-turbo`）
-    /// 在连字符/下划线上可能不同，故按「归一化后包含」匹配：把 `-`/`_` 都去掉再比较。
-    /// `repoDir` 参数仅为单测注入临时目录；生产由上面的便捷重载传入 ``repoCacheDirectory``。
+    /// ``variant(for:)`` 现已返回 WhisperKit 下载落盘所用的**真实**文件夹名
+    /// （如 `openai_whisper-large-v3-v20240930_turbo`），即缓存文件夹名应与 variant 一一对应，
+    /// 故按归一化后**相等**匹配（消除 `-`/`_`/大小写差异），而非「包含」——避免 `large-v3` 的
+    /// 归一化键被 turbo 文件夹名前缀误命中。`repoDir` 参数仅为单测注入临时目录；
+    /// 生产由上面的便捷重载传入 ``repoCacheDirectory``。
     nonisolated static func cachedModelFolder(for model: String, in repoDir: URL) -> URL? {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(
@@ -146,12 +163,11 @@ public final class ModelManager {
 
         let needle = normalizedVariantKey(variant(for: model))
 
-        // 在直接命中与归一化包含命中之间，优先取权重齐全者。
         for folder in entries {
             let isDir = (try? folder.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             guard isDir else { continue }
             let folderKey = normalizedVariantKey(folder.lastPathComponent)
-            guard folderKey.contains(needle) else { continue }
+            guard folderKey == needle else { continue }
             if hasRequiredModelFiles(in: folder) {
                 return folder
             }
