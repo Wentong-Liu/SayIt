@@ -11,6 +11,8 @@ actor FakeAudioRecorder: AudioRecording {
 
     private(set) var startCount = 0
     private(set) var stopCount = 0
+    /// 最近一次 `start(deviceUID:)` 收到的设备 UID（供测试断言端到端听写带上了持久化的麦克风选择）。
+    private(set) var lastStartDeviceUID: String?
     private var recording = false
 
     /// 电平流（测试里不投递值，仅满足协议；coordinator 的转发任务会静默等待）。
@@ -33,6 +35,7 @@ actor FakeAudioRecorder: AudioRecording {
     /// 让本 fake 重新满足 `AudioRecording`（协议要求 `start(deviceUID:)`）。
     func start(deviceUID: String?) async throws {
         startCount += 1
+        lastStartDeviceUID = deviceUID
         switch startBehavior {
         case .succeeds:
             recording = true

@@ -275,7 +275,10 @@ final class DictationCoordinator {
             guard let self else { return }
             defer { self.startTask = nil }
             do {
-                try await self.recorder.start()
+                // 用持久化的输入设备开始录音：每次按下都现读 config.inputDeviceUID，
+                // 让设置页里选定的麦克风对下一次听写立即生效（无需重启 App）。
+                // nil = 跟随系统默认（与 start() 等价）；UID 失效时 AudioRecorder 自动回落系统默认。
+                try await self.recorder.start(deviceUID: self.config.inputDeviceUID)
                 self.isRecording = true
             } catch {
                 // 录音启动失败（多为麦克风未授权）：提示并收敛到 idle。
