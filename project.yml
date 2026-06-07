@@ -36,6 +36,7 @@ targets:
         DEVELOPMENT_TEAM: 95JJW8BPVA
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
   SayItTests:
     type: bundle.unit-test
