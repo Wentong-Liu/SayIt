@@ -8,6 +8,17 @@ actor FakeAudioRecorder: AudioRecording {
 
     private let samples: [Float]
     private let startBehavior: StartBehavior
+    /// Artificial delay applied at the START of `stop()`, before it flips `recording` to false. Mirrors the real `AudioRecorder.stop()`'s
+    /// AVAudioEngine teardown taking time on the actor. Used to deterministically reproduce the "cancel's in-flight stop races a subsequent
+    /// start" bug: while this delay is in flight the recorder is still `recording`, so a racing `start()` that does not await the pending stop
+    /// would observe `recording == true`. Defaults to 0 (no delay) so existing tests are unaffected.
+    private let stopDelay: Duration
+
+    /// Optional manual gate: when armed via ``gateStop()``, `stop()` suspends after incrementing its count but BEFORE flipping `recording`
+    /// to false, until ``releaseStop()`` is called. This deterministically pins the recorder in the "stop in flight, still recording" window
+    /// so a test can drive a racing `start()` into it (the cancel-then-restart bug) with no reliance on scheduling luck.
+    private var stopGate: CheckedContinuation<Void, Never>?
+    private var stopGateArmed = false
 
     private(set) var startCount = 0
     private(set) var stopCount = 0
@@ -23,9 +34,12 @@ actor FakeAudioRecorder: AudioRecording {
     /// The live level stream: reads the current session's stream (must be read after `start()` to get this session's new stream).
     nonisolated var levels: AsyncStream<Double> { levelStream.currentStream }
 
-    init(samples: [Float] = [0.1, 0.2, 0.3], startBehavior: StartBehavior = .succeeds) {
+    init(samples: [Float] = [0.1, 0.2, 0.3],
+         startBehavior: StartBehavior = .succeeds,
+         stopDelay: Duration = .zero) {
         self.samples = samples
         self.startBehavior = startBehavior
+        self.stopDelay = stopDelay
     }
 
     func start() async throws {
@@ -56,9 +70,39 @@ actor FakeAudioRecorder: AudioRecording {
     func stop() async throws -> [Float] {
         stopCount += 1
         guard recording else { throw AudioRecordingError.notRecording }
+        // Manual gate (if armed): suspend here BEFORE flipping `recording`, pinning the "stop in flight, still recording" window
+        // until the test releases it — lets a racing start() be driven deterministically into the unfinished stop.
+        if stopGateArmed {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                stopGate = continuation
+            }
+        }
+        // Simulate the real recorder's engine teardown taking time: while this is in flight `recording` stays true,
+        // so a racing start() that does not await this stop would see the recorder still busy (reproduces the cancel-then-restart bug).
+        if stopDelay != .zero {
+            try? await Task.sleep(for: stopDelay)
+        }
         recording = false
         levelStream.endSession()
         return samples
+    }
+
+    /// Arms the stop gate: the NEXT `stop()` will suspend (still recording) until ``releaseStop()`` is called.
+    func gateStop() { stopGateArmed = true }
+
+    /// Releases a gated `stop()` (if currently suspended) and disarms the gate, letting the stop finish normally.
+    func releaseStop() {
+        stopGateArmed = false
+        stopGate?.resume()
+        stopGate = nil
+    }
+
+    /// Polls until a gated `stop()` has actually entered the suspend point (the continuation is captured), so the test can be sure
+    /// the recorder is sitting in the "stop in flight, still recording" window before it drives the racing start.
+    func waitUntilStopGated() async {
+        while stopGate == nil {
+            await Task.yield()
+        }
     }
 
     var isRecording: Bool { recording }

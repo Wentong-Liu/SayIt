@@ -472,6 +472,72 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator._test_isRecording, "取消后不应再标记为录音中")
     }
 
+    // MARK: - ESC cancel then immediate restart: a fresh session must begin reliably
+
+    /// Regression guard (cancel-then-restart race): after ESC-cancel fires the recorder stop in flight, pressing the hotkey again
+    /// IMMEDIATELY must start a fresh recording session reliably. Previously `cancel()` ran the recorder stop in a fire-and-forget
+    /// detached Task and returned, so the next `start()` could collide with the not-yet-finished stop (recorder still `recording`),
+    /// throw `.alreadyRecording`, and leave the new session never recording.
+    ///
+    /// To make the race deterministic (no scheduling luck) the fake recorder's `stop()` is GATED: it suspends mid-stop while still
+    /// marked `recording`, exactly the window the cancel's in-flight stop occupies. The restart is then driven into that window:
+    /// - Unfixed code: the restart's `recorder.start()` runs immediately, sees `recording == true`, throws `.alreadyRecording`, and the
+    ///   session never records (this assertion fails -> bug reproduced).
+    /// - Fixed code: the restart first awaits the pending cancel-stop; releasing the gate lets that stop finish, then the start succeeds.
+    func testCancelThenImmediateStartBeginsFreshSession() async {
+        let config = makeConfig()
+        config.sttMode = .cloud  // bypass the local readiness gate
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector
+        ) {
+            FakeTranscriber(text: "fresh session")
+        }
+
+        // 1) Begin a session.
+        await coordinator._test_start()
+        XCTAssertTrue(coordinator._test_isRecording)
+
+        // 2) Arm the stop gate, then ESC-cancel: the cancel's in-flight stop suspends while still marked `recording`.
+        await recorder.gateStop()
+        coordinator._test_cancel()
+        XCTAssertEqual(coordinator.phase, .idle, "取消后应立即复位到 idle")
+        await recorder.waitUntilStopGated()  // ensure the cancel-stop is pinned in the "still recording" window
+
+        // 3) Immediately start again (non-blocking) while the cancel-stop is still in flight.
+        coordinator._test_handleStart()
+        XCTAssertEqual(coordinator.phase, .listening, "重启应立即进入 listening")
+        // Give the unfixed code's start path a chance to run and (wrongly) throw .alreadyRecording before we release the gate.
+        for _ in 0..<20 { await Task.yield() }
+
+        // 4) Release the cancel-stop, then let the restart's start Task wrap up.
+        await recorder.releaseStop()
+        await coordinator._test_awaitStart()
+
+        // The restart MUST have begun a fresh recording session — not been knocked out by the unfinished cancel-stop.
+        XCTAssertTrue(coordinator._test_isRecording, "取消后立即重启应可靠开始新一轮录音，而非被未完成的 stop 卡住")
+        XCTAssertEqual(coordinator.phase, .listening, "重启后应保持 listening")
+        let recorderRecording = await recorder.isRecording
+        XCTAssertTrue(recorderRecording, "重启后录音器应处于录音中（未被半停状态遗留）")
+
+        // 5) The fresh session must complete end-to-end: stop -> transcribe -> inject.
+        await coordinator._test_stop()
+        XCTAssertEqual(injector.injectedTexts, ["fresh session"], "重启的会话应能正常转写并注入")
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertFalse(coordinator._test_isRecording, "整轮结束后不应再标记为录音中")
+
+        // The recorder must not be left half-stopped: every start was matched by a stop (cancel-stop + the restart's pipeline stop).
+        let startCount = await recorder.startCount
+        let stopCount = await recorder.stopCount
+        XCTAssertEqual(startCount, 2, "应有两次 start：取消前一次 + 重启一次")
+        XCTAssertEqual(stopCount, 2, "应有两次 stop：取消的 stop + 重启会话的管线 stop，录音器未被遗留在半停状态")
+        let stillRecording = await recorder.isRecording
+        XCTAssertFalse(stillRecording, "录音器最终应处于已停止状态")
+    }
+
     // MARK: - ESC cancel when idle is a no-op
 
     /// Cancelling on a fresh (idle) coordinator does nothing: no injection, no recorder churn, phase stays idle.
