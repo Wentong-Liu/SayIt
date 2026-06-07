@@ -118,6 +118,11 @@ struct STTSettingsView: View {
                 }
                 .help(reason)
             }
+            // 直接展示真实失败原因（不止 tooltip），便于用户/支持定位（网络、解析、文件不齐等）。
+            Text(reason)
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
         }
     }
 }
