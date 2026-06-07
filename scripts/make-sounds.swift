@@ -2,12 +2,14 @@
 //
 // make-sounds.swift — Synthesize SayIt's dictation start/stop chime cues with AVFoundation.
 //
-// Design (the approved "chime" audition):
-//   Two short, warm bell-like chimes. A two-note ASCENDING phrase signals that
-//   dictation has BEGUN (start.caf); a two-note DESCENDING phrase signals that
-//   it has ENDED (stop.caf). Each chime is a fundamental sine plus a couple of
-//   harmonics, shaped by a fast attack and an exponential decay so it reads as a
-//   soft pluck rather than a beep. Mono, 44100 Hz, written verbatim as CAF.
+// Design (the approved "chime" audition — lower & softer revision):
+//   Two short, warm bell-like chimes. A two-note ASCENDING phrase (G4 -> D5)
+//   signals that dictation has BEGUN (start.caf); a two-note DESCENDING phrase
+//   (D5 -> G4) signals that it has ENDED (stop.caf). Each chime is a fundamental
+//   sine plus softened octave (0.3) and fifth (0.22) partials, shaped by a fast
+//   attack, an exponential decay, and a per-note release taper to 0 so it reads
+//   as a soft pluck rather than a beep and leaves no click at the note's end.
+//   Mono, 44100 Hz, written verbatim as CAF.
 //
 // This generator is FULLY DETERMINISTIC (no randomness): running it twice
 // produces byte-stable audio, so the committed start.caf / stop.caf are
@@ -28,26 +30,29 @@ import Foundation
 let sr = 44100.0
 
 /// Note frequencies (Hz) used by the two-note phrases.
-let C5 = 523.25
-let G5 = 783.99
+let G4 = 392.00
+let D5 = 587.33
 
 // MARK: - Synthesis
 
 /// Add one bell-like chime into `buf`, starting at `start` seconds and lasting `dur` seconds.
 ///
 /// The timbre is the EXACT approved design and must not be improvised:
-///   s   = sin(2πft) + 0.5·sin(2π·2f·t) + 0.3·sin(2π·1.5f·t)   (fundamental + octave + fifth)
-///   env = t < 0.02 ? t/0.02 : exp(-3.6·(t-0.02))               (2 ms linear attack, exp decay)
+///   s   = sin(2πft) + 0.3·sin(2π·2f·t) + 0.22·sin(2π·1.5f·t)   (fundamental + softened octave + fifth)
+///   env = t < attack ? t/attack : exp(-3.6·(t-attack))          (20 ms linear attack, exp decay)
+///         · per-note release taper to 0 over the final `release` seconds (kills the end-of-note click)
 ///   buf[start·sr + i] += s · env · 0.6
 func chime(_ f: Double, _ start: Double, _ dur: Double, into buf: inout [Float]) {
+    let attack = 0.02, release = 0.06
     let startSample = Int(start * sr)
     let count = Int(dur * sr)
     for i in 0..<count {
         let t = Double(i) / sr
         let s = sin(2 * .pi * f * t)
-            + 0.5 * sin(2 * .pi * 2 * f * t)
-            + 0.3 * sin(2 * .pi * 1.5 * f * t)
-        let env = t < 0.02 ? t / 0.02 : exp(-3.6 * (t - 0.02))
+            + 0.3 * sin(2 * .pi * 2 * f * t)
+            + 0.22 * sin(2 * .pi * 1.5 * f * t)
+        var env = t < attack ? t / attack : exp(-3.6 * (t - attack))
+        if t > dur - release { env *= max(0, (dur - t) / release) }  // release taper to 0 at note end fixes the click
         let index = startSample + i
         guard index < buf.count else { break }
         buf[index] += Float(s * env * 0.6)
@@ -108,23 +113,23 @@ func writeCAF(_ samples: [Float], to url: URL) {
 // MARK: - Cue builders
 
 /// Buffer length (seconds) for both cues — enough to hold the second note's decay tail.
-let bufferSeconds = 0.6
+let bufferSeconds = 0.64
 let bufferLength = Int(bufferSeconds * sr)
 
-/// Ascending two-note phrase: C5 then G5 (dictation BEGINS).
+/// Ascending two-note phrase: G4 then D5 (dictation BEGINS).
 func makeStart() -> [Float] {
     var buf = [Float](repeating: 0, count: bufferLength)
-    chime(C5, 0.0, 0.5, into: &buf)
-    chime(G5, 0.13, 0.45, into: &buf)
+    chime(G4, 0.0, 0.52, into: &buf)
+    chime(D5, 0.13, 0.47, into: &buf)
     finalize(&buf)
     return buf
 }
 
-/// Descending two-note phrase: G5 then C5 (dictation ENDS).
+/// Descending two-note phrase: D5 then G4 (dictation ENDS).
 func makeStop() -> [Float] {
     var buf = [Float](repeating: 0, count: bufferLength)
-    chime(G5, 0.0, 0.5, into: &buf)
-    chime(C5, 0.13, 0.47, into: &buf)
+    chime(D5, 0.0, 0.52, into: &buf)
+    chime(G4, 0.13, 0.49, into: &buf)
     finalize(&buf)
     return buf
 }
