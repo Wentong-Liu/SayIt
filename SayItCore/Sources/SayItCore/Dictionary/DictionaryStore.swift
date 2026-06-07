@@ -38,9 +38,8 @@ public actor DictionaryStore {
         ) {
             return appSupport.appending(component: "SayIt")
         }
-        // In the extreme case Application Support cannot be obtained: fall back to the cache directory, still avoiding the TCC-protected Documents.
-        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        return caches.appending(component: "SayIt")
+        // In the extreme case Application Support cannot be obtained: fall back to the always-available, always-writable temporary directory, still avoiding the TCC-protected Documents.
+        return FileManager.default.temporaryDirectory.appending(component: "SayIt")
     }()
 
     private let baseDirectory: URL
