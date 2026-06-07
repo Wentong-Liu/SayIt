@@ -6,6 +6,8 @@ import Foundation
 /// - `file`: the input `[Float]` (16kHz mono PCM) encoded by ``WAVEncoder`` into 16-bit PCM WAV.
 /// - `model`: the transcription model (e.g. `gpt-4o-mini-transcribe` / `whisper-1`), from config.
 /// - `language`: optional ISO language code; when `nil` the field is omitted, letting the server auto-detect.
+/// - `prompt`: optional user-dictionary glossary (Layer 1 biasing); when there are no dictionary terms the field is
+///   omitted, keeping the multipart body byte-identical to before this feature existed.
 ///
 /// Auth goes through `Authorization: Bearer <apiKey>`; `baseURL` defaults to `https://api.openai.com`,
 /// and is configurable to support compatible providers. ``URLSession`` is injectable for testing (URLProtocol stub, no real network).
@@ -45,7 +47,7 @@ public struct CloudTranscriber: Transcriber {
         self.session = session
     }
 
-    public func transcribe(_ audio: [Float], sampleRate: Double, language: String?) async throws -> TranscriptionResult {
+    public func transcribe(_ audio: [Float], sampleRate: Double, language: String?, options: TranscribeOptions) async throws -> TranscriptionResult {
         guard !audio.isEmpty else { throw STTError.emptyAudio }
         guard !apiKey.isEmpty else { throw STTError.notReady }
         guard let url = endpointURL() else {
@@ -55,7 +57,9 @@ public struct CloudTranscriber: Transcriber {
         // An invalid/out-of-range sample rate throws STTError.unsupportedFormat (avoiding the UInt32(sampleRate) trap crash).
         let wav = try WAVEncoder.encode(samples: audio, sampleRate: sampleRate)
         let boundary = "Boundary-\(UUID().uuidString)"
-        let body = makeMultipartBody(wav: wav, boundary: boundary, language: language)
+        // User-dictionary Layer 1: build the same compact glossary string the local path tokenizes. Empty terms -> "" -> field omitted.
+        let prompt = GlossaryPrompt.compactList(from: options.biasTerms.map { GlossaryPrompt.Term(canonical: $0) })
+        let body = makeMultipartBody(wav: wav, boundary: boundary, language: language, prompt: prompt)
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -95,13 +99,18 @@ public struct CloudTranscriber: Transcriber {
 
     // MARK: - multipart body
 
-    /// Builds the `multipart/form-data` request body: model field, optional language field, file (WAV) field, then the closing boundary.
-    private func makeMultipartBody(wav: Data, boundary: String, language: String?) -> Data {
+    /// Builds the `multipart/form-data` request body: model field, optional language field, optional prompt (glossary) field,
+    /// file (WAV) field, then the closing boundary. An empty `prompt` omits the field, keeping the body byte-identical to today.
+    private func makeMultipartBody(wav: Data, boundary: String, language: String?, prompt: String) -> Data {
         var body = Data()
 
         body.appendFormField(name: "model", value: model, boundary: boundary)
         if let language, !language.isEmpty {
             body.appendFormField(name: "language", value: language, boundary: boundary)
+        }
+        // User-dictionary Layer 1 biasing: send the glossary as the OpenAI `prompt` field, mirroring the optional `language` field above.
+        if !prompt.isEmpty {
+            body.appendFormField(name: "prompt", value: prompt, boundary: boundary)
         }
         body.appendFileField(name: "file", filename: "audio.wav",
                              contentType: "audio/wav", fileData: wav, boundary: boundary)

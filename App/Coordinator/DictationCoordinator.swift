@@ -474,12 +474,20 @@ final class DictationCoordinator {
         let transcript: String
         do {
             let transcriber = try currentTranscriber()
+            // User-dictionary Layer 1 biasing: collect the enabled entries' canonical terms and pass them as biasing
+            // options so STT is steered toward the user's dictionary words (best-effort recall boost). An empty dictionary
+            // -> empty terms -> no prompt is built anywhere (byte-identical to before this feature). This is the
+            // transcribe-call prep, distinct from the polish-call prep below.
+            let biasTerms = await dictionaryStore.all()
+                .filter { $0.enabled }
+                .map(\.canonical)
             // Speech recognition always auto-detects the language (T24): always passes nil to let the backend judge by the speech, no longer reading AppConfig.language.
             let result = try await withTranscribeTimeout {
                 try await transcriber.transcribe(
                     samples,
                     sampleRate: AudioFormat.sampleRate,
-                    language: nil
+                    language: nil,
+                    options: TranscribeOptions(biasTerms: biasTerms)
                 )
             }
             transcript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)

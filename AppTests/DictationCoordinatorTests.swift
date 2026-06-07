@@ -98,6 +98,63 @@ final class DictationCoordinatorTests: XCTestCase {
                        "with an empty dictionary the injected text should be exactly identical to the transcript (zero behavior change)")
     }
 
+    // MARK: - User-dictionary Layer 1: transcribe-call biasing wire-in
+
+    /// A non-empty dictionary must thread the enabled entries' canonical terms into the transcribe call's biasing options
+    /// (Layer 1 STT recall boost). Disabled entries are excluded.
+    func testNonEmptyDictionaryThreadsCanonicalTermsIntoTranscribe() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let store = DictionaryStore(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appending(component: "sayit-coord-bias-\(UUID().uuidString)"))
+        await store.add(DictionaryEntry(canonical: "SwiftUI", usageCount: 1))
+        await store.add(DictionaryEntry(canonical: "WhisperKit", usageCount: 5))
+        await store.add(DictionaryEntry(canonical: "disabled-term", enabled: false))
+
+        let transcriber = FakeTranscriber(text: "result")
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector, dictionaryStore: store
+        ) {
+            transcriber
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        let calls = await transcriber.calls
+        XCTAssertEqual(calls.count, 1)
+        // Only enabled entries' canonicals are threaded through (disabled entry excluded). Order/sorting is the
+        // glossary builder's concern; here we just assert the right SET of terms reached the transcribe call.
+        XCTAssertEqual(Set(calls.first?.biasTerms ?? []), Set(["SwiftUI", "WhisperKit"]),
+                       "非空词典应把启用条目的 canonical 透传给转写调用作偏置词，禁用条目应排除")
+    }
+
+    /// An empty dictionary must pass empty bias terms to the transcribe call (no biasing -> byte-identical to today).
+    func testEmptyDictionaryPassesEmptyBiasTerms() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let emptyStore = DictionaryStore(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appending(component: "sayit-coord-bias-empty-\(UUID().uuidString)"))
+
+        let transcriber = FakeTranscriber(text: "result")
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector, dictionaryStore: emptyStore
+        ) {
+            transcriber
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        let calls = await transcriber.calls
+        XCTAssertEqual(calls.count, 1)
+        XCTAssertEqual(calls.first?.biasTerms, [], "空词典应传空偏置词（不构造任何 prompt）")
+    }
+
     // MARK: - Empty audio: no transcription, no injection
 
     func testEmptyAudioDoesNotInject() async {
@@ -598,7 +655,7 @@ final class DictationCoordinatorTests: XCTestCase {
 
 /// A never-returning transcriber: used to verify the hard timeout protection (its transcribe sleeps until cancelled).
 private actor HangingTranscriber: Transcriber {
-    func transcribe(_ audio: [Float], sampleRate: Double, language: String?) async throws -> TranscriptionResult {
+    func transcribe(_ audio: [Float], sampleRate: Double, language: String?, options: TranscribeOptions) async throws -> TranscriptionResult {
         // Sleep long enough (far beyond the test-injected timeout); the timeout branch cancels this task, and the CancellationError is swallowed by the timeout logic.
         try await Task.sleep(for: .seconds(3600))
         return TranscriptionResult(text: "never")
