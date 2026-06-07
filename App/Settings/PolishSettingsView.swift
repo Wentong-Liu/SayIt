@@ -50,7 +50,7 @@ struct PolishSettingsView: View {
                     }
                 }
 
-                if let message = viewModel.credentialStatusMessage {
+                if let message = viewModel.polishStatusMessage {
                     Section {
                         Text(message)
                             .font(.footnote)
