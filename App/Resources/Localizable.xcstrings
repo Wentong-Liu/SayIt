@@ -17,6 +17,12 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "按住触发键开始录音，松开结束。" } }
       }
     },
+    "general.interactionHint.singleTap" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tap the trigger key alone to start, tap again to stop. Holding it with another key (a shortcut) won’t trigger." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "单独单击触发键开始录音，再次单击结束。与其它键同按（即快捷键）不会触发。" } }
+      }
+    },
     "general.interactionHint.toggle" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Tap the trigger key to start, tap again to stop." } },
@@ -177,6 +183,20 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported audio format" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "音频格式不受支持" } }
+      }
+    },
+    "interaction.hold" : {
+      "comment" : "Interaction mode option: push-to-talk",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Hold to talk" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "按住说话" } }
+      }
+    },
+    "interaction.singleTap" : {
+      "comment" : "Interaction mode option: single isolated tap toggles recording",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Single tap" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "单击切换" } }
       }
     },
     "login.browserDone" : {
@@ -479,10 +499,73 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "润色风格" } }
       }
     },
+    "polish.style.casual" : {
+      "comment" : "Polish style option: relaxed / casual tone",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Casual" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "轻松随意" } }
+      }
+    },
+    "polish.style.formal" : {
+      "comment" : "Polish style option: formal / written tone",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Formal" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正式书面" } }
+      }
+    },
+    "polish.style.punctuationOnly" : {
+      "comment" : "Polish style option: punctuation only, most faithful",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Punctuation only" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅补标点" } }
+      }
+    },
+    "polish.style.smart" : {
+      "comment" : "Polish style option: smart full cleanup (default)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Smart" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "智能润色" } }
+      }
+    },
+    "provider.anthropic" : {
+      "comment" : "Polish provider option (brand name, identical in both languages)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Anthropic" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Anthropic" } }
+      }
+    },
+    "provider.chatGPT" : {
+      "comment" : "Polish provider option: sign in with ChatGPT (OAuth)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "ChatGPT login" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "ChatGPT 登录" } }
+      }
+    },
+    "provider.deepSeek" : {
+      "comment" : "Polish provider option (brand name, identical in both languages)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "DeepSeek" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "DeepSeek" } }
+      }
+    },
+    "provider.openAI" : {
+      "comment" : "Polish provider option (brand name, identical in both languages)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "OpenAI" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "OpenAI" } }
+      }
+    },
     "stt.cancel" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消" } }
+      }
+    },
+    "stt.cloudAPIKeyField" : {
+      "comment" : "Cloud transcription API key field placeholder ('API Key' kept untranslated per catalog convention)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "OpenAI API Key" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "OpenAI API Key" } }
       }
     },
     "stt.download" : {
@@ -531,6 +614,20 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Model" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "模型" } }
+      }
+    },
+    "stt.mode.cloud" : {
+      "comment" : "STT engine option: cloud transcription API",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cloud API" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "云端 API" } }
+      }
+    },
+    "stt.mode.local" : {
+      "comment" : "STT engine option: on-device local model",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local model" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型" } }
       }
     },
     "stt.notDownloaded" : {
@@ -603,6 +700,55 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Speech" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "语音识别" } }
+      }
+    },
+    "triggerKey.fnGlobe" : {
+      "comment" : "Trigger key option: Fn / Globe (neutral, identical in both languages)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Fn / 🌐" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Fn / 🌐" } }
+      }
+    },
+    "triggerKey.leftCommand" : {
+      "comment" : "Trigger key option (⌘ glyph kept verbatim; Left/Right localized)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Left ⌘" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "左⌘" } }
+      }
+    },
+    "triggerKey.leftControl" : {
+      "comment" : "Trigger key option (⌃ glyph kept verbatim; Left/Right localized)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Left ⌃" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "左⌃" } }
+      }
+    },
+    "triggerKey.leftOption" : {
+      "comment" : "Trigger key option (⌥ glyph kept verbatim; Left/Right localized)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Left ⌥" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "左⌥" } }
+      }
+    },
+    "triggerKey.rightCommand" : {
+      "comment" : "Trigger key option (⌘ glyph kept verbatim; Left/Right localized)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Right ⌘" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "右⌘" } }
+      }
+    },
+    "triggerKey.rightControl" : {
+      "comment" : "Trigger key option (⌃ glyph kept verbatim; Left/Right localized)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Right ⌃" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "右⌃" } }
+      }
+    },
+    "triggerKey.rightOption" : {
+      "comment" : "Trigger key option (⌥ glyph kept verbatim; Left/Right localized)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Right ⌥" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "右⌥" } }
       }
     }
   },

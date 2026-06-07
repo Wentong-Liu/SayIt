@@ -34,6 +34,15 @@ public enum InteractionMode: String, CaseIterable, Identifiable, Sendable {
         case .hold:      return "按住说话"
         }
     }
+
+    /// 设置面板 Picker 展示用的本地化键（落在 App 端 `Localizable.xcstrings`）。
+    /// 视图用 `Text(LocalizedStringKey(localizationKey))` 渲染，随 `uiLocale`（环境 locale）即时切换语言。
+    public var localizationKey: String {
+        switch self {
+        case .singleTap: return "interaction.singleTap"
+        case .hold:      return "interaction.hold"
+        }
+    }
 }
 
 /// 界面显示语言。仅支持英文与简体中文两项（T24 需求）。
@@ -90,6 +99,15 @@ public enum STTMode: String, CaseIterable, Identifiable, Sendable {
         case .cloud: return "云端 API"
         }
     }
+
+    /// 设置面板 Picker 展示用的本地化键（落在 App 端 `Localizable.xcstrings`）。
+    /// 视图用 `Text(LocalizedStringKey(localizationKey))` 渲染，随 `uiLocale` 即时切换语言。
+    public var localizationKey: String {
+        switch self {
+        case .local: return "stt.mode.local"
+        case .cloud: return "stt.mode.cloud"
+        }
+    }
 }
 
 /// 润色风格：决定送给 LLM 的润色指令倾向（见设计 Spec 第 6.2 节）。
@@ -121,6 +139,17 @@ public enum PolishStyle: String, CaseIterable, Identifiable, Codable, Sendable {
         case .casual:          return "轻松随意"
         }
     }
+
+    /// 设置面板 Picker 展示用的本地化键（落在 App 端 `Localizable.xcstrings`）。
+    /// 视图用 `Text(LocalizedStringKey(localizationKey))` 渲染，随 `uiLocale` 即时切换语言。
+    public var localizationKey: String {
+        switch self {
+        case .smart:           return "polish.style.smart"
+        case .punctuationOnly: return "polish.style.punctuationOnly"
+        case .formal:          return "polish.style.formal"
+        case .casual:          return "polish.style.casual"
+        }
+    }
 }
 
 /// 润色所用大模型 Provider 种类。
@@ -138,8 +167,31 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
     /// 默认 Provider：OpenAI。
     public static let `default`: ProviderKind = .openAI
 
-    /// 展示名（与 `rawValue` 同源）。
-    public var displayName: String { rawValue }
+    /// 插值用展示名：品牌名逐字返回（两种语言一致），ChatGPT 去掉 `rawValue` 里落盘用的「登录」后缀。
+    ///
+    /// 仅供 `polish.apiKeyField`/`polish.keySaved` 等 `%@` 插值；这些消息只对带 API Key 的
+    /// 品牌 Provider（OpenAI / DeepSeek / Anthropic）出现，ChatGPT 走 OAuth 不会取到。
+    /// Picker 标签改走 ``localizationKey``（随 `uiLocale` 本地化），不再用此值。
+    public var displayName: String {
+        switch self {
+        case .openAI:    return "OpenAI"
+        case .deepSeek:  return "DeepSeek"
+        case .anthropic: return "Anthropic"
+        case .chatGPT:   return "ChatGPT"
+        }
+    }
+
+    /// 设置面板 Picker 展示用的本地化键（落在 App 端 `Localizable.xcstrings`）。
+    /// 品牌名在两种语言下一致；仅 ChatGPT 登录项随 `uiLocale` 本地化（"ChatGPT login" / "ChatGPT 登录"）。
+    /// 视图用 `Text(LocalizedStringKey(localizationKey))` 渲染。
+    public var localizationKey: String {
+        switch self {
+        case .openAI:    return "provider.openAI"
+        case .deepSeek:  return "provider.deepSeek"
+        case .anthropic: return "provider.anthropic"
+        case .chatGPT:   return "provider.chatGPT"
+        }
+    }
 
     /// 该 Provider 可选模型：(id 发给 API, label 展示)。润色文本任务，默认偏向轻量/便宜模型。
     public var modelOptions: [(id: String, label: String)] {
