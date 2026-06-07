@@ -93,12 +93,15 @@ public struct PolishPipeline: Sendable {
     ///   - style: the polish style, see ``PolishStyle``.
     ///   - provider: the large-model Provider injected by the caller, see ``LLMProvider``.
     ///   - polishEnabled: whether to enable polish; when `false` returns the original directly (defaults to `true`).
+    ///   - glossary: the relevant subset of user-dictionary entries (Layer 2), forwarded into the prompt builder's
+    ///     system prompt. Defaults to empty, in which case the prompt is byte-identical to the glossary-free build.
     /// - Returns: see ``PolishOutcome`` -- `text` is always directly usable text, ``PolishOutcome/resolution`` indicates the branch.
     public func polish(_ rawText: String,
                        context: PolishContext,
                        style: PolishStyle,
                        provider: LLMProvider,
-                       polishEnabled: Bool = true) async -> PolishOutcome {
+                       polishEnabled: Bool = true,
+                       glossary: [DictionaryEntry] = []) async -> PolishOutcome {
         let trimmedRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Empty input: nothing to polish, take the original directly (trimmed).
@@ -111,7 +114,7 @@ public struct PolishPipeline: Sendable {
             return PolishOutcome(text: trimmedRaw, resolution: .skipped(.disabled))
         }
 
-        let messages = PolishPromptBuilder.build(rawText: rawText, context: context, style: style)
+        let messages = PolishPromptBuilder.build(rawText: rawText, context: context, style: style, glossary: glossary)
 
         do {
             let raw = try await provider.complete(messages: messages)
