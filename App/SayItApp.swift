@@ -10,9 +10,12 @@ struct SayItApp: App {
     /// 听写高层状态的可观察持有者；驱动菜单栏图标。
     @State private var status = DictationStatus.shared
 
+    /// 应用配置：监听其变更以即时应用界面语言。
+    @State private var uiLocale: Locale = AppConfig.shared.uiLanguage.locale
+
     var body: some Scene {
         MenuBarExtra("SayIt", systemImage: menuBarSymbol) {
-            Button("设置…") {
+            Button("menu.settings") {
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
             }
@@ -20,14 +23,20 @@ struct SayItApp: App {
 
             Divider()
 
-            Button("退出 SayIt") {
+            Button("menu.quit") {
                 NSApp.terminate(nil)
             }
             .keyboardShortcut("q", modifiers: .command)
         }
+        .environment(\.locale, uiLocale)
 
         Settings {
             SettingsView()
+                .environment(\.locale, uiLocale)
+                // 设置页里切换界面语言后，立即把新 Locale 应用到设置窗口与菜单，无需重启即可见效。
+                .onReceive(NotificationCenter.default.publisher(for: AppConfig.didChangeNotification)) { _ in
+                    uiLocale = AppConfig.shared.uiLanguage.locale
+                }
         }
     }
 

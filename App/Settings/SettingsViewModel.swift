@@ -44,20 +44,15 @@ final class SettingsViewModel {
         set { config.interactionMode = newValue }
     }
 
-    /// 识别/润色目标语言；存盘值即下拉项的 `code`（"auto" 表示自动跟随转写语言，由 `AppConfig` 缺省）。
-    var language: String {
-        get { config.language }
-        set { config.language = newValue }
+    /// 界面显示语言（English / 简体中文）。切换后立即写盘并发通知，根场景据此重定位 UI。
+    /// 语音识别**不再**由此（或旧 `language`）字段驱动，恒自动检测（见 ``DictationCoordinator``）。
+    var uiLanguage: UILanguage {
+        get { config.uiLanguage }
+        set { config.uiLanguage = newValue }
     }
 
-    /// 语言下拉可选项：(存盘值, 展示名)。"auto" 表示自动跟随转写语言。
-    let languageOptions: [(code: String, label: String)] = [
-        ("auto", "自动检测"),
-        ("zh", "中文"),
-        ("en", "English"),
-        ("ja", "日本語"),
-        ("ko", "한국어"),
-    ]
+    /// 界面语言可选项（仅英文与简体中文）；展示名为该语言自称，不本地化。
+    let uiLanguageOptions: [UILanguage] = UILanguage.allCases
 
     // MARK: STT
 
@@ -105,13 +100,16 @@ final class SettingsViewModel {
     }
 
     /// 本地模型候选：(id, 展示名)。WhisperKit 常见量化模型，默认 large-v3-turbo。
-    let localModelOptions: [(id: String, label: String)] = [
-        ("large-v3-turbo", "large-v3-turbo（推荐）"),
-        ("large-v3", "large-v3（最高精度）"),
-        ("medium", "medium（均衡）"),
-        ("small", "small（轻量）"),
-        ("base", "base（最快）"),
-    ]
+    /// 计算属性：展示名里的描述词随当前界面语言本地化（每次取用时构建，切语言即时生效）。
+    var localModelOptions: [(id: String, label: String)] {
+        [
+            ("large-v3-turbo", String(localized: "model.large-v3-turbo", defaultValue: "large-v3-turbo (recommended)")),
+            ("large-v3", String(localized: "model.large-v3", defaultValue: "large-v3 (highest accuracy)")),
+            ("medium", String(localized: "model.medium", defaultValue: "medium (balanced)")),
+            ("small", String(localized: "model.small", defaultValue: "small (lightweight)")),
+            ("base", String(localized: "model.base", defaultValue: "base (fastest)")),
+        ]
+    }
 
     /// 云端转写模型候选：(id, 展示名)。当前以 OpenAI transcribe 系列为主。
     let cloudSTTModelOptions: [(id: String, label: String)] = [
@@ -213,7 +211,9 @@ final class SettingsViewModel {
         let trimmed = cloudSTTAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let ok = KeychainStore.set(trimmed, account: KeychainStore.Account.openAIAPIKey)
-        sttStatusMessage = ok ? "云端转写密钥已保存" : "云端转写密钥保存失败"
+        sttStatusMessage = ok
+            ? String(localized: "stt.keySaved", defaultValue: "Cloud transcription key saved")
+            : String(localized: "stt.keySaveFailed", defaultValue: "Failed to save cloud transcription key")
     }
 
     /// 保存当前润色 Provider 的 API Key。ChatGPT（OAuth）无 API Key，直接忽略。
@@ -222,7 +222,10 @@ final class SettingsViewModel {
         let trimmed = polishAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let ok = KeychainStore.set(trimmed, account: account)
-        polishStatusMessage = ok ? "\(providerKind.displayName) 密钥已保存" : "\(providerKind.displayName) 密钥保存失败"
+        let name = providerKind.displayName
+        polishStatusMessage = ok
+            ? String(localized: "polish.keySaved \(name)")
+            : String(localized: "polish.keySaveFailed \(name)")
     }
 
     // MARK: ChatGPT OAuth
@@ -231,17 +234,19 @@ final class SettingsViewModel {
     func loginWithChatGPT() {
         guard !isLoggingIn else { return }
         isLoggingIn = true
-        polishStatusMessage = "正在打开浏览器完成 ChatGPT 授权…"
+        polishStatusMessage = String(localized: "polish.openingBrowser",
+                                     defaultValue: "Opening browser to authorize ChatGPT…")
         CodexLoginService.shared.login { [weak self] result in
             guard let self else { return }
             self.isLoggingIn = false
             switch result {
             case .success:
                 self.isChatGPTLoggedIn = true
-                self.polishStatusMessage = "ChatGPT 登录成功"
+                self.polishStatusMessage = String(localized: "polish.loginSucceeded",
+                                                   defaultValue: "ChatGPT login succeeded")
             case .failure(let error):
                 self.isChatGPTLoggedIn = KeychainStore.loadChatGPTTokens() != nil
-                self.polishStatusMessage = "ChatGPT 登录失败：\(error)"
+                self.polishStatusMessage = String(localized: "polish.loginFailed \(String(describing: error))")
             }
         }
     }
@@ -250,7 +255,9 @@ final class SettingsViewModel {
     func logoutChatGPT() {
         let ok = KeychainStore.clearChatGPTTokens()
         isChatGPTLoggedIn = KeychainStore.loadChatGPTTokens() != nil
-        polishStatusMessage = ok ? "已退出 ChatGPT 登录" : "退出失败"
+        polishStatusMessage = ok
+            ? String(localized: "polish.loggedOut", defaultValue: "Signed out of ChatGPT")
+            : String(localized: "polish.logoutFailed", defaultValue: "Sign-out failed")
     }
 
     // MARK: 权限

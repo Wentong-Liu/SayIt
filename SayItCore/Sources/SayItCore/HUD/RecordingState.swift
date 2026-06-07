@@ -15,28 +15,42 @@ public enum RecordingState: Equatable, Sendable {
     case info(String)
     case error(String)
 
-    /// HUD 在该状态下展示的主文案（默认中文，对齐项目其它 UI 文案风格）。
+    /// HUD 在该状态下展示的主文案。固定态走包内本地化（`Bundle.module`，en + zh-Hans）；
+    /// `info`/`error` 携带的具体文案由调用方传入（已是其语言），仅在为空时兜底为本地化通用提示。
     public var displayText: String {
         switch self {
         case .idle:
-            return "准备就绪"
+            return Self.localized("hud.idle", fallback: "Ready")
         case .listening:
-            return "聆听中…"
+            return Self.localized("hud.listening", fallback: "Listening…")
         case .transcribing:
-            return "识别中…"
+            return Self.localized("hud.transcribing", fallback: "Transcribing…")
         case .info(let message):
             // 中性提示：空消息兜底成通用提示，避免 HUD 出现空白。
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? "完成" : trimmed
+            return trimmed.isEmpty ? Self.localized("hud.done", fallback: "Done") : trimmed
         case .error(let message):
             // 出错文案：空消息兜底成通用提示，避免 HUD 出现空白。
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? "出错了" : trimmed
+            return trimmed.isEmpty ? Self.localized("hud.error", fallback: "Something went wrong") : trimmed
         }
+    }
+
+    /// 从包内 `Localizable.xcstrings` 取本地化文案；缺失时回落到英文兜底，保证不空白。
+    private static func localized(_ key: String, fallback: String) -> String {
+        String(localized: String.LocalizationValue(key), bundle: .module, comment: "Recording HUD state text")
+            .nonKeyOr(fallback, key: key)
     }
 
     /// 该状态是否应让 HUD 保持可见。`idle` 不展示，其余皆展示。
     public var isVisible: Bool {
         self != .idle
+    }
+}
+
+private extension String {
+    /// 本地化查不到键时，`String(localized:)` 会原样返回键名；此时回落到英文兜底。
+    func nonKeyOr(_ fallback: String, key: String) -> String {
+        self == key ? fallback : self
     }
 }

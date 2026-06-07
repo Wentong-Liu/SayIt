@@ -100,6 +100,33 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(AppConfig(defaults: defaults).language, "zh")
     }
 
+    // MARK: UI 语言
+
+    func testUILanguageDefaultsToSystemMapping() {
+        // 全新 store：缺省回落到按系统首选语言映射的 UILanguage.systemDefault。
+        XCTAssertEqual(config.uiLanguage, UILanguage.systemDefault)
+    }
+
+    func testUILanguageRoundTrip() {
+        for lang in UILanguage.allCases {
+            config.uiLanguage = lang
+            XCTAssertEqual(config.uiLanguage, lang)
+            XCTAssertEqual(AppConfig(defaults: defaults).uiLanguage, lang)
+        }
+    }
+
+    func testUILanguageUnknownRawFallsBackToSystemDefault() {
+        defaults.set("fr", forKey: "ui.language")
+        XCTAssertEqual(AppConfig(defaults: defaults).uiLanguage, UILanguage.systemDefault)
+    }
+
+    func testUILanguageChangePostsNotification() {
+        let target: UILanguage = config.uiLanguage == .english ? .simplifiedChinese : .english
+        let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config)
+        config.uiLanguage = target
+        wait(for: [exp], timeout: 1.0)
+    }
+
     // MARK: 输入设备 UID（可空）
 
     func testInputDeviceUIDDefaultsToNil() {
@@ -227,5 +254,29 @@ final class ConfigEnumTests: XCTestCase {
             XCTAssertFalse(kind.modelOptions.isEmpty, "\(kind) has no models")
             XCTAssertFalse(kind.defaultModel.isEmpty, "\(kind) has empty default model")
         }
+    }
+
+    func testUILanguageHasOnlyTwoCases() {
+        XCTAssertEqual(Set(UILanguage.allCases), [.english, .simplifiedChinese])
+    }
+
+    func testUILanguageRawValuesAreBCP47() {
+        XCTAssertEqual(UILanguage.english.rawValue, "en")
+        XCTAssertEqual(UILanguage.simplifiedChinese.rawValue, "zh-Hans")
+    }
+
+    func testUILanguageDisplayNamesAreSelfNames() {
+        XCTAssertEqual(UILanguage.english.displayName, "English")
+        XCTAssertEqual(UILanguage.simplifiedChinese.displayName, "简体中文")
+    }
+
+    func testUILanguageLocaleMatchesRawValue() {
+        for lang in UILanguage.allCases {
+            XCTAssertEqual(lang.locale.identifier, lang.rawValue)
+        }
+    }
+
+    func testUILanguageSystemDefaultIsSupported() {
+        XCTAssertTrue(UILanguage.allCases.contains(UILanguage.systemDefault))
     }
 }
