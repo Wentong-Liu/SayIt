@@ -219,14 +219,17 @@ func renderMenuBarMark(pointSize: CGFloat, scale: CGFloat) -> CGImage {
     ctx.setShouldAntialias(true)
     ctx.interpolationQuality = .high
 
-    // Content rect with a small breathing margin (~1pt at 18pt) so the tail —
-    // which extends down-left of the blob box — never clips. The blob box is
-    // sized to the app-icon proportion (0.62) of this inset content rect, and
-    // re-centered so the overflowing tail stays on-canvas.
-    let margin = size * 0.07
+    // Content rect with only a hairline breathing margin so the mark fills the
+    // canvas like neighboring menu-bar icons. The tail extends down-left of the
+    // blob box, so the blob box is sized large (0.80) within this inset content
+    // rect and re-centered so the overflowing tail stays on-canvas without
+    // clipping. Enlarging the whole mark also proportionally thickens the
+    // soundwave bars (barWidth = blobW * 0.115 in the shared helper), keeping
+    // them legible at 18px @1x.
+    let margin = size * 0.03
     let content = CGRect(x: margin, y: margin, width: size - margin * 2, height: size - margin * 2)
 
-    let blobW = content.width * 0.62
+    let blobW = content.width * 0.80
     let blobH = blobW * 0.86
     // markYOffset mirrors the app icon's optical-center nudge, scaled to the
     // content rect rather than the full canvas.
