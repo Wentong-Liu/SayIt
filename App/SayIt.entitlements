@@ -9,6 +9,9 @@
 	-->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+	<!-- 麦克风输入：Hardened Runtime 下录音必需，否则运行时被拦截 -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 	<!-- 为 Apple Events 自动化预留入口（Hardened Runtime 下需要） -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
