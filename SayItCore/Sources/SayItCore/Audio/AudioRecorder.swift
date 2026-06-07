@@ -4,75 +4,75 @@ import CoreAudio
 import Foundation
 import os
 
-/// 基于 `AVAudioEngine` 的麦克风录音实现。
+/// A microphone recording implementation based on `AVAudioEngine`.
 ///
-/// 工作方式：
-/// 1. `start()` 检查/请求麦克风权限；
-/// 2. 每次 `start()` 都新建一个全新的 `AVAudioEngine`（关键：避免复用旧引擎缓存的坏 inputFormat）；
-/// 3. 在新引擎的 `inputNode` 上安装 tap，按硬件原始格式抓取 PCM 缓冲；
-/// 4. 用 `AVAudioConverter` 把每段缓冲转换到目标格式（16kHz / 单声道 / Float32）；
-/// 5. 用 `FloatSampleAccumulator` 累积转换后的 Float 样本；
-/// 6. `stop()` 拆 tap、停引擎并释放引擎，返回累积的 `[Float]`。
+/// How it works:
+/// 1. `start()` checks/requests microphone permission;
+/// 2. each `start()` creates a brand-new `AVAudioEngine` (key: avoiding reusing the bad inputFormat cached by an old engine);
+/// 3. installs a tap on the new engine's `inputNode`, capturing PCM buffers in the hardware's raw format;
+/// 4. converts each buffer to the target format (16kHz / mono / Float32) with `AVAudioConverter`;
+/// 5. accumulates the converted Float samples with `FloatSampleAccumulator`;
+/// 6. `stop()` removes the tap, stops and releases the engine, returning the accumulated `[Float]`.
 ///
-/// 重要：经真机定位，复用同一个长生命周期 `AVAudioEngine` 会触发经典坑——若 `inputNode`
-/// 在麦克风权限授予之前被读取过，其 `inputFormat` 会缓存一个坏状态（0 声道 / 0Hz），
-/// 之后即便权限已授予，复用该引擎仍只会拿到静音/空缓冲，导致电平恒为 0。因此本实现
-/// 在每次录音开始时（权限确认之后）创建一个全新的引擎，录音结束时释放它。
+/// Important: as pinned down on real devices, reusing the same long-lived `AVAudioEngine` triggers a classic pitfall -- if `inputNode`
+/// is read before microphone permission is granted, its `inputFormat` caches a bad state (0 channels / 0Hz),
+/// and afterwards, even with permission granted, reusing that engine still only yields silent/empty buffers, causing the level to stay at 0. So this implementation
+/// creates a brand-new engine at the start of each recording (after permission is confirmed) and releases it when recording ends.
 ///
-/// 用 `actor` 保证录音状态与累积缓冲的并发安全。tap 回调运行在音频实时线程，
-/// 其中只做“同步格式转换 + 把转换好的样本通过 Task 投递回 actor 累积”。
+/// Uses an `actor` to guarantee concurrency safety of the recording state and accumulation buffer. The tap callback runs on the audio real-time thread,
+/// where it only does "synchronous format conversion + delivering the converted samples back to the actor for accumulation via a Task".
 public actor AudioRecorder: AudioRecording {
-    /// 当前录音会话使用的 AVAudioEngine。每次 `start()` 重建，`stop()` 释放。
-    /// 经典坑：复用旧引擎会缓存坏 inputFormat（0ch/0Hz），导致静音采集。
+    /// The AVAudioEngine used by the current recording session. Rebuilt on each `start()`, released on `stop()`.
+    /// Classic pitfall: reusing an old engine caches a bad inputFormat (0ch/0Hz), causing silent capture.
     private var engine: AVAudioEngine?
 
-    /// 目标输出格式：16kHz / 单声道 / Float32（非交错）。
+    /// The target output format: 16kHz / mono / Float32 (non-interleaved).
     private let targetFormat: AVAudioFormat
 
-    /// 累积转换后的样本。
+    /// Accumulates the converted samples.
     private var accumulator = FloatSampleAccumulator()
 
-    /// 当前是否正在录音。
+    /// Whether currently recording.
     private var recording = false
 
-    /// tap 每次回调请求的帧数（缓冲大小）。值偏大可降低回调频率。
+    /// The number of frames requested per tap callback (buffer size). A larger value lowers the callback frequency.
     private let tapBufferSize: AVAudioFrameCount
 
-    /// 本次录音会话已捕获的原始输入帧总数（用于 stop() 时汇总日志）。
+    /// The total raw input frames captured in this recording session (for the summary log on stop()).
     private var capturedFrames: UInt64 = 0
 
-    /// 用于查询的统一日志器（`log show --predicate 'subsystem == "com.liuwentong.SayIt"'`）。
+    /// The unified logger used for querying (`log show --predicate 'subsystem == "com.liuwentong.SayIt"'`).
     private nonisolated static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "audio")
 
-    /// 每次录音会话的实时电平流持有器（流 + continuation），跨会话可重建。
+    /// The real-time level stream holder (stream + continuation) for each recording session, rebuildable across sessions.
     ///
-    /// 关键修复：`AsyncStream` 是「单消费者」流——一旦其消费迭代被取消/结束
-    /// （HUD/MicTest 在 `stopTesting()` 里 `levelTask?.cancel()` 即会令该流 finish），
-    /// 同一个流便永久结束，之后第二次测试读取同一个流只会立刻拿到结束、零电平值，
-    /// 表现为「首测有绿条、复测无绿条」。因此每次 `start()` 都重建一对全新的
-    /// 流 + continuation；消费者在 `start()` 之后读取 `recorder.levels`（MicTest/HUD
-    /// 均如此），拿到的就是本会话的新流。`stop()` 结束本会话的 continuation。
+    /// Key fix: `AsyncStream` is a "single-consumer" stream -- once its consuming iteration is cancelled/ended
+    /// (HUD/MicTest's `levelTask?.cancel()` in `stopTesting()` finishes the stream),
+    /// that same stream ends permanently, and a second test reading the same stream afterwards immediately gets end and a zero level,
+    /// manifesting as "green bars on the first test, no green bars on the retest". So each `start()` rebuilds a brand-new pair of
+    /// stream + continuation; the consumer reads `recorder.levels` after `start()` (both MicTest/HUD
+    /// do so), getting this session's new stream. `stop()` ends this session's continuation.
     private nonisolated let levelStream = LevelStreamHolder()
 
-    /// 实时归一化输入电平流（0...1），供 HUD 波形消费。
+    /// The real-time normalized input level stream (0...1), for the HUD waveform to consume.
     ///
-    /// 每次录音会话（`start()`）重建一个全新的流；务必在 `start()` 之后读取，
-    /// 才能拿到当前会话的流。停止录音后该流结束，下一次 `start()` 会再给一个新流。
+    /// Each recording session (`start()`) rebuilds a brand-new stream; be sure to read it after `start()`,
+    /// to get the current session's stream. After recording stops the stream ends, and the next `start()` gives a new stream again.
     public nonisolated var levels: AsyncStream<Double> {
         levelStream.currentStream
     }
 
-    /// 初始化。`tapBufferSize` 为 inputNode tap 的缓冲帧数，默认 4096。
+    /// Initialization. `tapBufferSize` is the inputNode tap's buffer frame count, defaults to 4096.
     public init(tapBufferSize: AVAudioFrameCount = 4096) {
         self.tapBufferSize = tapBufferSize
-        // 目标格式：标准 Float32、给定采样率与单声道。非交错对单声道无差别。
+        // Target format: standard Float32, with the given sample rate and mono. Non-interleaved makes no difference for mono.
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: AudioFormat.sampleRate,
             channels: AudioFormat.channelCount,
             interleaved: false
         ) else {
-            // AVAudioFormat 对这组合法参数恒非 nil；构造失败属编程错误。
+            // AVAudioFormat is always non-nil for this set of legal parameters; a construction failure is a programming error.
             fatalError("AudioRecorder: 无法创建目标 AVAudioFormat（16kHz/mono/Float32）")
         }
         self.targetFormat = format
@@ -86,21 +86,21 @@ public actor AudioRecorder: AudioRecording {
         recording
     }
 
-    // MARK: - Test seams（仅 @testable 可见，公共 API 不变）
+    // MARK: - Test seams (only @testable-visible, the public API is unchanged)
 
-    /// 测试用：模拟一次录音会话开始时对电平流的重建（与 `start()` 内 `beginSession()` 同源）。
-    /// 让单测无需麦克风权限/硬件即可复现「会话间流复用」的真实生命周期。
+    /// For testing: simulates the level-stream rebuild at the start of a recording session (same source as `beginSession()` inside `start()`).
+    /// Lets unit tests reproduce the real "cross-session stream reuse" lifecycle without microphone permission/hardware.
     nonisolated func beginLevelSessionForTesting() {
         levelStream.beginSession()
     }
 
-    /// 测试用：模拟 tap 把一个归一化电平投递进当前会话的流（与真实 tap 的 `yield` 同源，
-    /// 真实 tap 也运行在 actor 之外的音频实时线程）。
+    /// For testing: simulates a tap delivering a normalized level into the current session's stream (same source as a real tap's `yield`,
+    /// the real tap also runs on the audio real-time thread outside the actor).
     nonisolated func emitLevelForTesting(_ level: Double) {
         levelStream.currentContinuation.yield(level)
     }
 
-    /// 测试用：模拟一次录音会话结束对电平流的收尾（与 `stop()` 内 `endSession()` 同源）。
+    /// For testing: simulates the level-stream wrap-up at the end of a recording session (same source as `endSession()` inside `stop()`).
     nonisolated func endLevelSessionForTesting() {
         levelStream.endSession()
     }
@@ -108,7 +108,7 @@ public actor AudioRecorder: AudioRecording {
     public func start(deviceUID: String? = nil) async throws {
         guard !recording else { throw AudioRecordingError.alreadyRecording }
 
-        // 1) 权限：已授权直接过；未决定则请求；被拒/受限则报错。
+        // 1) Permission: pass directly if authorized; request if undetermined; error if denied/restricted.
         switch MicrophonePermission.current {
         case .authorized:
             break
@@ -120,25 +120,25 @@ public actor AudioRecorder: AudioRecording {
             throw AudioRecordingError.microphonePermissionDenied
         }
 
-        // 权限已确认：记录当前权限状态，便于真机日志比对。
+        // Permission confirmed: record the current permission status, for easy comparison in on-device logs.
         Self.log.notice("start(deviceUID: \(deviceUID ?? "nil", privacy: .public)): permission=\(String(describing: MicrophonePermission.current), privacy: .public)")
 
         accumulator.reset()
         capturedFrames = 0
 
-        // 1.5) 关键修复：为本次会话重建一对全新的电平流 + continuation。
-        //      `AsyncStream` 单消费者——上次会话的消费任务被取消会令旧流永久结束，
-        //      复用旧流会导致「复测无绿条」。消费者在 `start()` 之后读取 `levels`，
-        //      此处先重建，确保它们拿到的是本会话的新流。
+        // 1.5) Key fix: rebuild a brand-new pair of level stream + continuation for this session.
+        //      `AsyncStream` is single-consumer -- the previous session's consuming task being cancelled ends the old stream permanently,
+        //      and reusing the old stream causes "no green bars on the retest". The consumer reads `levels` after `start()`,
+        //      so rebuild here first, ensuring they get this session's new stream.
         levelStream.beginSession()
 
-        // 2) 关键：创建一个全新的 AVAudioEngine。绝不复用旧引擎（避免缓存的坏 inputFormat）。
+        // 2) Key: create a brand-new AVAudioEngine. Never reuse the old engine (avoiding the cached bad inputFormat).
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
 
-        // 2.5) 选定设备：把 inputNode 底层 AudioUnit 绑定到该设备。
-        //      deviceUID 为 nil（或解析不到设备）时不改动，沿用系统默认输入设备。
-        //      必须在读取 inputFormat / 安装 tap 前完成——设备变了原始格式也可能变。
+        // 2.5) Selected device: bind the inputNode's underlying AudioUnit to that device.
+        //      When deviceUID is nil (or no device resolves), leave it unchanged, using the system default input device.
+        //      Must be done before reading inputFormat / installing the tap -- when the device changes the raw format may change too.
         if let deviceUID, let deviceID = AudioInputDeviceManager.deviceID(forUID: deviceUID) {
             Self.setCurrentInputDevice(deviceID, on: inputNode)
         }
@@ -148,8 +148,8 @@ public actor AudioRecorder: AudioRecording {
         var inputFormat = inputNode.inputFormat(forBus: 0)
         Self.log.notice("inputFormat: sampleRate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public)")
 
-        // 3) 防御：坏格式（0 声道或 0Hz）会确证“复用引擎缓存坏 inputFormat”的假设。
-        //    尝试一次恢复：丢弃当前引擎、重建一个新引擎再次查询。仍坏则记错并继续尝试启动。
+        // 3) Defense: a bad format (0 channels or 0Hz) would confirm the hypothesis of "reusing the engine caches a bad inputFormat".
+        //    Try one recovery: discard the current engine, rebuild a new engine and query again. If still bad, log an error and continue trying to start.
         if inputFormat.channelCount == 0 || inputFormat.sampleRate == 0 {
             Self.log.error("inputFormat invalid (channels=\(inputFormat.channelCount, privacy: .public), sampleRate=\(inputFormat.sampleRate, privacy: .public)); attempting one engine rebuild to recover")
             let rebuilt = AVAudioEngine()
@@ -160,7 +160,7 @@ public actor AudioRecorder: AudioRecording {
             let recoveredFormat = rebuiltInput.inputFormat(forBus: 0)
             Self.log.notice("rebuilt inputFormat: sampleRate=\(recoveredFormat.sampleRate, privacy: .public) channels=\(recoveredFormat.channelCount, privacy: .public)")
             if recoveredFormat.channelCount != 0, recoveredFormat.sampleRate != 0 {
-                // 恢复成功：改用重建后的引擎。
+                // Recovery succeeded: switch to the rebuilt engine.
                 workingEngine = rebuilt
                 workingInputNode = rebuiltInput
                 inputFormat = recoveredFormat
@@ -169,7 +169,7 @@ public actor AudioRecorder: AudioRecording {
             }
         }
 
-        // 4) 安装 tap + 启动引擎（成功后保存引擎引用）。
+        // 4) Install the tap + start the engine (save the engine reference on success).
         self.engine = workingEngine
         try installTapStartAndStore(
             engine: workingEngine,
@@ -179,10 +179,10 @@ public actor AudioRecorder: AudioRecording {
         recording = true
     }
 
-    /// 为给定引擎构建转换器、安装 tap 并启动。失败时清理引擎引用并抛错。
+    /// Builds a converter for the given engine, installs the tap and starts it. On failure, cleans up the engine reference and throws.
     ///
-    /// 抽成实例方法是为了让“坏格式恢复路径”与“正常路径”复用同一段逻辑，
-    /// 且能在 actor 隔离下直接清理 `engine`。
+    /// Extracted into an instance method so the "bad-format recovery path" and "normal path" reuse the same logic,
+    /// and so `engine` can be cleaned up directly under actor isolation.
     private func installTapStartAndStore(
         engine: AVAudioEngine,
         inputNode: AVAudioInputNode,
@@ -190,11 +190,11 @@ public actor AudioRecorder: AudioRecording {
     ) throws {
         let targetFormat = self.targetFormat
         let tapBufferSize = self.tapBufferSize
-        // 捕获本会话的 continuation 快照：tap 始终把电平投递进「本次 start() 重建」的流，
-        // 即便之后又 start() 重建出新流，旧 tap 也不会误投到新会话。
+        // Capture this session's continuation snapshot: the tap always delivers levels into the stream "rebuilt by this start()",
+        // so even if start() later rebuilds a new stream, the old tap will not wrongly deliver to the new session.
         let levelContinuation = levelStream.currentContinuation
 
-        // 构建从硬件格式到目标格式的转换器（处理采样率 + 声道下混 + 量化）。
+        // Build the converter from the hardware format to the target format (handling sample rate + channel down-mix + quantization).
         guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
             Self.log.error("AVAudioConverter creation FAILED (from sampleRate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public))")
             self.engine = nil
@@ -202,20 +202,20 @@ public actor AudioRecorder: AudioRecording {
         }
         Self.log.notice("AVAudioConverter created: ok")
 
-        // 安装 tap。回调在音频实时线程；这里同步把缓冲转换为目标格式并取出 Float 样本，
-        // 再把 `[Float]`（Sendable）投递回 actor 累积——避免把非 Sendable 的
-        // AVAudioPCMBuffer 跨隔离域传递引发数据竞争。
-        // tapCounter：纯计数器，用于对实时线程日志限流（首个缓冲 + 之后每约 50 个）。
+        // Install the tap. The callback is on the audio real-time thread; here it synchronously converts the buffer to the target format and extracts the Float samples,
+        // then delivers the `[Float]` (Sendable) back to the actor for accumulation -- avoiding passing the non-Sendable
+        // AVAudioPCMBuffer across isolation domains, which would cause a data race.
+        // tapCounter: a pure counter, used to rate-limit real-time-thread logs (the first buffer + about every 50 thereafter).
         nonisolated(unsafe) let tapCounter = TapCounter()
         inputNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: inputFormat) { [weak self] buffer, _ in
             guard let self else { return }
             let frameLength = buffer.frameLength
             let samples = AudioRecorder.convertToSamples(buffer, using: converter, to: targetFormat) ?? []
             let level = AudioRecorder.normalizedLevel(samples)
-            // 在实时线程同步算出归一化电平后立即投递（continuation 为 Sendable，仅留最新值）。
+            // After synchronously computing the normalized level on the real-time thread, deliver it immediately (the continuation is Sendable, keeping only the latest value).
             levelContinuation.yield(level)
 
-            // 限流日志：首个缓冲 + 之后每约 50 个，记录帧长/取出样本数/电平，便于真机定位静音采集。
+            // Rate-limited logging: the first buffer + about every 50 thereafter, logging the frame length/extracted sample count/level, for easy on-device pinpointing of silent capture.
             let n = tapCounter.next()
             if n == 1 || n % 50 == 0 {
                 AudioRecorder.log.notice("tap#\(n, privacy: .public): frameLength=\(frameLength, privacy: .public) samples=\(samples.count, privacy: .public) level=\(level, privacy: .public)")
@@ -225,7 +225,7 @@ public actor AudioRecorder: AudioRecording {
             Task { await self.ingest(samples, rawFrames: UInt64(frameLength)) }
         }
 
-        // 启动引擎。
+        // Start the engine.
         engine.prepare()
         do {
             try engine.start()
@@ -245,33 +245,33 @@ public actor AudioRecorder: AudioRecording {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
         }
-        // 释放本次会话的引擎：下次 start() 会重建一个全新引擎。
+        // Release this session's engine: the next start() rebuilds a brand-new engine.
         engine = nil
         recording = false
         Self.log.notice("stop(): totalCapturedFrames=\(self.capturedFrames, privacy: .public) accumulatedSamples=\(self.accumulator.count, privacy: .public)")
-        // 录音结束：先把电平归零让 HUD 波形平复，再结束本会话的流。
-        // 下一次 `start()` 会重建一个全新的流；消费者届时重新读取 `levels` 即可。
+        // Recording ended: first zero the level to settle the HUD waveform, then end this session's stream.
+        // The next `start()` rebuilds a brand-new stream; the consumer just re-reads `levels` at that point.
         levelStream.endSession()
         return accumulator.drain()
     }
 
-    /// 把 `inputNode` 底层的输入 AudioUnit 当前设备设为给定 `AudioDeviceID`。
+    /// Sets the current device of `inputNode`'s underlying input AudioUnit to the given `AudioDeviceID`.
     ///
-    /// 通过 `AVAudioInputNode.auAudioUnit.deviceID` 设置（等价于对底层 AudioUnit 写
-    /// `kAudioOutputUnitProperty_CurrentDevice`，但走 AVAudioEngine 的封装，更稳妥）。
-    /// 失败（抛错）时静默忽略：保持使用系统默认设备，不阻断录音启动。
+    /// Set via `AVAudioInputNode.auAudioUnit.deviceID` (equivalent to writing `kAudioOutputUnitProperty_CurrentDevice` to the underlying AudioUnit,
+    /// but going through AVAudioEngine's wrapper, more robust).
+    /// On failure (a throw) silently ignore: keep using the system default device, not blocking recording start.
     private nonisolated static func setCurrentInputDevice(_ deviceID: AudioDeviceID, on inputNode: AVAudioInputNode) {
         do {
             try inputNode.auAudioUnit.setDeviceID(deviceID)
         } catch {
-            // 绑定失败（设备忙/不兼容）：回落系统默认，录音仍可进行。
+            // Binding failed (device busy/incompatible): fall back to the system default, recording can still proceed.
         }
     }
 
-    /// 由一段 Float 样本算出归一化输入电平（0...1）。
+    /// Computes a normalized input level (0...1) from a segment of Float samples.
     ///
-    /// 流程：RMS → dBFS → 映射到 0...1（按 `minDb`...0dB 线性归一）。
-    /// 用对数刻度更贴合人对响度的感知，避免低电平时波形几乎不动。
+    /// Flow: RMS -> dBFS -> mapped to 0...1 (linearly normalized over `minDb`...0dB).
+    /// Uses a logarithmic scale to better match human loudness perception, avoiding the waveform barely moving at low levels.
     nonisolated static func normalizedLevel(_ samples: [Float]) -> Double {
         guard !samples.isEmpty else { return 0 }
         var sumSquares = 0.0
@@ -281,7 +281,7 @@ public actor AudioRecorder: AudioRecording {
         }
         let rms = (sumSquares / Double(samples.count)).squareRoot()
         guard rms > 0 else { return 0 }
-        // dBFS：满量程（rms=1）为 0dB；越小越负。低于 minDb 视为静音。
+        // dBFS: full scale (rms=1) is 0dB; smaller is more negative. Below minDb is treated as silence.
         let minDb = -50.0
         let db = 20.0 * Foundation.log10(rms)
         guard db > minDb else { return 0 }
@@ -289,18 +289,18 @@ public actor AudioRecorder: AudioRecording {
         return Swift.min(Swift.max(normalized, 0), 1)
     }
 
-    /// 把转换好的样本累积进来（actor 隔离，串行安全）。
+    /// Accumulates the converted samples (actor-isolated, serially safe).
     private func ingest(_ samples: [Float], rawFrames: UInt64) {
-        // 录音已停止后到达的迟到样本直接丢弃，避免污染下一次录音。
+        // Late samples arriving after recording has stopped are discarded directly, to avoid polluting the next recording.
         guard recording else { return }
         capturedFrames += rawFrames
         accumulator.append(contentsOf: samples)
     }
 
-    /// 把一段输入缓冲转换为目标格式并取出 channel-0 的 Float 样本。失败/无数据返回 nil。
+    /// Converts a segment of input buffer to the target format and extracts the channel-0 Float samples. Returns nil on failure/no data.
     ///
-    /// 用 `AVAudioConverter` 的“按需供给”模式：转换器需要数据时回调返回整段输入缓冲。
-    /// 输出缓冲容量按采样率比例 + 余量估算。返回 `[Float]`（Sendable），便于跨隔离域传递。
+    /// Uses `AVAudioConverter`'s "supply-on-demand" mode: when the converter needs data, the callback returns the whole input buffer.
+    /// The output buffer capacity is estimated by the sample-rate ratio + headroom. Returns `[Float]` (Sendable), for easy passing across isolation domains.
     private nonisolated static func convertToSamples(
         _ input: AVAudioPCMBuffer,
         using converter: AVAudioConverter,
@@ -309,21 +309,21 @@ public actor AudioRecorder: AudioRecording {
         let inputFrames = Double(input.frameLength)
         guard inputFrames > 0 else { return nil }
         let ratio = targetFormat.sampleRate / input.format.sampleRate
-        // 估算输出帧数，向上取整并加少量余量，避免容量不足截断。
+        // Estimate the output frame count, rounding up and adding a small headroom, to avoid truncation from insufficient capacity.
         let capacity = AVAudioFrameCount((inputFrames * ratio).rounded(.up)) + 16
         guard capacity > 0,
               let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
             return nil
         }
 
-        // 用单元素引用盒持有“已供给”标志。AVAudioConverter 的输入块在 Swift overlay 中
-        // 标注为 @Sendable，但它由 convert(...) 同步调用、无真实并发；故对捕获的
-        // feedState 与 input 用 nonisolated(unsafe) 断言安全，消除误报的 Sendable 告警。
+        // Use a single-element reference box to hold the "already supplied" flag. AVAudioConverter's input block is
+        // annotated @Sendable in the Swift overlay, but it is called synchronously by convert(...) with no real concurrency; so for the captured
+        // feedState and input we assert safety with nonisolated(unsafe), eliminating the false-positive Sendable warning.
         nonisolated(unsafe) let feedState = FeedState()
         nonisolated(unsafe) let inputBuffer = input
         var conversionError: NSError?
         let status = converter.convert(to: output, error: &conversionError) { _, outStatus in
-            // 整段输入只供给一次；之后报告无更多数据。
+            // The whole input is supplied only once; afterwards report no more data.
             if feedState.fed {
                 outStatus.pointee = .noDataNow
                 return nil
@@ -335,7 +335,7 @@ public actor AudioRecorder: AudioRecording {
 
         switch status {
         case .haveData, .inputRanDry, .endOfStream:
-            // 有输出帧则取出；否则视为无数据。
+            // If there are output frames, extract them; otherwise treat it as no data.
             guard output.frameLength > 0, let channelData = output.floatChannelData else { return nil }
             let count = Int(output.frameLength)
             return Array(UnsafeBufferPointer(start: channelData[0], count: count))
@@ -347,13 +347,13 @@ public actor AudioRecorder: AudioRecording {
     }
 }
 
-/// `convertToSamples` 内部用的单字段引用盒，仅承载转换器输入块的“已供给”标志。
+/// A single-field reference box used inside `convertToSamples`, only carrying the converter input block's "already supplied" flag.
 private final class FeedState {
     var fed = false
 }
 
-/// tap 回调日志限流用的计数器引用盒。tap 由音频实时线程串行调用，无真实并发；
-/// 用 `nonisolated(unsafe)` 捕获，避免误报的 Sendable 告警。
+/// A counter reference box used for rate-limiting the tap callback logs. The tap is called serially by the audio real-time thread, with no real concurrency;
+/// captured with `nonisolated(unsafe)`, to avoid the false-positive Sendable warning.
 private final class TapCounter {
     private var count: UInt64 = 0
     func next() -> UInt64 {
@@ -362,16 +362,16 @@ private final class TapCounter {
     }
 }
 
-/// 「每会话可重建」的电平流持有器。
+/// A "per-session rebuildable" level stream holder.
 ///
-/// 为什么需要它：`AudioRecorder.levels` 在协议中是 `nonisolated` 的同步只读属性，
-/// 必须能在不进入 actor 的情况下读取「当前会话的流」；而该流又要能在每次 `start()`
-/// 时整体替换为一对全新的 `AsyncStream` + `Continuation`。本持有器用
-/// `OSAllocatedUnfairLock`（`Sendable`）守护这对值，供 `nonisolated` 上下文安全读写。
+/// Why it is needed: `AudioRecorder.levels` is a `nonisolated` synchronous read-only property in the protocol,
+/// which must be readable without entering the actor to get "the current session's stream"; and that stream must also be replaceable wholesale on each `start()`
+/// with a brand-new pair of `AsyncStream` + `Continuation`. This holder uses
+/// `OSAllocatedUnfairLock` (`Sendable`) to guard this pair of values, for safe read/write from a `nonisolated` context.
 ///
-/// 修复的根因：`AsyncStream` 是单消费者流——一旦其唯一消费迭代被取消/结束，整条流
-/// 永久 finish；复用同一条流，第二次测试便拿不到任何电平（绿条不再出现）。每次
-/// `beginSession()` 都换上全新的一对流，彻底规避该陷阱。
+/// The root cause it fixes: `AsyncStream` is a single-consumer stream -- once its sole consuming iteration is cancelled/ended, the whole stream
+/// finishes permanently; reusing the same stream means the second test gets no levels (the green bars no longer appear). Each
+/// `beginSession()` swaps in a brand-new pair of streams, thoroughly avoiding that pitfall.
 private final class LevelStreamHolder: Sendable {
     private struct Pair {
         var stream: AsyncStream<Double>
@@ -384,25 +384,25 @@ private final class LevelStreamHolder: Sendable {
         lock = OSAllocatedUnfairLock(initialState: Self.makePair())
     }
 
-    /// 构造一对全新的「仅保留最新值」的电平流 + continuation。
+    /// Constructs a brand-new pair of "keep latest value only" level stream + continuation.
     private static func makePair() -> Pair {
         var continuation: AsyncStream<Double>.Continuation!
         let stream = AsyncStream<Double>(bufferingPolicy: .bufferingNewest(1)) { continuation = $0 }
         return Pair(stream: stream, continuation: continuation)
     }
 
-    /// 当前会话的电平流（供 `AudioRecorder.levels` 在 `start()` 之后读取）。
+    /// The current session's level stream (for `AudioRecorder.levels` to read after `start()`).
     var currentStream: AsyncStream<Double> {
         lock.withLock { $0.stream }
     }
 
-    /// 当前会话的 continuation（供 tap 投递电平）。
+    /// The current session's continuation (for the tap to deliver levels).
     var currentContinuation: AsyncStream<Double>.Continuation {
         lock.withLock { $0.continuation }
     }
 
-    /// 开始一个新会话：结束旧流并换上一对全新的流 + continuation。
-    /// `start()` 在重建引擎前调用；消费者随后读取 `levels` 即拿到新流。
+    /// Start a new session: end the old stream and swap in a brand-new pair of streams + continuation.
+    /// Called by `start()` before rebuilding the engine; the consumer then reads `levels` to get the new stream.
     func beginSession() {
         lock.withLock { pair in
             pair.continuation.finish()
@@ -410,7 +410,7 @@ private final class LevelStreamHolder: Sendable {
         }
     }
 
-    /// 结束当前会话：先归零电平让波形平复，再结束本会话的流。
+    /// End the current session: first zero the level to settle the waveform, then end this session's stream.
     func endSession() {
         lock.withLock { pair in
             pair.continuation.yield(0)
@@ -418,7 +418,7 @@ private final class LevelStreamHolder: Sendable {
         }
     }
 
-    /// 结束当前会话的流（用于 `deinit`）。
+    /// End the current session's stream (used in `deinit`).
     func finishCurrent() {
         lock.withLock { $0.continuation.finish() }
     }

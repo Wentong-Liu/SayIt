@@ -1,13 +1,13 @@
 import XCTest
 @testable import SayItCore
 
-/// WAVEncoder 采样率校验单测：聚焦非法/越界采样率的早退行为，避免 `UInt32(sampleRate)` 陷阱崩溃。
-/// （WAV 头字节级正确性已在 CloudTranscriberTests 覆盖，这里不重复。）
+/// WAVEncoder sample-rate validation unit test: focuses on the early-return behavior for invalid/out-of-range sample rates, avoiding the `UInt32(sampleRate)` trap crash.
+/// (WAV header byte-level correctness is already covered in CloudTranscriberTests, not repeated here.)
 final class WAVEncoderTests: XCTestCase {
 
     func testValidSampleRateEncodes() throws {
         let wav = try WAVEncoder.encode(samples: [0.0, 0.5, -0.5], sampleRate: 16_000)
-        // 44 字节头 + 3 样本 × 2 字节。
+        // 44-byte header + 3 samples x 2 bytes.
         XCTAssertEqual(wav.count, 44 + 3 * 2)
     }
 
@@ -32,13 +32,13 @@ final class WAVEncoderTests: XCTestCase {
     }
 
     func testOutOfRangeSampleRateThrowsUnsupportedFormat() {
-        // 超过 UInt32.max（约 4.29e9），且 UInt32(sampleRate) 会陷阱崩溃的取值。
+        // A value exceeding UInt32.max (about 4.29e9), where UInt32(sampleRate) would trap-crash.
         assertUnsupportedFormat(sampleRate: Double(UInt32.max) + 1)
     }
 
     func testHugeSampleRateThatWouldOverflowByteRateThrows() {
-        // 介于 UInt32.max/2 与 UInt32.max 之间：sr 本身能装进 UInt32，但 ByteRate = sr×2 会溢出，
-        // 因此也应被拒绝。
+        // Between UInt32.max/2 and UInt32.max: sr itself fits into UInt32, but ByteRate = sr*2 would overflow,
+        // so it should also be rejected.
         assertUnsupportedFormat(sampleRate: Double(UInt32.max) - 10)
     }
 

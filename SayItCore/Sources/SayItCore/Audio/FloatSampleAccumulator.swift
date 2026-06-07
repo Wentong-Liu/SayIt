@@ -1,46 +1,46 @@
 import AVFoundation
 import Foundation
 
-/// 录音过程中把一段段（已转换为目标格式的）PCM 缓冲累积成连续的 `[Float]`。
+/// During recording, accumulates segment-by-segment (already converted to target format) PCM buffers into a contiguous `[Float]`.
 ///
-/// 这是 AudioRecorder 里可被单测覆盖的纯逻辑：不触碰硬件，只负责
-/// “从 AVAudioPCMBuffer 取出 channel-0 的 Float32 样本并追加到内部数组”。
-/// 真实采集（AVAudioEngine tap）只是不断喂 buffer 进来，本类不关心来源。
+/// This is the unit-testable pure logic inside AudioRecorder: it never touches hardware, only handles
+/// "extracting channel-0 Float32 samples from an AVAudioPCMBuffer and appending them to an internal array".
+/// Real capture (AVAudioEngine tap) just keeps feeding buffers in; this class does not care about the source.
 ///
-/// 非线程安全：调用方（AudioRecorder）需自行保证串行访问（实际由音频 tap 的
-/// 单一 dispatch 顺序 + actor 隔离保证）。
+/// Not thread-safe: the caller (AudioRecorder) must ensure serial access itself (in practice guaranteed by the audio tap's
+/// single dispatch order + actor isolation).
 public struct FloatSampleAccumulator {
-    /// 已累积的样本。
+    /// Accumulated samples.
     public private(set) var samples: [Float]
 
     public init() {
         self.samples = []
     }
 
-    /// 已累积的样本数。
+    /// Number of accumulated samples.
     public var count: Int { samples.count }
 
-    /// 以目标采样率估算的已累积时长（秒）。
+    /// Accumulated duration (seconds) estimated at the target sample rate.
     public var durationSeconds: Double {
         Double(samples.count) / AudioFormat.sampleRate
     }
 
-    /// 清空已累积的样本（复用同一累积器开始新一次录音前调用）。
+    /// Clears the accumulated samples (called before reusing the same accumulator to start a new recording).
     public mutating func reset() {
         samples.removeAll(keepingCapacity: true)
     }
 
-    /// 直接追加一段已就绪的 Float 样本（已是目标格式的 channel-0 样本）。
+    /// Directly appends a ready segment of Float samples (already channel-0 samples in the target format).
     public mutating func append(contentsOf newSamples: [Float]) {
         samples.append(contentsOf: newSamples)
     }
 
-    /// 把一个 PCM Float32 缓冲的 channel-0 样本追加进来。
+    /// Appends the channel-0 samples of one PCM Float32 buffer.
     ///
-    /// 期望 `buffer` 已是 Float32 格式（`commonFormat == .pcmFormatFloat32`）。
-    /// 仅读取第 0 声道——上游应已转成单声道，多声道时只取首声道避免静默叠加错误。
-    /// 若 buffer 不是 Float32、或没有 floatChannelData、或 frameLength 为 0，则忽略。
-    /// 返回本次实际追加的样本数。
+    /// Expects `buffer` to already be in Float32 format (`commonFormat == .pcmFormatFloat32`).
+    /// Reads only channel 0 -- upstream should have already converted to mono; for multi-channel only the first channel is taken to avoid erroneous silent summing.
+    /// If the buffer is not Float32, or has no floatChannelData, or frameLength is 0, it is ignored.
+    /// Returns the number of samples actually appended this time.
     @discardableResult
     public mutating func append(_ buffer: AVAudioPCMBuffer) -> Int {
         guard buffer.format.commonFormat == .pcmFormatFloat32,
@@ -52,7 +52,7 @@ public struct FloatSampleAccumulator {
         return frameCount
     }
 
-    /// 取出累积结果并清空内部缓冲（一次性消费，供 stop() 返回）。
+    /// Takes the accumulated result and clears the internal buffer (one-shot consumption, for stop() to return).
     public mutating func drain() -> [Float] {
         let result = samples
         samples.removeAll(keepingCapacity: true)

@@ -1,12 +1,12 @@
 import AppKit
 
-/// 触发语音听写的全局热键。
+/// The global hotkey that triggers voice dictation.
 ///
-/// 当前支持 ⌘ / ⌥ / ⌃ 的左右独立键，外加预留的 Fn/Globe 键。
-/// 故意不收 Shift——打字时极易误触双击/按住。
+/// Currently supports the independent left/right keys of Command / Option / Control, plus a reserved Fn/Globe key.
+/// Shift is deliberately excluded -- it is far too easy to trigger accidentally via double-tap/hold while typing.
 ///
-/// `keyCode` 为各修饰键的硬件扫描码；`modifierFlag` 为对应的修饰标志，
-/// 用于在 `.flagsChanged` 事件里判定「按下」边沿（该标志此刻被 set）。
+/// `keyCode` is each modifier key's hardware scan code; `modifierFlag` is the corresponding modifier flag,
+/// used in `.flagsChanged` events to judge the "down" edge (that flag is set at this moment).
 public enum TriggerKey: String, CaseIterable, Identifiable, Sendable {
     case rightCommand
     case leftCommand
@@ -14,19 +14,19 @@ public enum TriggerKey: String, CaseIterable, Identifiable, Sendable {
     case leftOption
     case rightControl
     case leftControl
-    /// Fn / 地球键（Globe）。在较新的 macOS 上是独立修饰键。
-    /// 预留：硬件 keyCode 不稳定（机型/键盘差异），事件层应以 `.function` 标志为准。
+    /// Fn / Globe key. On newer macOS it is an independent modifier key.
+    /// Reserved: the hardware keyCode is unstable (varies by model/keyboard), the event layer should rely on the `.function` flag.
     case fnGlobe
 
     public var id: String { rawValue }
 
-    /// 默认触发键：右 ⌘（与右手拇指自然落点一致，且不与常用快捷键冲突）。
+    /// Default trigger key: the right Command (matching the natural resting position of the right thumb, and not conflicting with common shortcuts).
     public static let `default`: TriggerKey = .rightCommand
 
-    /// 修饰键的硬件 keyCode。
+    /// The modifier key's hardware keyCode.
     ///
-    /// Fn/Globe 的物理键码随机型变化，这里给出 macOS 上常见的 0x3F(63)，
-    /// 但事件层判定时应优先使用 `modifierFlag == .function`，不要硬依赖此码。
+    /// Fn/Globe's physical keycode varies by model; here we give the common 0x3F(63) on macOS,
+    /// but event-layer decisions should prefer `modifierFlag == .function` and not hard-depend on this code.
     public var keyCode: UInt16 {
         switch self {
         case .rightCommand: return 54
@@ -39,7 +39,7 @@ public enum TriggerKey: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 对应的修饰标志：该键按下时此标志被 set。
+    /// The corresponding modifier flag: this flag is set when the key is pressed.
     public var modifierFlag: NSEvent.ModifierFlags {
         switch self {
         case .rightCommand, .leftCommand:  return .command
@@ -49,7 +49,7 @@ public enum TriggerKey: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 设置界面与说明文案用的标签，例如「右⌘」。
+    /// The label used by the settings UI and explanatory copy, e.g. "Right Command".
     public var label: String {
         switch self {
         case .rightCommand: return "右⌘"
@@ -62,15 +62,15 @@ public enum TriggerKey: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 设置面板展示名（与 ``label`` 同源）。
+    /// The settings-panel display name (same source as ``label``).
     ///
-    /// 为兼容配置层早期 API 命名而保留；新代码优先用 ``label``。
+    /// Retained for compatibility with the config layer's early API naming; new code should prefer ``label``.
     public var displayName: String { label }
 
-    /// 设置面板 Picker 展示用的本地化键（落在 App 端 `Localizable.xcstrings`）。
+    /// The localization key for the settings-panel Picker display (stored in the App-side `Localizable.xcstrings`).
     ///
-    /// ⌘/⌥/⌃ 字形通用，仅「左/右」前缀随 `uiLocale` 本地化；Fn/🌐 已中性，亦走 catalog 保持一致。
-    /// 视图用 `Text(LocalizedStringKey(localizationKey))` 渲染，故展示文案随界面语言即时切换。
+    /// The Command/Option/Control glyphs are universal; only the "left/right" prefix is localized per `uiLocale`; Fn/Globe is already neutral but also goes through the catalog for consistency.
+    /// The view renders with `Text(LocalizedStringKey(localizationKey))`, so the displayed copy switches with the UI language instantly.
     public var localizationKey: String {
         switch self {
         case .rightCommand: return "triggerKey.rightCommand"

@@ -1,13 +1,13 @@
 import AppKit
 
-/// 提供「当前聚焦 App」的最小抽象，便于单测时注入桩。
+/// A minimal abstraction providing the "currently focused App", to allow injecting stubs in unit tests.
 @MainActor
 public protocol FrontmostAppProviding: Sendable {
-    /// 当前前台 App 的快照，无前台 App 时返回 nil。
+    /// Snapshot of the current frontmost App, returns nil when there is no frontmost App.
     func captureTarget() -> InjectionTarget?
 }
 
-/// 基于 NSWorkspace.shared.frontmostApplication 的实现。
+/// Implementation based on NSWorkspace.shared.frontmostApplication.
 @MainActor
 public final class WorkspaceFrontmostAppProvider: FrontmostAppProviding {
     public init() {}

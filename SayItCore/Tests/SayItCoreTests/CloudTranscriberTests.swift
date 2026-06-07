@@ -1,13 +1,13 @@
 import XCTest
 @testable import SayItCore
 
-/// CloudTranscriber 单测：用 URLProtocol 桩拦截所有请求，断言
-/// - 上传的 multipart body 形状（含 WAV 头正确性、file/model 字段）
-/// - URL / 方法 / Authorization 头
-/// - 成功响应解析为 TranscriptionResult
-/// - 各类错误（空音频 / 非 HTTP / 非 2xx / 解析失败 / 网络）映射到 STTError
+/// CloudTranscriber unit test: uses a URLProtocol stub to intercept all requests, asserting
+/// - the shape of the uploaded multipart body (including WAV header correctness, file/model fields)
+/// - the URL / method / Authorization header
+/// - a successful response parsed into TranscriptionResult
+/// - various errors (empty audio / non-HTTP / non-2xx / parse failure / network) mapped to STTError
 ///
-/// 全程不打真实网络。
+/// No real network throughout.
 final class CloudTranscriberTests: XCTestCase {
 
     override func tearDown() {
@@ -15,7 +15,7 @@ final class CloudTranscriberTests: XCTestCase {
         super.tearDown()
     }
 
-    /// 构造一个把请求交给 StubURLProtocol 的隔离 URLSession。
+    /// Builds an isolated URLSession that hands requests to StubURLProtocol.
     private func stubbedSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubURLProtocol.self]
@@ -28,7 +28,7 @@ final class CloudTranscriberTests: XCTestCase {
         CloudTranscriber(baseURL: baseURL, apiKey: apiKey, model: model, session: stubbedSession())
     }
 
-    // MARK: - 成功路径 / 响应解析
+    // MARK: - Success path / response parsing
 
     func testSuccessfulResponseParsesText() async throws {
         StubURLProtocol.responder = { _ in
@@ -52,7 +52,7 @@ final class CloudTranscriberTests: XCTestCase {
         XCTAssertEqual(result.text, "keep this")
     }
 
-    // MARK: - URL / 方法 / 鉴权头
+    // MARK: - URL / method / auth header
 
     func testRequestTargetsTranscriptionsEndpoint() async throws {
         let captured = Captured()
@@ -93,7 +93,7 @@ final class CloudTranscriberTests: XCTestCase {
         XCTAssertEqual(captured.url?.absoluteString, "https://my-proxy.example/openai/v1/audio/transcriptions")
     }
 
-    // MARK: - multipart body 构造
+    // MARK: - multipart body construction
 
     func testMultipartBodyContainsModelAndFileFields() async throws {
         let captured = Captured()
@@ -105,24 +105,24 @@ final class CloudTranscriberTests: XCTestCase {
         let transcriber = makeTranscriber(model: "whisper-1")
         _ = try await transcriber.transcribe([0.1, 0.2], sampleRate: 16_000, language: nil)
 
-        // Content-Type 必须是 multipart/form-data 且带 boundary。
+        // Content-Type must be multipart/form-data with a boundary.
         let contentType = captured.header("Content-Type") ?? ""
         XCTAssertTrue(contentType.hasPrefix("multipart/form-data; boundary="), "got: \(contentType)")
         let boundary = String(contentType.split(separator: "=", maxSplits: 1).last ?? "")
         XCTAssertFalse(boundary.isEmpty)
 
         let bodyData = captured.body ?? Data()
-        // 必须出现 model 字段与其值。
+        // The model field and its value must appear.
         XCTAssertNotNil(captured.bodyString.range(of: "name=\"model\""))
         XCTAssertNotNil(captured.bodyString.range(of: "whisper-1"))
-        // 必须出现 file 字段、文件名与音频 content-type。
+        // The file field, file name and audio content-type must appear.
         XCTAssertNotNil(captured.bodyString.range(of: "name=\"file\""))
         XCTAssertNotNil(captured.bodyString.range(of: "filename=\"audio.wav\""))
         XCTAssertNotNil(captured.bodyString.range(of: "Content-Type: audio/wav"))
-        // body 中必须真的含有 WAV 的 RIFF/WAVE 标识字节。
+        // The body must actually contain the WAV RIFF/WAVE identifier bytes.
         XCTAssertTrue(bodyData.containsSubsequence(Array("RIFF".utf8)))
         XCTAssertTrue(bodyData.containsSubsequence(Array("WAVE".utf8)))
-        // body 必须以 closing boundary 结束。
+        // The body must end with the closing boundary.
         XCTAssertTrue(captured.bodyString.contains("--\(boundary)--"))
     }
 
@@ -151,14 +151,14 @@ final class CloudTranscriberTests: XCTestCase {
         XCTAssertNil(captured.bodyString.range(of: "name=\"language\""))
     }
 
-    // MARK: - WAV 头正确性
+    // MARK: - WAV header correctness
 
     func testEncodedWAVHeaderIsValid() throws {
-        // 3 个样本 @16kHz、单声道、16-bit。
+        // 3 samples @16kHz, mono, 16-bit.
         let samples: [Float] = [0.0, 1.0, -1.0]
         let wav = try WAVEncoder.encode(samples: samples, sampleRate: 16_000)
 
-        // 头部至少 44 字节。
+        // The header is at least 44 bytes.
         XCTAssertGreaterThanOrEqual(wav.count, 44)
         let bytes = [UInt8](wav)
 
@@ -186,7 +186,7 @@ final class CloudTranscriberTests: XCTestCase {
     }
 
     func testWAVSampleClampingAndScaling() throws {
-        // 1.0 -> Int16.max ; -1.0 -> Int16.min ; 0 -> 0 ; 越界值被夹紧。
+        // 1.0 -> Int16.max ; -1.0 -> Int16.min ; 0 -> 0 ; out-of-range values clamped.
         let samples: [Float] = [0.0, 1.0, -1.0, 2.0, -2.0]
         let wav = try WAVEncoder.encode(samples: samples, sampleRate: 16_000)
         let bytes = [UInt8](wav)
@@ -204,7 +204,7 @@ final class CloudTranscriberTests: XCTestCase {
         XCTAssertEqual(le32(bytes, 28), 8_000 * 2)
     }
 
-    // MARK: - 错误映射
+    // MARK: - Error mapping
 
     func testEmptyAudioThrowsBeforeNetwork() async {
         StubURLProtocol.responder = { _ in
@@ -264,7 +264,7 @@ final class CloudTranscriberTests: XCTestCase {
     }
 
     func testNonHTTPResponseMapsToTranscriptionFailed() async {
-        // 返回一个非 HTTPURLResponse。
+        // Returns a non-HTTPURLResponse.
         StubURLProtocol.responder = { req in
             let resp = URLResponse(url: req.url!, mimeType: nil, expectedContentLength: 0, textEncodingName: nil)
             return (resp, Data())
@@ -352,9 +352,9 @@ final class CloudTranscriberTests: XCTestCase {
     }
 }
 
-// MARK: - 测试辅助类型
+// MARK: - Test helper types
 
-/// 记录被拦截请求的快照（线程安全足够：测试单线程消费）。
+/// Records a snapshot of the intercepted request (thread-safe enough: the test consumes single-threaded).
 private final class Captured: @unchecked Sendable {
     private let lock = NSLock()
     private var request: URLRequest?
@@ -363,7 +363,7 @@ private final class Captured: @unchecked Sendable {
     func store(_ req: URLRequest) {
         lock.lock(); defer { lock.unlock() }
         request = req
-        // URLProtocol 下 httpBody 通常存在；若用 stream 则读出来。
+        // Under URLProtocol httpBody usually exists; if a stream is used, read it out.
         bodyData = req.httpBody ?? StubURLProtocol.bodyData(from: req)
     }
 
@@ -381,7 +381,7 @@ private final class Captured: @unchecked Sendable {
     }
 }
 
-/// URLProtocol 桩：拦截全部请求，返回 responder 给定的 (response, data) 或抛出 errorToThrow。
+/// URLProtocol stub: intercepts all requests, returning the responder's given (response, data) or throwing errorToThrow.
 final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var responder: ((URLRequest) -> (URLResponse, Data))?
     nonisolated(unsafe) static var errorToThrow: Error?
@@ -391,7 +391,7 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         errorToThrow = nil
     }
 
-    /// 从可能为 stream 的请求里读出 body 字节（URLSession 上传 multipart 时常走 httpBodyStream）。
+    /// Reads the body bytes from a possibly-stream request (URLSession often uses httpBodyStream when uploading multipart).
     static func bodyData(from request: URLRequest) -> Data? {
         if let body = request.httpBody { return body }
         guard let stream = request.httpBodyStream else { return nil }
@@ -430,7 +430,7 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 private extension Data {
-    /// 朴素子序列包含判定，用于断言 body 中含 "RIFF"/"WAVE" 等字节序列。
+    /// A naive subsequence containment check, used to assert the body contains byte sequences such as "RIFF"/"WAVE".
     func containsSubsequence(_ needle: [UInt8]) -> Bool {
         guard !needle.isEmpty, count >= needle.count else { return false }
         let hay = [UInt8](self)

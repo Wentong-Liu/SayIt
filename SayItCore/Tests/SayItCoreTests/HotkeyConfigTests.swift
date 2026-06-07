@@ -2,7 +2,7 @@ import XCTest
 import AppKit
 @testable import SayItCore
 
-/// TriggerKey 与 HotkeyMode 的配置层单测（不触碰系统事件监听）。
+/// Config-layer unit test for TriggerKey and HotkeyMode (does not touch system event monitoring).
 final class HotkeyConfigTests: XCTestCase {
 
     func testDefaultTriggerKeyIsRightCommand() {
@@ -22,7 +22,7 @@ final class HotkeyConfigTests: XCTestCase {
     }
 
     func testFnGlobeIsReservedWithFunctionFlag() {
-        // Fn/Globe 预留：modifierFlag 用 .function。
+        // Fn/Globe reserved: modifierFlag uses .function.
         XCTAssertTrue(TriggerKey.allCases.contains(.fnGlobe))
         XCTAssertEqual(TriggerKey.fnGlobe.modifierFlag, .function)
     }
@@ -62,7 +62,7 @@ final class HotkeyConfigTests: XCTestCase {
     }
 
     func testInteractionModeLegacyDoubleTapFallsBackToSingleTap() {
-        // 旧版本曾落盘的 "toggle"（双击切换）已移除，应安全回落到默认（单击切换）。
+        // The previously persisted "toggle" (double-tap toggle) has been removed and should safely fall back to the default (tap to toggle).
         XCTAssertEqual(InteractionMode(rawValue: "toggle"), .singleTap)
         XCTAssertEqual(InteractionMode(rawValue: "doubleTap"), .singleTap)
     }

@@ -1,12 +1,12 @@
 import Foundation
 
-/// 各 LLM Provider 共享的采样/超时默认值（单一真相源）。
-/// 改这里即同时影响所有 Provider，避免多处魔法数字漂移。
+/// Sampling/timeout defaults shared by all LLM Providers (single source of truth).
+/// Changing them here affects all Providers at once, avoiding magic-number drift across multiple places.
 enum LLMDefaults {
-    /// 采样温度。偏高以求回复多样、口语化。
+    /// Sampling temperature. Slightly high to encourage diverse, conversational replies.
     static let temperature: Double = 0.9
-    /// 单次回复的最大 token 数（仅 Anthropic 协议需显式传，OpenAI 兼容协议用服务端默认）。
+    /// Max token count per reply (only the Anthropic protocol needs it passed explicitly; the OpenAI-compatible protocol uses the server default).
     static let maxTokens: Int = 1024
-    /// 单次（非流式）请求超时（秒）。一次性返回，给足整体上限即可。
+    /// Timeout (seconds) for a single (non-streaming) request. Returns all at once, so just give a generous overall ceiling.
     static let requestTimeout: TimeInterval = 60
 }

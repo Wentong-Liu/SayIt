@@ -1,16 +1,16 @@
 import Foundation
 
-/// Whisper 所需的目标音频格式：16kHz、单声道、32 位浮点（PCM Float32）。
+/// The target audio format required by Whisper: 16kHz, mono, 32-bit float (PCM Float32).
 ///
-/// AudioRecorder 抓取的麦克风原始流（采样率/声道随硬件而定）会被转换到此格式后，
-/// 累积成 `[Float]` 供后续转写使用。集中为单一真相源，方便测试与复用。
+/// The raw microphone stream captured by AudioRecorder (sample rate/channels depend on hardware) is converted to this format,
+/// then accumulated into `[Float]` for later transcription. Centralized as a single source of truth for easy testing and reuse.
 public enum AudioFormat {
-    /// 目标采样率（Hz）。Whisper 模型固定以 16kHz 训练。
+    /// Target sample rate (Hz). The Whisper model is fixed-trained at 16kHz.
     public static let sampleRate: Double = 16_000
 
-    /// 目标声道数（单声道）。
+    /// Target channel count (mono).
     public static let channelCount: UInt32 = 1
 
-    /// 每个样本的字节数（Float32 = 4 字节）。
+    /// Bytes per sample (Float32 = 4 bytes).
     public static let bytesPerSample = 4
 }

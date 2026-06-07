@@ -1,12 +1,12 @@
 import AppKit
 
-/// 文本注入的目标 App 快照。注入前捕获，注入失败回退时可用于诊断/日志。
+/// Snapshot of the target App for text injection. Captured before injection, usable for diagnostics/logging on a failed-injection fallback.
 public struct InjectionTarget: Sendable, Equatable {
-    /// 目标 App 的 bundle identifier（可能为 nil，例如某些无 bundle 的进程）。
+    /// Bundle identifier of the target App (may be nil, e.g. for some processes without a bundle).
     public let bundleIdentifier: String?
-    /// 目标 App 的本地化名（可能为 nil）。
+    /// Localized name of the target App (may be nil).
     public let localizedName: String?
-    /// 目标 App 的进程 ID。
+    /// Process ID of the target App.
     public let processIdentifier: pid_t
 
     public init(bundleIdentifier: String?, localizedName: String?, processIdentifier: pid_t) {
@@ -15,7 +15,7 @@ public struct InjectionTarget: Sendable, Equatable {
         self.processIdentifier = processIdentifier
     }
 
-    /// 从 NSRunningApplication 捕获快照。
+    /// Captures a snapshot from an NSRunningApplication.
     public init(running app: NSRunningApplication) {
         self.bundleIdentifier = app.bundleIdentifier
         self.localizedName = app.localizedName
@@ -23,35 +23,35 @@ public struct InjectionTarget: Sendable, Equatable {
     }
 }
 
-/// 注入采用的路径。
+/// The path used for injection.
 public enum InjectionMethod: Sendable, Equatable {
-    /// 通过 Accessibility 直接把文本写进聚焦元素（增强路径）。
+    /// Writes the text directly into the focused element via Accessibility (enhanced path).
     case accessibility
-    /// 通过剪贴板写入并模拟 ⌘V 粘贴（默认路径）。
+    /// Writes via the pasteboard and simulates a Cmd-V paste (default path).
     case pasteboard
 }
 
-/// 注入结果。
+/// Injection result.
 public enum InjectionResult: Sendable, Equatable {
-    /// 注入成功。method 表示最终生效的路径。
+    /// Injection succeeded. method indicates the path that finally took effect.
     case success(method: InjectionMethod)
-    /// 注入失败，但文本已保留在剪贴板（用户可手动粘贴）。
-    /// reason 为人类可读的失败原因。
+    /// Injection failed, but the text was kept in the pasteboard (the user can paste manually).
+    /// reason is a human-readable failure cause.
     case failedTextLeftInPasteboard(reason: String)
 }
 
 extension InjectionResult {
-    /// 是否注入成功。
+    /// Whether the injection succeeded.
     public var isSuccess: Bool {
         if case .success = self { return true }
         return false
     }
 }
 
-/// 把一段文本注入到当前聚焦 App 的光标处。
+/// Injects a piece of text at the cursor of the currently focused App.
 public protocol TextInjecting: Sendable {
-    /// 注入文本。返回注入结果；失败时文本会保留在剪贴板。
-    /// - Parameter text: 要注入的文本。空串视为无操作并返回成功。
+    /// Injects text. Returns the injection result; on failure the text is kept in the pasteboard.
+    /// - Parameter text: the text to inject. An empty string is treated as a no-op and returns success.
     @MainActor
     func inject(_ text: String) -> InjectionResult
 }

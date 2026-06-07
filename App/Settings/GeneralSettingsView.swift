@@ -1,11 +1,11 @@
 import SwiftUI
 import SayItCore
 
-/// 「通用」分区：触发键、交互模式、麦克风（设备选择 + 测试电平）、界面语言。
+/// The "General" section: trigger key, interaction mode, microphone (device selection + test level), UI language.
 struct GeneralSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
 
-    /// 麦克风测试状态（设备列表 / 选中设备 / 实时电平）。与 `SettingsViewModel` 解耦。
+    /// Microphone test state (device list / selected device / live level). Decoupled from `SettingsViewModel`.
     @State private var micVM = MicTestViewModel()
 
     var body: some View {
@@ -74,7 +74,7 @@ struct GeneralSettingsView: View {
         .onDisappear { micVM.onDisappear() }
     }
 
-    /// 「系统默认」项的展示名，附带当前默认设备名（若可知）。
+    /// The display name of the "System Default" item, with the current default device name attached (if known).
     private var defaultDeviceLabel: String {
         if let uid = micVM.systemDefaultUID,
            let device = micVM.devices.first(where: { $0.uid == uid }) {
@@ -91,8 +91,8 @@ struct GeneralSettingsView: View {
                      defaultValue: "Tap “Test Microphone” to check the selected device has input.")
     }
 
-    /// 交互方式提示文案的本地化键。返回 `LocalizedStringKey` 而非预解析 `String`，
-    /// 让 `Text(interactionHint)` 随 `uiLocale`（环境 locale）即时切换语言（与其它 Picker 文案一致）。
+    /// The localization key for the interaction-style hint copy. Returns a `LocalizedStringKey` rather than a pre-resolved `String`,
+    /// letting `Text(interactionHint)` switch language instantly with `uiLocale` (the environment locale) (consistent with the other Picker copy).
     private var interactionHint: LocalizedStringKey {
         switch viewModel.interactionMode {
         case .singleTap:
@@ -103,11 +103,11 @@ struct GeneralSettingsView: View {
     }
 }
 
-/// 简易 VU 电平条：用 `level`（0...1）按比例填充，颜色随电平由绿转橙。
+/// A simple VU level bar: fills proportionally by `level` (0...1), with the color shifting from green to orange as the level rises.
 ///
-/// 纯展示组件——不持有任何状态，电平值由上层（``MicTestViewModel/level``）驱动。
+/// A pure display component -- holds no state, the level value is driven by the upper layer (``MicTestViewModel/level``).
 private struct MicLevelBar: View {
-    /// 归一化电平（0...1）。
+    /// The normalized level (0...1).
     let level: Double
 
     var body: some View {

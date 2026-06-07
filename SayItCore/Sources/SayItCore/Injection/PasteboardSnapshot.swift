@@ -1,23 +1,23 @@
 import AppKit
 
-/// 对 NSPasteboard 的最小抽象，便于在不触碰系统真实剪贴板的情况下做单测。
-/// 只暴露快照/还原文本注入需要的能力。
+/// A minimal abstraction over NSPasteboard, to allow unit testing without touching the real system pasteboard.
+/// It only exposes the capabilities needed for snapshot/restore text injection.
 @MainActor
 public protocol PasteboardProtocol: AnyObject {
-    /// 当前 changeCount，用于检测剪贴板是否在注入期间被其它进程改写。
+    /// Current changeCount, used to detect whether the pasteboard was overwritten by another process during injection.
     var changeCount: Int { get }
-    /// 当前所有 item 的「type → data」快照。用于完整保存任意类型（不只是纯文本）。
+    /// A "type -> data" snapshot of all current items. Used to fully preserve arbitrary types (not just plain text).
     func snapshotItems() -> [[String: Data]]
-    /// 清空并按快照还原所有 item。
+    /// Clears and restores all items from a snapshot.
     func restoreItems(_ items: [[String: Data]])
-    /// 读取纯文本（NSPasteboard.string(forType: .string)）。
+    /// Reads plain text (NSPasteboard.string(forType: .string)).
     func string() -> String?
-    /// 清空并写入纯文本，返回 changeCount。
+    /// Clears and writes plain text, returning the changeCount.
     @discardableResult
     func writeString(_ text: String) -> Int
 }
 
-/// 基于系统 NSPasteboard.general 的实现。
+/// Implementation based on the system NSPasteboard.general.
 @MainActor
 public final class SystemPasteboard: PasteboardProtocol {
     private let pasteboard: NSPasteboard
@@ -66,13 +66,13 @@ public final class SystemPasteboard: PasteboardProtocol {
     }
 }
 
-/// 剪贴板原内容的快照，注入完成后用于还原。
-/// 抽成独立纯逻辑类型，save/restore 行为可在不依赖系统的前提下单测（注入假 pasteboard）。
+/// A snapshot of the pasteboard's original content, used to restore it after injection completes.
+/// Extracted into a standalone pure-logic type so save/restore behavior can be unit-tested without depending on the system (by injecting a fake pasteboard).
 @MainActor
 public struct PasteboardBackup {
-    /// 保存时记录的 item 快照。
+    /// The item snapshot recorded at save time.
     public let items: [[String: Data]]
-    /// 保存时的 changeCount。还原前据此判断剪贴板是否已被外部改写。
+    /// The changeCount at save time. Used before restoring to decide whether the pasteboard was overwritten externally.
     public let changeCountAtSave: Int
 
     private init(items: [[String: Data]], changeCountAtSave: Int) {
@@ -80,7 +80,7 @@ public struct PasteboardBackup {
         self.changeCountAtSave = changeCountAtSave
     }
 
-    /// 从 pasteboard 捕获当前内容快照。
+    /// Captures a snapshot of the current content from the pasteboard.
     public static func capture(from pasteboard: PasteboardProtocol) -> PasteboardBackup {
         PasteboardBackup(
             items: pasteboard.snapshotItems(),
@@ -88,8 +88,8 @@ public struct PasteboardBackup {
         )
     }
 
-    /// 把快照内容还原回 pasteboard。
-    /// 总是执行还原（即使快照为空也清空，回到捕获时的状态）。
+    /// Restores the snapshot content back to the pasteboard.
+    /// Always performs the restore (even an empty snapshot clears it, returning to the state at capture time).
     public func restore(to pasteboard: PasteboardProtocol) {
         pasteboard.restoreItems(items)
     }

@@ -1,16 +1,16 @@
 import Observation
 import SayItCore
 
-/// 听写高层状态的可观察持有者：把 ``DictationCoordinator`` 的 `phase` 桥接到 SwiftUI（菜单栏图标）。
+/// An observable holder of the high-level dictation state: bridges ``DictationCoordinator``'s `phase` to SwiftUI (the menu-bar icon).
 ///
-/// 编排器为 `@MainActor`、回调在主线程触发，故此类型亦 `@MainActor`，UI 直接读 `phase` 即可响应。
+/// The orchestrator is `@MainActor` and callbacks fire on the main thread, so this type is also `@MainActor`, and the UI can just read `phase` to react.
 @MainActor
 @Observable
 final class DictationStatus {
-    /// 进程级共享实例：``AppDelegate`` 写、``SayItApp`` 读。
+    /// Process-level shared instance: written by ``AppDelegate``, read by ``SayItApp``.
     static let shared = DictationStatus()
 
-    /// 当前听写阶段（idle / listening / working）。
+    /// The current dictation phase (idle / listening / working).
     var phase: DictationCoordinator.Phase = .idle
 
     init() {}

@@ -1,17 +1,17 @@
 import Foundation
 
-/// 一次语音转写的结果。
+/// The result of one speech transcription.
 ///
-/// `text` 为完整转写文本；`segments` 与 `duration` 为可选元数据，
-/// 不同后端（本地 WhisperKit / 云端）可按能力填充，未提供时分别为空数组与 `nil`。
+/// `text` is the full transcription text; `segments` and `duration` are optional metadata
+/// that different backends (local WhisperKit / cloud) may fill per capability, defaulting to an empty array and `nil` respectively when not provided.
 public struct TranscriptionResult: Equatable, Sendable {
-    /// 转写出的单个时间分段。
+    /// A single time segment of the transcription.
     public struct Segment: Equatable, Sendable {
-        /// 该分段的文本。
+        /// The text of this segment.
         public let text: String
-        /// 起始时间（秒，相对于音频开头）。
+        /// Start time (seconds, relative to the audio start).
         public let start: Double
-        /// 结束时间（秒，相对于音频开头）。
+        /// End time (seconds, relative to the audio start).
         public let end: Double
 
         public init(text: String, start: Double, end: Double) {
@@ -21,11 +21,11 @@ public struct TranscriptionResult: Equatable, Sendable {
         }
     }
 
-    /// 完整转写文本。
+    /// Full transcription text.
     public let text: String
-    /// 分段信息；后端不支持分段时为空数组。
+    /// Segment information; an empty array when the backend does not support segmentation.
     public let segments: [Segment]
-    /// 音频时长（秒）；后端未提供时为 `nil`。
+    /// Audio duration (seconds); `nil` when not provided by the backend.
     public let duration: Double?
 
     public init(text: String, segments: [Segment] = [], duration: Double? = nil) {

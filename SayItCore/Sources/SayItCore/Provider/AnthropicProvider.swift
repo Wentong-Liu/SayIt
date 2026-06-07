@@ -1,16 +1,16 @@
 import Foundation
 
-/// 调用 Anthropic（Claude）Messages API（POST /messages，非流式）。
-/// Anthropic 协议与 OpenAI 不兼容：system 走顶层字段、鉴权用 x-api-key、content 可为字符串或内容块数组。
-/// Key 由调用方传入（不读 Keychain，保持可测）。
+/// Calls the Anthropic (Claude) Messages API (POST /messages, non-streaming).
+/// The Anthropic protocol is incompatible with OpenAI: system goes in a top-level field, auth uses x-api-key, content can be a string or an array of content blocks.
+/// The Key is passed in by the caller (does not read the Keychain, staying testable).
 public struct AnthropicProvider: LLMProvider {
     private let config: ProviderConfig
     private let apiKey: String
     private let session: URLSession
 
-    /// 单次请求超时（秒）。非流式 messages 一次性返回，给足整体上限即可。
+    /// Single-request timeout (seconds). Non-streaming messages return all at once, so just give a generous overall ceiling.
     private static let requestTimeout = LLMDefaults.requestTimeout
-    /// Anthropic API 版本头（固定）。
+    /// The Anthropic API version header (fixed).
     private static let apiVersion = "2023-06-01"
 
     public init(config: ProviderConfig, apiKey: String, session: URLSession = .shared) {
@@ -19,20 +19,20 @@ public struct AnthropicProvider: LLMProvider {
         self.session = session
     }
 
-    // MARK: - 线上请求模型
+    // MARK: - Wire request model
 
-    /// 图片内容块的 source（base64）。
+    /// The source (base64) of an image content block.
     private struct WireImageSource: Encodable {
         let type = "base64"
         let media_type: String
         let data: String
     }
 
-    /// 图片块的 leaf：编为 `{"type":"image","source":{...}}`。
+    /// The image block's leaf: encoded as `{"type":"image","source":{...}}`.
     private struct ImageBlock: Encodable { let type = "image"; let source: WireImageSource }
 
-    /// 一条 message 的 content：要么是纯字符串，要么是内容块数组（文本块 + 图片块）。
-    /// 多态骨架（string OR [text-block, image-blocks...]）由 MultipartContent 提供；本类型只给出自己的 image leaf。
+    /// The content of a message: either a plain string, or an array of content blocks (text blocks + image blocks).
+    /// The polymorphic skeleton (string OR [text-block, image-blocks...]) is provided by MultipartContent; this type only supplies its own image leaf.
     private typealias WireContent = MultipartContent<ImageBlock>
 
     private struct WireMessage: Encodable { let role: String; let content: WireContent }
@@ -41,7 +41,7 @@ public struct AnthropicProvider: LLMProvider {
         let model: String
         let max_tokens: Int
         let temperature: Double
-        /// 为空时省略（Optional + 自动省略 nil）。
+        /// Omitted when empty (Optional + automatic nil omission).
         let system: String?
         let messages: [WireMessage]
     }
@@ -51,7 +51,7 @@ public struct AnthropicProvider: LLMProvider {
         let content: [Block]
     }
 
-    // MARK: - 调用
+    // MARK: - Call
 
     public func complete(messages: [LLMMessage]) async throws -> String {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
@@ -65,13 +65,13 @@ public struct AnthropicProvider: LLMProvider {
         req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         req.setValue(Self.apiVersion, forHTTPHeaderField: "anthropic-version")
 
-        // system 走顶层字段：所有 role==.system 的 content 用两个换行连接；为空则省略。
+        // system goes in the top-level field: all role==.system content is joined with two newlines; omitted if empty.
         let systemText = messages.filter { $0.role == .system }
             .map(\.content)
             .joined(separator: "\n\n")
         let system: String? = systemText.isEmpty ? nil : systemText
 
-        // 其余消息进 messages 数组；.user -> "user"，.assistant -> "assistant"。
+        // The remaining messages go into the messages array; .user -> "user", .assistant -> "assistant".
         let wire: [WireMessage] = messages.compactMap { msg in
             let role: String
             switch msg.role {
@@ -96,7 +96,7 @@ public struct AnthropicProvider: LLMProvider {
         let http = try HTTPResponseValidator.httpResponse(from: response)
         try HTTPResponseValidator.throwIfHTTPError(http, body: String(data: data, encoding: .utf8) ?? "")
         guard let parsed = try? JSONDecoder().decode(ResponseBody.self, from: data) else {
-            // 成功状态码下却解不出 content 块数组：记录 body 片段助排查（行为不变，照常抛 .invalidResponse）。
+            // Under a success status code yet the content block array cannot be parsed: log a body fragment to aid debugging (behavior unchanged, still throws .invalidResponse).
             let snippet = String((String(data: data, encoding: .utf8) ?? "").prefix(500))
             NSLog("[SayIt][Anthropic] HTTP %d 成功但 JSON 解码失败，body 片段=%@", http.statusCode, snippet)
             throw ProviderError.invalidResponse
@@ -107,15 +107,15 @@ public struct AnthropicProvider: LLMProvider {
             .joined()
     }
 
-    /// 把一条 LLMMessage 转成线上 content：无图直接字符串，有图则「文本块 + 图片块数组」。
+    /// Converts one LLMMessage into wire content: without images, a direct string; with images, a "text block + image block array".
     private static func wireContent(for msg: LLMMessage) -> WireContent {
         let blocks = msg.imageDataURLs.compactMap(parseDataURL).map(ImageBlock.init(source:))
         if blocks.isEmpty { return .text(msg.content) }
         return .parts(text: msg.content, images: blocks)
     }
 
-    /// 解析 "data:image/png;base64,XXXX" 形式：取 data: 与 ;base64 之间为 media_type、逗号后为 base64。
-    /// 解析不出的返回 nil（调用方跳过该图）。
+    /// Parses the "data:image/png;base64,XXXX" form: takes the part between data: and ;base64 as the media_type, the part after the comma as base64.
+    /// Returns nil if it cannot be parsed (the caller skips that image).
     private static func parseDataURL(_ s: String) -> WireImageSource? {
         guard s.hasPrefix("data:"),
               let semicolon = s.range(of: ";base64,") else { return nil }

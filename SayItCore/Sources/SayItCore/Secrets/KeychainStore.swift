@@ -1,25 +1,25 @@
 import Foundation
 import Security
 
-/// 极简 Keychain 读写（generic password）。存各 Provider 的 API Key 与 ChatGPT OAuthTokens。
+/// A minimal Keychain read/write (generic password). Stores each Provider's API Key and the ChatGPT OAuthTokens.
 ///
-/// 下沉到 SayItCore 包内（原在 ZhiYu app 层），因此 App 层（CodexLoginService / ProviderFactory）
-/// 与包内代码都能复用，避免 App↔包之间出现循环引用。跨 target 调用需 public 可见性。
+/// Pushed down into the SayItCore package (originally in the ZhiYu app layer), so the App layer (CodexLoginService / ProviderFactory)
+/// and in-package code can both reuse it, avoiding a circular reference between the App and the package. Cross-target calls require public visibility.
 public enum KeychainStore {
     public static let service = "com.liuwentong.SayIt"
-    /// ChatGPT OAuth tokens 的 account 名。
+    /// The account name for the ChatGPT OAuth tokens.
     public static let chatGPTTokensAccount = "chatgpt.oauthTokens"
 
-    /// 固定的 API Key account 常量（取代原 ZhiYu 的 ProviderKind.keychainAccount 数据驱动映射）。
-    /// 地基阶段够用；后续多 Provider 时再扩展。
+    /// A fixed API Key account constant (replacing ZhiYu's original data-driven ProviderKind.keychainAccount mapping).
+    /// Sufficient for the foundation stage; to be extended later for multiple Providers.
     public enum Account {
         public static let openAIAPIKey = "openai.apiKey"
         public static let anthropicAPIKey = "anthropic.apiKey"
         public static let deepSeekAPIKey = "deepseek.apiKey"
     }
 
-    /// 写入凭证。非破坏写：先 SecItemUpdate（成功即返回 true）；不存在时再 SecItemAdd。
-    /// 不先 SecItemDelete，避免写入失败时丢掉旧值。返回是否真正写入成功。
+    /// Write a credential. Non-destructive write: first SecItemUpdate (returns true on success); if it does not exist, then SecItemAdd.
+    /// Does not SecItemDelete first, to avoid losing the old value if the write fails. Returns whether it was actually written successfully.
     @discardableResult
     public static func set(_ value: String, account: String) -> Bool {
         let data = Data(value.utf8)
@@ -28,10 +28,10 @@ public enum KeychainStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        // 1) 先尝试更新现有项（仅改 kSecValueData）。
+        // 1) First try to update the existing item (only changing kSecValueData).
         let updateStatus = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if updateStatus == errSecSuccess { return true }
-        // 2) 不存在则新增（带完整属性）。
+        // 2) If it does not exist, add a new one (with full attributes).
         if updateStatus == errSecItemNotFound {
             var add = query
             add[kSecValueData as String] = data
@@ -41,7 +41,7 @@ public enum KeychainStore {
             }
             return addStatus == errSecSuccess
         }
-        // 3) 其它错误：保留旧值、返回失败。
+        // 3) Other errors: keep the old value, return failure.
         NSLog("[SayIt][KeychainStore] SecItemUpdate 写入失败 account=\(account) status=\(updateStatus)")
         return false
     }
@@ -60,7 +60,7 @@ public enum KeychainStore {
         return s
     }
 
-    /// 写入 ChatGPT OAuth tokens。返回是否真正写入成功（编码失败或 Keychain 写入失败均为 false）。
+    /// Write the ChatGPT OAuth tokens. Returns whether it was actually written successfully (encoding failure or Keychain write failure are both false).
     @discardableResult
     public static func saveChatGPTTokens(_ tokens: OAuthTokens) -> Bool {
         guard let data = try? JSONEncoder().encode(tokens) else {
@@ -75,7 +75,7 @@ public enum KeychainStore {
         return try? JSONDecoder().decode(OAuthTokens.self, from: data)
     }
 
-    /// 清除 ChatGPT tokens。返回是否成功（已删除或本就不存在均视为成功）。
+    /// Clear the ChatGPT tokens. Returns whether it succeeded (already deleted or never existed are both treated as success).
     @discardableResult
     public static func clearChatGPTTokens() -> Bool {
         let query: [String: Any] = [
