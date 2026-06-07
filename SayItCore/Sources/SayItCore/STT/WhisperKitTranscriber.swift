@@ -49,8 +49,8 @@ public actor WhisperKitTranscriber: Transcriber {
     /// 首次调用会触发模型从 HuggingFace 下载（如本地无缓存），随后加载进内存；
     /// 重复调用是幂等的。建议在用户首次录音前的空闲时机调用以降低首帧延迟。
     ///
-    /// - Throws: 模型下载/加载失败时抛出 ``STTError/notReady`` 或
-    ///   ``STTError/transcriptionFailed(reason:)``。
+    /// - Throws: 模型下载/加载失败时抛出 ``STTError/transcriptionFailed(reason:)``
+    ///   （``loadedEngine()`` 把底层失败统一映射为该 case，不会抛 `notReady`）。
     public func preload() async throws {
         _ = try await loadedEngine()
     }
@@ -77,6 +77,10 @@ public actor WhisperKitTranscriber: Transcriber {
         let options = DecodingOptions(language: language)
         // 不显式标注返回类型，让推断接住 WhisperKit 的 `[TranscriptionResult]`，
         // 随即在闭包内把每个分段抽取为本模块无关的原始元组，避免命名歧义。
+        // `engine.transcribe(...)` 抛的是 WhisperKit 自己的错误类型，永远不是本模块的
+        // ``STTError``，因此这里只需一个把任意底层失败统一映射为
+        // ``STTError/transcriptionFailed(reason:)`` 的 catch（不再保留命不中的
+        // `catch let error as STTError` 死分支）。
         do {
             let wkResults = try await engine.transcribe(audioArray: audio, decodeOptions: options)
             let rawSegments: [RawSegment] = wkResults.flatMap { result in
@@ -86,8 +90,6 @@ public actor WhisperKitTranscriber: Transcriber {
             }
             let joinedText = wkResults.map { $0.text }.joined(separator: " ")
             return Self.mapResult(joinedText: joinedText, segments: rawSegments)
-        } catch let error as STTError {
-            throw error
         } catch {
             throw STTError.transcriptionFailed(reason: String(describing: error))
         }
@@ -128,7 +130,9 @@ public actor WhisperKitTranscriber: Transcriber {
     /// WhisperKit 可能因分块（chunking）返回多个结果片段，调用方已按顺序拼接文本并展开分段。
     /// 该函数为纯函数，不依赖模型，可独立单测。
     static func mapResult(joinedText: String, segments rawSegments: [RawSegment]) -> TranscriptionResult {
-        let text = joinedText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        // 先去首尾空白，再把内部连续空白折叠成单个空格：分块拼接时（` ` 分隔）各段自带的
+        // 首尾空格容易拼出双空格，折叠一次可避免最终文本出现 "a  b" 这类伪影。
+        let text = Self.collapseWhitespace(joinedText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines))
 
         let segments = rawSegments.map { raw in
             TranscriptionResult.Segment(
@@ -142,5 +146,12 @@ public actor WhisperKitTranscriber: Transcriber {
         let duration: Double? = segments.last.map { $0.end }
 
         return TranscriptionResult(text: text, segments: segments, duration: duration)
+    }
+
+    /// 把字符串中任意连续的空白（空格/制表/换行）折叠为单个空格。首尾空白应在调用前已去除。
+    static func collapseWhitespace(_ string: String) -> String {
+        string
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
     }
 }
