@@ -17,15 +17,33 @@ final class ModelManagerTests: XCTestCase {
 
     // MARK: - 下载根目录 / 缓存布局（单一真相源）
 
-    func testDownloadBaseIsDocumentsHuggingface() {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let expected = documents.appending(component: "huggingface")
+    func testDownloadBaseIsApplicationSupportSayItModels() {
+        // ~/Documents 受 TCC 保护，签名 hardened-runtime 非沙盒 App 无法写入；
+        // 故根目录改用不受限的 Application Support/SayIt/models。
+        let appSupport = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let expected = appSupport!
+            .appending(component: "SayIt")
+            .appending(component: "models")
         XCTAssertEqual(ModelManager.downloadBase, expected,
-                       "downloadBase 必须与 WhisperKit 默认（Documents/huggingface）一致")
+                       "downloadBase 必须位于 Application Support/SayIt/models（避开 TCC 保护的 Documents）")
+    }
+
+    func testDownloadBaseDirectoryExists() {
+        // 访问 downloadBase 时应已确保目录存在，使 WhisperKit/HubApi 能直接写入。
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(
+            atPath: ModelManager.downloadBase.path, isDirectory: &isDir)
+        XCTAssertTrue(exists && isDir.boolValue,
+                      "downloadBase 目录应在首次访问后存在")
     }
 
     func testRepoCacheDirectoryLayoutMatchesHubApi() {
-        // HubApi.localRepoLocation 布局：downloadBase/<repoType>/<repoId>
+        // HubApi.localRepoLocation 布局：downloadBase/<repoType=="models">/<repoId>
         let expected = ModelManager.downloadBase
             .appending(component: "models")
             .appending(component: "argmaxinc/whisperkit-coreml")
@@ -116,7 +134,7 @@ final class ModelManagerTests: XCTestCase {
 
     @MainActor
     func testInitialStateNotDownloadedWhenNoCache() {
-        // 真实 ~/Documents/huggingface 下通常无该模型；若恰好已下载本断言会变 .downloaded，
+        // 真实 Application Support/SayIt/models 下通常无该模型；若恰好已下载本断言会变 .downloaded，
         // 故这里只断言状态是这两种合法之一（不联网、不下载）。
         let mgr = ModelManager(model: "large-v3-turbo")
         XCTAssertTrue(mgr.state == .notDownloaded || mgr.state == .downloaded)
