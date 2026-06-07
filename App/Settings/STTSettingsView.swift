@@ -32,6 +32,8 @@ struct STTSettingsView: View {
                             Text(option.label).tag(option.id)
                         }
                     }
+
+                    modelStatusRow
                 }
             case .cloud:
                 Section("云端转写") {
@@ -58,7 +60,65 @@ struct STTSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { viewModel.reloadCredentials() }
+        .onAppear {
+            viewModel.reloadCredentials()
+            // 进入页面时按当前模型的本地缓存实况刷新下载状态。
+            viewModel.refreshLocalModelState()
+        }
+    }
+
+    /// 本地模型「下载状态」行：未下载 / 下载中（进度 + 取消）/ 已下载（重新下载）/ 失败（重试）。
+    /// 观察 ``SettingsViewModel/localModelState``（其源为 `@Observable` 的 `ModelManager.state`）。
+    @ViewBuilder
+    private var modelStatusRow: some View {
+        switch viewModel.localModelState {
+        case .notDownloaded:
+            LabeledContent("下载状态") {
+                HStack(spacing: 8) {
+                    Text("未下载").foregroundStyle(.secondary)
+                    Button("下载") {
+                        Task { await viewModel.downloadLocalModel() }
+                    }
+                }
+            }
+
+        case .downloading(let progress):
+            LabeledContent("下载状态") {
+                HStack(spacing: 8) {
+                    ProgressView(value: progress)
+                        .frame(width: 120)
+                    Text("\(Int(progress * 100))%")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Button("取消") { viewModel.cancelLocalModelDownload() }
+                }
+            }
+
+        case .downloaded:
+            LabeledContent("下载状态") {
+                HStack(spacing: 8) {
+                    Label("已下载", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .labelStyle(.titleAndIcon)
+                    Button("重新下载") {
+                        Task { await viewModel.downloadLocalModel(force: true) }
+                    }
+                }
+            }
+
+        case .failed(let reason):
+            LabeledContent("下载状态") {
+                HStack(spacing: 8) {
+                    Label("下载失败", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .labelStyle(.titleAndIcon)
+                    Button("重试") {
+                        Task { await viewModel.downloadLocalModel() }
+                    }
+                }
+                .help(reason)
+            }
+        }
     }
 }
 
