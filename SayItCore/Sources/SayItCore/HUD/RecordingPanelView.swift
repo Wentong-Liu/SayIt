@@ -75,6 +75,10 @@ public struct RecordingPanelView: View {
             waveform
         case .transcribing:
             spinner
+        case .info:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.green.opacity(0.9))
         case .error:
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 14, weight: .semibold))

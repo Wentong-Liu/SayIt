@@ -49,4 +49,11 @@ public protocol AudioRecording: Sendable {
 
     /// 是否正在录音。
     var isRecording: Bool { get async }
+
+    /// 实时输入电平流：每段采集缓冲产出一个归一化 RMS 电平（0...1）。
+    ///
+    /// 供 HUD 波形/音量指示消费（`for await level in recorder.levels { ... }`）。
+    /// 录音停止后不再产出新值；跨多次录音持续有效（同一长生命周期流）。
+    /// 0 表示静音，1 表示接近满量程。具体映射由实现决定（可含对数压缩以贴合听感）。
+    var levels: AsyncStream<Double> { get }
 }

@@ -28,9 +28,16 @@ public actor AudioRecorder: AudioRecording {
     /// tap 每次回调请求的帧数（缓冲大小）。值偏大可降低回调频率。
     private let tapBufferSize: AVAudioFrameCount
 
+    /// 实时归一化输入电平流（0...1），供 HUD 波形消费。
+    public nonisolated let levels: AsyncStream<Double>
+    private nonisolated let levelContinuation: AsyncStream<Double>.Continuation
+
     /// 初始化。`tapBufferSize` 为 inputNode tap 的缓冲帧数，默认 4096。
     public init(tapBufferSize: AVAudioFrameCount = 4096) {
         self.tapBufferSize = tapBufferSize
+        var continuation: AsyncStream<Double>.Continuation!
+        self.levels = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation = $0 }
+        self.levelContinuation = continuation
         // 目标格式：标准 Float32、给定采样率与单声道。非交错对单声道无差别。
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -42,6 +49,10 @@ public actor AudioRecorder: AudioRecording {
             fatalError("AudioRecorder: 无法创建目标 AVAudioFormat（16kHz/mono/Float32）")
         }
         self.targetFormat = format
+    }
+
+    deinit {
+        levelContinuation.finish()
     }
 
     public var isRecording: Bool {
@@ -77,10 +88,13 @@ public actor AudioRecorder: AudioRecording {
         //    再把 `[Float]`（Sendable）投递回 actor 累积——避免把非 Sendable 的
         //    AVAudioPCMBuffer 跨隔离域传递引发数据竞争。
         let targetFormat = self.targetFormat
+        let levelContinuation = self.levelContinuation
         inputNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: inputFormat) { [weak self] buffer, _ in
             guard let self else { return }
             guard let samples = Self.convertToSamples(buffer, using: converter, to: targetFormat),
                   !samples.isEmpty else { return }
+            // 在实时线程同步算出归一化电平后立即投递（continuation 为 Sendable，仅留最新值）。
+            levelContinuation.yield(Self.normalizedLevel(samples))
             Task { await self.ingest(samples) }
         }
 
@@ -101,7 +115,30 @@ public actor AudioRecorder: AudioRecording {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         recording = false
+        // 录音结束：把电平归零，让 HUD 波形平复（流本身保持有效以供下一次录音）。
+        levelContinuation.yield(0)
         return accumulator.drain()
+    }
+
+    /// 由一段 Float 样本算出归一化输入电平（0...1）。
+    ///
+    /// 流程：RMS → dBFS → 映射到 0...1（按 `minDb`...0dB 线性归一）。
+    /// 用对数刻度更贴合人对响度的感知，避免低电平时波形几乎不动。
+    nonisolated static func normalizedLevel(_ samples: [Float]) -> Double {
+        guard !samples.isEmpty else { return 0 }
+        var sumSquares = 0.0
+        for sample in samples {
+            let value = Double(sample)
+            sumSquares += value * value
+        }
+        let rms = (sumSquares / Double(samples.count)).squareRoot()
+        guard rms > 0 else { return 0 }
+        // dBFS：满量程（rms=1）为 0dB；越小越负。低于 minDb 视为静音。
+        let minDb = -50.0
+        let db = 20.0 * Foundation.log10(rms)
+        guard db > minDb else { return 0 }
+        let normalized = (db - minDb) / (0 - minDb)
+        return Swift.min(Swift.max(normalized, 0), 1)
     }
 
     /// 把转换好的样本累积进来（actor 隔离，串行安全）。

@@ -51,8 +51,10 @@ final class PolishPipelineTests: XCTestCase {
         )
 
         XCTAssertEqual(outcome.text, "今天天气不错。")
+        XCTAssertEqual(outcome.resolution, .polished)
         XCTAssertTrue(outcome.polished)
         XCTAssertFalse(outcome.usedFallback)
+        XCTAssertNil(outcome.failureReason)
         XCTAssertEqual(provider.callCount, 1)
     }
 
@@ -68,6 +70,7 @@ final class PolishPipelineTests: XCTestCase {
         )
 
         XCTAssertEqual(outcome.text, "整理后的文本")
+        XCTAssertEqual(outcome.resolution, .polished)
         XCTAssertTrue(outcome.polished)
         XCTAssertFalse(outcome.usedFallback)
     }
@@ -103,6 +106,38 @@ final class PolishPipelineTests: XCTestCase {
         XCTAssertEqual(outcome.text, raw)
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
+        // 抛错应判定为「失败回退」并携带可读原因。
+        if case .failedFallback = outcome.resolution {
+            XCTAssertNotNil(outcome.failureReason)
+        } else {
+            XCTFail("抛错应为 .failedFallback，实际: \(outcome.resolution)")
+        }
+    }
+
+    func testProviderErrorInvokesFailureLogger() async {
+        // 失败回退应触发注入的 logger 回调（可观测）。
+        final class Box: @unchecked Sendable { var reasons: [String] = [] }
+        let box = Box()
+        let provider = FakeLLMProvider(.throwsError(ProviderError.network("boom")))
+        let pipeline = PolishPipeline(logFailure: { box.reasons.append($0) })
+
+        _ = await pipeline.polish("不能丢的口述", context: PolishContext(), style: .smart, provider: provider)
+
+        XCTAssertEqual(box.reasons.count, 1, "失败回退应记录一次原因")
+    }
+
+    func testSkippedAndPolishedDoNotInvokeFailureLogger() async {
+        // 跳过（关闭）与成功路径都不应触发失败 logger。
+        final class Box: @unchecked Sendable { var count = 0 }
+        let box = Box()
+        let pipeline = PolishPipeline(logFailure: { _ in box.count += 1 })
+
+        _ = await pipeline.polish("原文", context: PolishContext(), style: .smart,
+                                  provider: FakeLLMProvider(.returns("成稿")), polishEnabled: true)
+        _ = await pipeline.polish("原文", context: PolishContext(), style: .smart,
+                                  provider: FakeLLMProvider(.returns("x")), polishEnabled: false)
+
+        XCTAssertEqual(box.count, 0, "成功/跳过不应记录失败")
     }
 
     func testProviderErrorFallbackTrimsRawText() async {
@@ -119,6 +154,9 @@ final class PolishPipelineTests: XCTestCase {
         XCTAssertEqual(outcome.text, "有空白边的原文")
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
+        if case .failedFallback = outcome.resolution {} else {
+            XCTFail("抛错应为 .failedFallback，实际: \(outcome.resolution)")
+        }
     }
 
     // MARK: - 空响应回退
@@ -138,6 +176,10 @@ final class PolishPipelineTests: XCTestCase {
         XCTAssertEqual(outcome.text, raw)
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
+        // 空响应属于「失败回退」（调用了模型但没拿到可用结果）。
+        if case .failedFallback = outcome.resolution {} else {
+            XCTFail("空响应应为 .failedFallback，实际: \(outcome.resolution)")
+        }
     }
 
     // MARK: - 空输入
@@ -154,6 +196,7 @@ final class PolishPipelineTests: XCTestCase {
         )
 
         XCTAssertEqual(outcome.text, "")
+        XCTAssertEqual(outcome.resolution, .skipped(.emptyInput))
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
         XCTAssertEqual(provider.callCount, 0, "空输入不应调用 provider")
@@ -171,6 +214,7 @@ final class PolishPipelineTests: XCTestCase {
         )
 
         XCTAssertEqual(outcome.text, "")
+        XCTAssertEqual(outcome.resolution, .skipped(.emptyInput))
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
         XCTAssertEqual(provider.callCount, 0)
@@ -192,6 +236,7 @@ final class PolishPipelineTests: XCTestCase {
         )
 
         XCTAssertEqual(outcome.text, raw)
+        XCTAssertEqual(outcome.resolution, .skipped(.disabled))
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
         XCTAssertEqual(provider.callCount, 0, "关闭润色时不应调用 provider")
@@ -200,8 +245,15 @@ final class PolishPipelineTests: XCTestCase {
     // MARK: - PolishOutcome 构造
 
     func testPolishOutcomeIsEquatable() {
-        let a = PolishOutcome(text: "x", polished: true, usedFallback: false)
-        let b = PolishOutcome(text: "x", polished: true, usedFallback: false)
+        let a = PolishOutcome(text: "x", resolution: .polished)
+        let b = PolishOutcome(text: "x", resolution: .polished)
         XCTAssertEqual(a, b)
+    }
+
+    func testPolishOutcomeDerivedFlags() {
+        XCTAssertTrue(PolishOutcome(text: "x", resolution: .polished).polished)
+        XCTAssertFalse(PolishOutcome(text: "x", resolution: .polished).usedFallback)
+        XCTAssertTrue(PolishOutcome(text: "x", resolution: .skipped(.disabled)).usedFallback)
+        XCTAssertEqual(PolishOutcome(text: "x", resolution: .failedFallback(reason: "r")).failureReason, "r")
     }
 }
