@@ -1,18 +1,28 @@
 import SwiftUI
+import SayItCore
 
-/// 占位设置界面。地基阶段仅提供最小可见内容，后续接入热键 / Provider / 听写配置。
+/// SayIt 设置主界面：分页承载「通用 / 语音识别 / 润色 / 权限」四个分区。
+///
+/// 仅做设置 UI 与读写配置/凭据，绑定已有 ``AppConfig`` 与 ``KeychainStore``（经 ``SettingsViewModel``），
+/// 不做端到端听写编排（属于 T13）。所有配置枚举复用 `SayItCore` 单一真相源，未重复声明。
 struct SettingsView: View {
+    @State private var viewModel = SettingsViewModel()
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("SayIt 设置")
-                .font(.title2)
-                .bold()
-            Text("语音听写设置将在此处提供（热键、AI 润色、注入目标等）。")
-                .foregroundStyle(.secondary)
-            Spacer()
+        TabView {
+            GeneralSettingsView(viewModel: viewModel)
+                .tabItem { Label("通用", systemImage: "gearshape") }
+
+            STTSettingsView(viewModel: viewModel)
+                .tabItem { Label("语音识别", systemImage: "waveform") }
+
+            PolishSettingsView(viewModel: viewModel)
+                .tabItem { Label("润色", systemImage: "sparkles") }
+
+            PermissionsSettingsView(viewModel: viewModel)
+                .tabItem { Label("权限", systemImage: "lock.shield") }
         }
-        .padding(20)
-        .frame(width: 420, height: 260)
+        .frame(width: 480, height: 420)
     }
 }
 
