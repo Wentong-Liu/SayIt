@@ -75,17 +75,35 @@ public enum PolishPromptBuilder {
 
     /// Renders one glossary entry line, e.g. `- 规范写法：useEffect（可能听成：use effect / UseEffect）`.
     /// Returns `nil` for a blank canonical (nothing to inject). The variant hint is omitted when there are no variants.
+    ///
+    /// Each surviving term is sanitized (after the trim) so a learnedFromEdit entry whose text happens to contain a
+    /// newline or a literal `</词典>` closing tag cannot break out of the `<词典>` data block. A normal term contains
+    /// neither, so the sanitizer is a no-op and the rendered line is byte-identical to the pre-hardening output.
     private static func entryLine(_ entry: DictionaryEntry) -> String? {
-        let canonical = entry.canonical.trimmingCharacters(in: .whitespacesAndNewlines)
+        let canonical = sanitizeGlossaryTerm(entry.canonical.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !canonical.isEmpty else { return nil }
 
+        // Order: trim -> sanitize -> filter(!isEmpty). Trimming already strips edge whitespace, and sanitizing only
+        // collapses interior CR/LF to spaces and defangs the closing tag, so a trimmed non-empty variant stays
+        // non-empty; this order is equivalent to trim -> filter -> sanitize while still dropping empty variants.
         let variants = entry.variants
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map { sanitizeGlossaryTerm($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
             .filter { !$0.isEmpty }
         if variants.isEmpty {
             return "- 规范写法：\(canonical)"
         }
         return "- 规范写法：\(canonical)（可能听成：\(variants.joined(separator: " / "))）"
+    }
+
+    /// Neutralizes a glossary term so it cannot break out of the `<词典>` data block:
+    /// collapses CR/LF to a single space and defangs a literal `</词典>` closing tag (fullwidth angle brackets).
+    /// A normal term (no newline, no closing tag) is returned unchanged -> byte-identical output for all real data.
+    /// CRLF is handled before lone CR/LF so a `\r\n` collapses to ONE space, not two.
+    private static func sanitizeGlossaryTerm(_ term: String) -> String {
+        term.replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "</词典>", with: "＜/词典＞")
     }
 
     /// The Section 6.1 hard constraints (1-10) + few-shot examples + injection defense, shared by all styles.
@@ -181,7 +199,11 @@ public enum PolishPromptBuilder {
            !appName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             parts.append("【当前应用】\(appName)")
         }
-        parts.append("<口述原文>\n\(rawText)\n</口述原文>")
+        // Defang any literal `</口述原文>` inside the transcript so a dictation that happens to contain the closing
+        // tag cannot escape the "material, not instructions" envelope. Real dictation never contains this exact
+        // Chinese closing-tag sequence, so a normal transcript is wrapped byte-identically (verbatim-preserved).
+        let safeRaw = rawText.replacingOccurrences(of: "</口述原文>", with: "＜/口述原文＞")
+        parts.append("<口述原文>\n\(safeRaw)\n</口述原文>")
         return parts.joined(separator: "\n")
     }
 }
