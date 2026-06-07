@@ -5,14 +5,30 @@ import XCTest
 /// **不触发真实网络下载**（那需联网拉数 GB 模型，留到真机集成验证）。
 final class ModelManagerTests: XCTestCase {
 
-    // MARK: - 友好名 → variant 映射
+    // MARK: - 友好名 → 真实仓库 variant 文件夹名映射
 
-    func testVariantMappingIsIdentityForKnownModels() {
-        XCTAssertEqual(ModelManager.variant(for: "large-v3-turbo"), "large-v3-turbo")
-        XCTAssertEqual(ModelManager.variant(for: "large-v3"), "large-v3")
-        XCTAssertEqual(ModelManager.variant(for: "medium"), "medium")
-        XCTAssertEqual(ModelManager.variant(for: "small"), "small")
-        XCTAssertEqual(ModelManager.variant(for: "base"), "base")
+    func testVariantMappingResolvesToRealRepoFolderNames() {
+        // 友好名必须映射到 argmaxinc/whisperkit-coreml 仓库内真实存在的文件夹名
+        // （经 HuggingFace HTTP 200 校验），否则 WhisperKit.download 解析不到、下载无声失败。
+        XCTAssertEqual(ModelManager.variant(for: "large-v3-turbo"), "openai_whisper-large-v3-v20240930_turbo")
+        XCTAssertEqual(ModelManager.variant(for: "large-v3"), "openai_whisper-large-v3")
+        XCTAssertEqual(ModelManager.variant(for: "medium"), "openai_whisper-medium")
+        XCTAssertEqual(ModelManager.variant(for: "small"), "openai_whisper-small")
+        XCTAssertEqual(ModelManager.variant(for: "base"), "openai_whisper-base")
+        XCTAssertEqual(ModelManager.variant(for: "tiny"), "openai_whisper-tiny")
+    }
+
+    func testVariantMappingPassesThroughRealFolderName() {
+        // 已是真实仓库文件夹名（含 openai_whisper- 前缀）应原样返回，不再重复加前缀。
+        XCTAssertEqual(
+            ModelManager.variant(for: "openai_whisper-large-v3-v20240930_turbo"),
+            "openai_whisper-large-v3-v20240930_turbo"
+        )
+    }
+
+    func testVariantMappingFallsBackToPrefixedNameForUnknownModel() {
+        // 未知友好名按仓库命名约定加前缀兜底。
+        XCTAssertEqual(ModelManager.variant(for: "distil-large-v3"), "openai_whisper-distil-large-v3")
     }
 
     // MARK: - 下载根目录 / 缓存布局（单一真相源）
@@ -58,16 +74,16 @@ final class ModelManagerTests: XCTestCase {
 
     func testNormalizedVariantKeyStripsSeparatorsAndCase() {
         XCTAssertEqual(ModelManager.normalizedVariantKey("large-v3-turbo"), "largev3turbo")
-        XCTAssertEqual(ModelManager.normalizedVariantKey("openai_whisper-large-v3_turbo"),
-                       "openaiwhisperlargev3turbo")
+        XCTAssertEqual(ModelManager.normalizedVariantKey("openai_whisper-large-v3-v20240930_turbo"),
+                       "openaiwhisperlargev3v20240930turbo")
     }
 
-    func testNormalizedFolderNameContainsNormalizedVariant() {
-        // 仓库文件夹名（下划线）应能被友好名（连字符）归一化后命中。
-        let folderKey = ModelManager.normalizedVariantKey("openai_whisper-large-v3_turbo")
+    func testNormalizedFolderNameEqualsNormalizedVariant() {
+        // 真实仓库文件夹名归一化后应与 variant 归一化后**相等**（下载落盘即用此名）。
+        let folderKey = ModelManager.normalizedVariantKey("openai_whisper-large-v3-v20240930_turbo")
         let variantKey = ModelManager.normalizedVariantKey(ModelManager.variant(for: "large-v3-turbo"))
-        XCTAssertTrue(folderKey.contains(variantKey),
-                      "归一化后仓库文件夹名应包含归一化后的 variant")
+        XCTAssertEqual(folderKey, variantKey,
+                       "归一化后仓库文件夹名应等于归一化后的 variant")
     }
 
     // MARK: - 权重检测（用临时目录构造伪缓存）
@@ -92,10 +108,10 @@ final class ModelManagerTests: XCTestCase {
     }
 
     func testCachedModelFolderFindsByNormalizedNameWhenWeightsComplete() throws {
-        // 在临时 repo 根下放一个下划线命名、权重齐全的文件夹；用连字符友好名应能命中。
+        // 在临时 repo 根下放一个真实命名、权重齐全的文件夹；用连字符友好名应能命中（归一化后相等）。
         let repoRoot = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: repoRoot) }
-        let variantFolder = repoRoot.appending(component: "openai_whisper-large-v3_turbo")
+        let variantFolder = repoRoot.appending(component: "openai_whisper-large-v3-v20240930_turbo")
         try createModelFiles(["MelSpectrogram", "AudioEncoder", "TextDecoder"], in: variantFolder)
 
         let found = ModelManager.cachedModelFolder(for: "large-v3-turbo", in: repoRoot)
@@ -108,10 +124,21 @@ final class ModelManagerTests: XCTestCase {
     func testCachedModelFolderNilWhenWeightsIncomplete() throws {
         let repoRoot = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: repoRoot) }
-        let variantFolder = repoRoot.appending(component: "openai_whisper-large-v3_turbo")
+        let variantFolder = repoRoot.appending(component: "openai_whisper-large-v3-v20240930_turbo")
         try createModelFiles(["MelSpectrogram"], in: variantFolder) // 缺两个
 
         XCTAssertNil(ModelManager.cachedModelFolder(for: "large-v3-turbo", in: repoRoot))
+    }
+
+    func testCachedModelFolderDoesNotMatchTurboFolderForLargeV3() throws {
+        // turbo 文件夹名归一化后包含 large-v3 的归一化键，但用「相等」匹配后不应被误命中。
+        let repoRoot = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: repoRoot) }
+        let turboFolder = repoRoot.appending(component: "openai_whisper-large-v3-v20240930_turbo")
+        try createModelFiles(["MelSpectrogram", "AudioEncoder", "TextDecoder"], in: turboFolder)
+
+        // 找 large-v3，仓库里只有 turbo：相等匹配下不应命中。
+        XCTAssertNil(ModelManager.cachedModelFolder(for: "large-v3", in: repoRoot))
     }
 
     func testCachedModelFolderNilWhenNoMatchingFolder() throws {

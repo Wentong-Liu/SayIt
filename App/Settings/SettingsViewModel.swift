@@ -1,4 +1,5 @@
 import Observation
+import os
 import SwiftUI
 import SayItCore
 
@@ -19,12 +20,17 @@ final class SettingsViewModel {
     /// 本地模型下载/状态管理器。其 `state` 为 `@Observable`，UI 可直接观察其属性驱动刷新。
     let modelManager: ModelManager
 
+    /// 下载/STT 相关日志（与 `SayItCore` 同 subsystem，category 区分为 settings）。
+    @ObservationIgnored private let log = Logger(subsystem: "com.liuwentong.SayIt", category: "settings")
+
     /// - Parameters:
     ///   - config: 注入的配置；默认 `.shared`，单测/预览可传独立实例。
     ///   - modelManager: 注入的本地模型管理器；默认按当前 `localModel` 新建。
     init(config: AppConfig = .shared, modelManager: ModelManager? = nil) {
         self.config = config
         self.modelManager = modelManager ?? ModelManager(model: config.localModel)
+        // 把可观察存储镜像初始化为持久化当前值（之后 write-through 到 config）。
+        self.sttMode = config.sttMode
         // 初次进入面板时同步一次密钥与权限状态。
         reloadCredentials()
         refreshPermissions()
@@ -57,9 +63,16 @@ final class SettingsViewModel {
     // MARK: STT
 
     /// 语音转写运行位置（本地 / 云端）。
+    ///
+    /// 这是一个 `@Observable` 追踪的**存储**属性（write-through 到 `config`），而非纯计算转发。
+    /// 关键正确性点：`STTSettingsView` 把分段控件的 `selection` 与下方条件分区都绑到此**同一**
+    /// 可观察源；若仅做计算转发（读写 `config.sttMode`，而 `AppConfig` 非 `@Observable`），
+    /// 切换分段控件不会触发 Observation 失效、下方分区不会即时重渲染。存储于此即可即时切换。
     var sttMode: STTMode {
-        get { config.sttMode }
-        set { config.sttMode = newValue }
+        didSet {
+            guard sttMode != oldValue else { return }
+            config.sttMode = sttMode
+        }
     }
 
     /// 本地 STT 模型标识。写入时同步让 ``modelManager`` 切到该模型并按本地缓存刷新状态。
@@ -82,10 +95,19 @@ final class SettingsViewModel {
         modelManager.refreshState()
     }
 
-    /// 触发下载当前本地模型。
+    /// 触发下载当前本地模型。下载结束后若失败，把可读原因记到 os.Logger（.error）。
     /// - Parameter force: 为 `true` 时即便已缓存也重新下载（「重新下载/重试」用）。
     func downloadLocalModel(force: Bool = false) async {
         await modelManager.download(force: force)
+        if case .failed(let reason) = modelManager.state {
+            log.error("Local model download failed for \(self.config.localModel, privacy: .public): \(reason, privacy: .public)")
+        }
+    }
+
+    /// 当前下载失败时的可读原因（供 UI 直接展示）；非失败态为 nil。
+    var localModelFailureReason: String? {
+        if case .failed(let reason) = modelManager.state { return reason }
+        return nil
     }
 
     /// 取消进行中的本地模型下载。
