@@ -5,6 +5,103 @@
       "comment" : "Percent value (download progress / level)",
       "shouldTranslate" : false
     },
+    "dictionary.add" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Add Entry" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加词条" } }
+      }
+    },
+    "dictionary.cancel" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消" } }
+      }
+    },
+    "dictionary.delete" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Delete" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "删除" } }
+      }
+    },
+    "dictionary.edit" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Edit" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "编辑" } }
+      }
+    },
+    "dictionary.editor.title.edit" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Edit Entry" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "编辑词条" } }
+      }
+    },
+    "dictionary.editor.title.new" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "New Entry" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "新建词条" } }
+      }
+    },
+    "dictionary.empty.hint" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Add proper nouns or oddly-spelled terms (names, brands, code) and the words you say for them. After polishing, dictation rewrites those to your exact spelling and casing." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加专有名词或拼写特殊的术语（人名、品牌、代码）以及你说出它们时的读法。润色之后，听写会把这些改写成你指定的准确拼写和大小写。" } }
+      }
+    },
+    "dictionary.empty.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No dictionary entries yet" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "暂无词典词条" } }
+      }
+    },
+    "dictionary.field.canonical" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Canonical spelling" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "标准拼写" } }
+      }
+    },
+    "dictionary.field.canonical.placeholder" : {
+      "comment" : "Example canonical spelling (a code identifier; kept verbatim in both languages)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "e.g. useEffect" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "例如 useEffect" } }
+      }
+    },
+    "dictionary.field.caseSensitive" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Case-sensitive" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "区分大小写" } }
+      }
+    },
+    "dictionary.field.enabled" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Enabled" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用" } }
+      }
+    },
+    "dictionary.field.variants" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Heard as" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "听写形式" } }
+      }
+    },
+    "dictionary.field.variants.hint" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "One per line — the forms you might say or that get transcribed, e.g. “use effect”." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "每行一个——你可能说出或被转写成的形式，例如“use effect”。" } }
+      }
+    },
+    "dictionary.save" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Save" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "保存" } }
+      }
+    },
+    "dictionary.section.entries" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Entries" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "词条" } }
+      }
+    },
     "general.inputDevice" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Input Device" } },
@@ -694,6 +791,12 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Transcription Model" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "转写模型" } }
+      }
+    },
+    "tab.dictionary" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Dictionary" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "词典" } }
       }
     },
     "tab.general" : {
