@@ -58,10 +58,8 @@ public enum UILanguage: String, CaseIterable, Identifiable, Sendable {
 
     public var id: String { rawValue }
 
-    /// Default UI language: follows the system preferred language mapped to one of the two (Chinese systems -> Simplified Chinese, others -> English).
-    public static let `default`: UILanguage = .english
-
     /// Maps the system preferred language to one of the two supported options: a preferred language starting with `zh` is treated as Simplified Chinese, otherwise English.
+    /// This is the default used by ``AppConfig/uiLanguage`` when the key is unset, so first launch follows the system language.
     public static var systemDefault: UILanguage {
         let preferred = Locale.preferredLanguages.first ?? "en"
         return preferred.lowercased().hasPrefix("zh") ? .simplifiedChinese : .english
