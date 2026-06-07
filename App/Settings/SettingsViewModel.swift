@@ -29,8 +29,19 @@ final class SettingsViewModel {
     init(config: AppConfig = .shared, modelManager: ModelManager? = nil) {
         self.config = config
         self.modelManager = modelManager ?? ModelManager(model: config.localModel)
-        // Initialize the observable storage mirror to the current persisted values (write-through to config afterwards).
+        // Initialize every observable storage mirror to the current persisted value (write-through to config afterwards).
+        // See each property's note below: using stored mirrors instead of computed forwards is what lets `@Observable`
+        // track the write, invalidate the SwiftUI view instantly, and move the Picker's selection right away (no stale value).
+        self.triggerKey = config.triggerKey
+        self.interactionMode = config.interactionMode
+        self.uiLanguage = config.uiLanguage
         self.sttMode = config.sttMode
+        self.localModel = config.localModel
+        self.cloudSTTModel = config.cloudSTTModel
+        self.polishEnabled = config.polishEnabled
+        self.polishStyle = config.polishStyle
+        self.providerKind = config.providerKind
+        self.model = config.model
         // Sync the secrets and permission state once on first entering the panel.
         reloadCredentials()
         refreshPermissions()
@@ -39,22 +50,34 @@ final class SettingsViewModel {
     // MARK: General
 
     /// The modifier key that triggers dictation.
+    ///
+    /// This is an `@Observable`-tracked **stored** property (write-through to `config`), not a pure computed forward.
+    /// The `@Observable` macro only injects Observation tracking (`access` in the getter / `withMutation` in the setter) for stored
+    /// properties; if this read/wrote `config.triggerKey` instead (`AppConfig` is not `@Observable`), a Picker write would not
+    /// invalidate the view and the selection would not move (it would keep showing the old value). Storing it here reflects instantly and persists.
     var triggerKey: TriggerKey {
-        get { config.triggerKey }
-        set { config.triggerKey = newValue }
+        didSet {
+            guard triggerKey != oldValue else { return }
+            config.triggerKey = triggerKey
+        }
     }
 
-    /// The trigger interaction style (hold / tap to toggle).
+    /// The trigger interaction style (hold / tap to toggle). Stored mirror, same rationale as ``triggerKey``.
     var interactionMode: InteractionMode {
-        get { config.interactionMode }
-        set { config.interactionMode = newValue }
+        didSet {
+            guard interactionMode != oldValue else { return }
+            config.interactionMode = interactionMode
+        }
     }
 
     /// The UI display language (English / Simplified Chinese). On switch, immediately writes to disk and posts a notification, the root scene relocalizes the UI accordingly.
     /// Speech recognition is **no longer** driven by this (or the old `language`) field, and is always auto-detected (see ``DictationCoordinator``).
+    /// Stored mirror, same rationale as ``triggerKey``.
     var uiLanguage: UILanguage {
-        get { config.uiLanguage }
-        set { config.uiLanguage = newValue }
+        didSet {
+            guard uiLanguage != oldValue else { return }
+            config.uiLanguage = uiLanguage
+        }
     }
 
     /// The UI language options (only English and Simplified Chinese); the display name is that language's endonym, not localized.
@@ -76,11 +99,12 @@ final class SettingsViewModel {
     }
 
     /// The local STT model identifier. On write, also makes ``modelManager`` switch to that model and refresh state per the local cache.
+    /// Stored mirror, same rationale as ``triggerKey``.
     var localModel: String {
-        get { config.localModel }
-        set {
-            config.localModel = newValue
-            modelManager.setModel(newValue)
+        didSet {
+            guard localModel != oldValue else { return }
+            config.localModel = localModel
+            modelManager.setModel(localModel)
         }
     }
 
@@ -115,10 +139,12 @@ final class SettingsViewModel {
         modelManager.cancelDownload()
     }
 
-    /// The cloud STT model identifier.
+    /// The cloud STT model identifier. Stored mirror, same rationale as ``triggerKey``.
     var cloudSTTModel: String {
-        get { config.cloudSTTModel }
-        set { config.cloudSTTModel = newValue }
+        didSet {
+            guard cloudSTTModel != oldValue else { return }
+            config.cloudSTTModel = cloudSTTModel
+        }
     }
 
     /// Local model candidates: (id, display name). Common WhisperKit quantized models, defaulting to large-v3-turbo.
@@ -142,32 +168,40 @@ final class SettingsViewModel {
 
     // MARK: Polish
 
-    /// Whether to apply LLM polish to the transcription result.
+    /// Whether to apply LLM polish to the transcription result. Stored mirror, same rationale as ``triggerKey``.
     var polishEnabled: Bool {
-        get { config.polishEnabled }
-        set { config.polishEnabled = newValue }
-    }
-
-    /// The polish style.
-    var polishStyle: PolishStyle {
-        get { config.polishStyle }
-        set { config.polishStyle = newValue }
-    }
-
-    /// The Provider used for polish. After switching the Provider, clamps the model back to that Provider's default model, to avoid sending the wrong model id.
-    var providerKind: ProviderKind {
-        get { config.providerKind }
-        set {
-            config.providerKind = newValue
-            // `AppConfig.model` clamps back to the current Provider's default model on read; writing the default value once ensures the UI is instantly consistent.
-            config.model = newValue.defaultModel
+        didSet {
+            guard polishEnabled != oldValue else { return }
+            config.polishEnabled = polishEnabled
         }
     }
 
-    /// The model id used for polish.
+    /// The polish style. Stored mirror, same rationale as ``triggerKey``.
+    var polishStyle: PolishStyle {
+        didSet {
+            guard polishStyle != oldValue else { return }
+            config.polishStyle = polishStyle
+        }
+    }
+
+    /// The Provider used for polish. After switching the Provider, clamps the model back to that Provider's default model, to avoid sending the wrong model id.
+    /// Stored mirror, same rationale as ``triggerKey``; also refreshes the ``model`` mirror so the model Picker shows the new default instantly.
+    var providerKind: ProviderKind {
+        didSet {
+            guard providerKind != oldValue else { return }
+            config.providerKind = providerKind
+            // After switching the Provider, clamp the model back to that Provider's default (avoid sending a model id that doesn't belong to it).
+            // The ``model`` mirror's didSet writes this back to config and invalidates the model Picker's Observation so its selection updates instantly.
+            model = providerKind.defaultModel
+        }
+    }
+
+    /// The model id used for polish. Stored mirror, same rationale as ``triggerKey``.
     var model: String {
-        get { config.model }
-        set { config.model = newValue }
+        didSet {
+            guard model != oldValue else { return }
+            config.model = model
+        }
     }
 
     // MARK: Credentials (Keychain)
