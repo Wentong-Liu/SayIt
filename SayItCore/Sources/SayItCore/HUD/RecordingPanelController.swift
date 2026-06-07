@@ -2,52 +2,52 @@
 import AppKit
 import SwiftUI
 
-/// 听写状态 HUD 的控制器：管理一个 borderless、不抢焦点的悬浮面板，展示「聆听中 / 识别中 / 出错」。
+/// The controller for the dictation-status HUD: manages a borderless, non-focus-stealing floating panel, showing "listening / transcribing / error".
 ///
-/// 面板特性：
-/// - `NSPanel(.borderless, .nonactivatingPanel)`，level `.floating`，透明背景、无阴影边框
-///   （阴影由 SwiftUI 卡片自绘，透明外边距 `shadowPad` 留出渲染空间）。
-/// - `.nonactivatingPanel` 不抢前台焦点，HUD 弹出时用户仍在原 app 里输入。
-/// - 内容用 SwiftUI（`RecordingPanelView`）经 `NSHostingView` 包装。
+/// Panel characteristics:
+/// - `NSPanel(.borderless, .nonactivatingPanel)`, level `.floating`, transparent background, no shadow border
+///   (the shadow is self-drawn by the SwiftUI card, with the transparent outer margin `shadowPad` leaving rendering space).
+/// - `.nonactivatingPanel` does not steal foreground focus; when the HUD pops up the user is still typing in the original app.
+/// - The content uses SwiftUI (`RecordingPanelView`) wrapped via `NSHostingView`.
 ///
-/// 定位：默认屏幕中下方；调用方传入光标点时改为悬浮在光标上方。两者都经 `HUDPositioning.clamped`
-/// 夹紧进可见区。
+/// Positioning: defaults to the lower-center of the screen; when the caller passes a cursor point, it instead floats above the cursor. Both are clamped into the visible region
+/// via `HUDPositioning.clamped`.
 ///
-/// 生命周期 API：`show(state:near:)` / `update(state:)` / `update(level:)` / `hide()`。
-/// 传入 `.idle` 等价于 `hide()`（不展示）。
+/// Lifecycle API: `show(state:near:)` / `update(state:)` / `update(level:)` / `hide()`.
+/// Passing `.idle` is equivalent to `hide()` (does not display).
 @MainActor
 public final class RecordingPanelController {
-    /// 进程级共享实例（HUD 全局唯一）。
+    /// Process-level shared instance (the HUD is globally unique).
     public static let shared = RecordingPanelController()
 
-    /// 面板布局常量。
+    /// Panel layout constants.
     private enum Layout {
-        /// 屏幕中下方锚点：底边距可见区底部的间距。
+        /// Lower-center screen anchor: the spacing of the bottom edge from the bottom of the visible region.
         static let bottomMargin: CGFloat = 80
-        /// 光标上方锚点：HUD 底边与光标点的间距。
+        /// Above-cursor anchor: the spacing of the HUD's bottom edge from the cursor point.
         static let cursorGap: CGFloat = 24
-        /// 新建面板时的初始尺寸（建后即按内容 relayout）。
+        /// The initial size when creating a new panel (relaid out by content right after creation).
         static let initialSize = NSSize(width: 160, height: 56)
-        /// 取不到屏 visibleFrame 时的兜底矩形。
+        /// Fallback rect when the screen's visibleFrame cannot be obtained.
         static let fallbackVisibleFrame = NSRect(x: 0, y: 0, width: 1440, height: 900)
-        /// 取不到主屏高度时的兜底（CG/AppKit 全局 y 翻转基准）。
+        /// Fallback when the main screen height cannot be obtained (the CG/AppKit global y-flip baseline).
         static let fallbackPrimaryHeight: CGFloat = 1000
     }
 
     private var panel: NSPanel?
     private let model = RecordingPanelModel()
-    /// 本次展示采用的锚点：nil 表示屏幕中下方，非 nil 表示光标点（AppKit 全局坐标）。
+    /// The anchor used for this display: nil means lower-center of the screen, non-nil means a cursor point (AppKit global coordinates).
     private var anchorCursor: CGPoint?
 
     public init() {}
 
     // MARK: - Public API
 
-    /// 展示 HUD 并设置初始状态。
+    /// Shows the HUD and sets the initial state.
     /// - Parameters:
-    ///   - state: 初始状态；`.idle` 等价于 `hide()`（不展示）。
-    ///   - cursorPoint: 可选光标点（AppKit 全局坐标，左下原点）。非 nil 时 HUD 悬浮其上方，
-    ///     否则定位到屏幕中下方。
+    ///   - state: the initial state; `.idle` is equivalent to `hide()` (does not display).
+    ///   - cursorPoint: an optional cursor point (AppKit global coordinates, bottom-left origin). When non-nil the HUD floats above it,
+    ///     otherwise it is positioned at the lower-center of the screen.
     public func show(state: RecordingState, near cursorPoint: CGPoint? = nil) {
         guard state.isVisible else { hide(); return }
         anchorCursor = cursorPoint
@@ -59,27 +59,27 @@ public final class RecordingPanelController {
         panel?.orderFrontRegardless()
     }
 
-    /// 更新 HUD 状态（面板未展示时自动以中下方锚点弹出；`.idle` 则隐藏）。
+    /// Updates the HUD state (when the panel is not shown it automatically pops up with the lower-center anchor; `.idle` hides it).
     public func update(state: RecordingState) {
         guard state.isVisible else { hide(); return }
         model.state = state
         if panel == nil {
             show(state: state)
         } else {
-            // 状态变化可能改变文案宽度，重新测尺寸并保持锚点定位。
+            // A state change may change the copy width; re-measure the size and keep the anchor positioning.
             relayout()
         }
     }
 
-    /// 更新归一化输入电平（0...1），驱动聆听态波形指示。不触发重定位（仅刷新条高）。
+    /// Updates the normalized input level (0...1), driving the listening-state waveform indicator. Does not trigger repositioning (only refreshes bar heights).
     public func update(level: Double) {
         model.level = min(max(level, 0), 1)
     }
 
-    /// 当前归一化输入电平（0...1）。供编排层测试断言「每会话电平已转发到 HUD」。
+    /// The current normalized input level (0...1). For the orchestration-layer test to assert "each session's level has been forwarded to the HUD".
     public var currentLevel: Double { model.level }
 
-    /// 隐藏并销毁面板。
+    /// Hides and destroys the panel.
     public func hide() {
         model.state = .idle
         panel?.orderOut(nil)
@@ -98,17 +98,17 @@ public final class RecordingPanelController {
         p.backgroundColor = .clear
         p.hasShadow = false
         p.isMovable = false
-        p.ignoresMouseEvents = true          // HUD 仅展示，不拦截点击（用户照常操作下方 app）
+        p.ignoresMouseEvents = true          // The HUD only displays, it does not intercept clicks (the user operates the app below as usual)
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         p.contentView = NSHostingView(rootView: RecordingPanelView(model: model))
         panel = p
     }
 
-    /// 按当前内容测自然尺寸，设置面板尺寸并夹紧定位。
+    /// Measures the natural size for the current content, sets the panel size and clamps the position.
     private func relayout() {
         guard let panel else { return }
 
-        // 测自然尺寸（含 2*shadowPad 外边距）。
+        // Measure the natural size (including the 2*shadowPad outer margin).
         let measure = NSHostingView(rootView: RecordingPanelView(model: model))
         measure.layout()
         let natural = measure.fittingSize
@@ -131,7 +131,7 @@ public final class RecordingPanelController {
         panel.setFrameOrigin(origin)
     }
 
-    /// 锚点所在屏：有光标点时取包含该点的屏，否则取主屏。
+    /// The screen the anchor is on: when there is a cursor point, take the screen containing that point, otherwise the main screen.
     private func screenForAnchor() -> NSScreen? {
         guard let cursor = anchorCursor else { return NSScreen.main }
         return NSScreen.screens.first(where: { $0.frame.contains(cursor) }) ?? NSScreen.main

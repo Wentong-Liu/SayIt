@@ -4,7 +4,7 @@ import CoreGraphics
 
 final class HUDPositioningTests: XCTestCase {
     private let size = CGSize(width: 160, height: 56)
-    // 主屏可见区（左下原点；模拟去掉菜单栏后的区域）。
+    // The main screen's visible region (bottom-left origin; simulating the region after removing the menu bar).
     private let vf = CGRect(x: 0, y: 0, width: 1440, height: 860)
 
     func testBottomCenterIsHorizontallyCentered() {
@@ -14,7 +14,7 @@ final class HUDPositioningTests: XCTestCase {
     }
 
     func testBottomCenterRespectsVisibleFrameOffset() {
-        // 副屏：可见区原点带 x/y 偏移，锚点须相对该屏居中。
+        // Secondary screen: the visible region origin has an x/y offset, the anchor must be centered relative to that screen.
         let off = CGRect(x: 1440, y: 200, width: 1000, height: 600)
         let origin = HUDPositioning.bottomCenterOrigin(size: size, within: off, bottomMargin: 50)
         XCTAssertEqual(origin.x, off.minX + (off.width - size.width) / 2, accuracy: 0.001)
@@ -35,7 +35,7 @@ final class HUDPositioningTests: XCTestCase {
     }
 
     func testClampPullsBackFromRightAndTopOverflow() {
-        // 锚点把面板推出右上角，夹紧后须贴住右/上边界。
+        // The anchor pushes the panel out of the top-right corner; after clamping it must stick to the right/top boundary.
         let overflowing = CGPoint(x: vf.maxX + 50, y: vf.maxY + 50)
         let clamped = HUDPositioning.clamped(origin: overflowing, size: size, within: vf)
         XCTAssertEqual(clamped.x, vf.maxX - size.width, accuracy: 0.001)
@@ -50,7 +50,7 @@ final class HUDPositioningTests: XCTestCase {
     }
 
     func testClampWithOversizedHUDFallsBackToLowerBound() {
-        // HUD 比可见区还大：下界优先，至少左下角对齐可见区左下角。
+        // The HUD is larger than the visible region: the lower bound takes priority, at least the bottom-left corner aligns with the visible region's bottom-left.
         let tiny = CGRect(x: 10, y: 10, width: 100, height: 30)
         let clamped = HUDPositioning.clamped(origin: CGPoint(x: 500, y: 500), size: size, within: tiny)
         XCTAssertEqual(clamped.x, tiny.minX, accuracy: 0.001)
@@ -59,8 +59,8 @@ final class HUDPositioningTests: XCTestCase {
 }
 
 final class RecordingStateTests: XCTestCase {
-    /// 固定态文案自 T24 起本地化（en + zh-Hans），故按受支持语言断言「属于该语言集」，
-    /// 不再硬编码单一中文，以免随测试进程 locale 漂移而误红。同时确保不是未翻译的键名。
+    /// Fixed-state copy has been localized since T24 (en + zh-Hans), so it asserts "belongs to that language's set" per the supported language,
+    /// no longer hardcoding a single Chinese string, to avoid false reds as the test process locale drifts. Also ensures it is not an untranslated key name.
     func testDisplayTextLocalizedToSupportedLanguage() {
         let listening = ["Listening…", "聆听中…"]
         let transcribing = ["Transcribing…", "识别中…"]
@@ -74,13 +74,13 @@ final class RecordingStateTests: XCTestCase {
                       "got \(RecordingState.idle.displayText)")
     }
 
-    /// 调用方传入的具体文案原样保留（与 locale 无关）。
+    /// The specific copy passed in by the caller is preserved as-is (independent of locale).
     func testDisplayTextPassesThroughProvidedMessage() {
         XCTAssertEqual(RecordingState.error("网络异常").displayText, "网络异常")
         XCTAssertEqual(RecordingState.info("已粘贴到当前窗口").displayText, "已粘贴到当前窗口")
     }
 
-    /// 「本地模型未就绪」提示已本地化（en + zh-Hans），按受支持语言集断言，且不得回退成原始 key。
+    /// The "local model not ready" hint is localized (en + zh-Hans), asserted per the supported language set, and must not fall back to the original key.
     func testModelNotReadyMessageLocalizedToSupportedLanguage() {
         let supported = [
             "Local model still downloading — please wait or switch to cloud",
@@ -91,7 +91,7 @@ final class RecordingStateTests: XCTestCase {
         XCTAssertTrue(supported.contains(message), "got \(message)")
     }
 
-    /// 「比往常要长」提示已本地化（en + zh-Hans），按受支持语言集断言，且不得回退成原始 key。
+    /// The "taking longer than usual" hint is localized (en + zh-Hans), asserted per the supported language set, and must not fall back to the original key.
     func testTakingLongerMessageLocalizedToSupportedLanguage() {
         let supported = [
             "Taking longer than usual…",
@@ -104,7 +104,7 @@ final class RecordingStateTests: XCTestCase {
 
     func testErrorTextTrimsAndFallsBack() {
         XCTAssertEqual(RecordingState.error("  超时  ").displayText, "超时")
-        // 空消息回落到本地化通用错误文案（en 或 zh-Hans 之一）。
+        // An empty message falls back to the localized generic error copy (one of en or zh-Hans).
         let errorFallbacks = ["Something went wrong", "出错了"]
         XCTAssertTrue(errorFallbacks.contains(RecordingState.error("   ").displayText))
         XCTAssertTrue(errorFallbacks.contains(RecordingState.error("").displayText))

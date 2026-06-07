@@ -3,20 +3,20 @@ import Foundation
 import CoreGraphics
 #endif
 
-/// 听写 HUD 的纯定位逻辑（与 AppKit 解耦，便于单测）。
+/// Pure positioning logic for the dictation HUD (decoupled from AppKit, for easy unit testing).
 ///
-/// HUD 默认贴在屏幕中下方；当提供光标点时，改为悬浮在光标上方。两种锚点最终都会被
-/// `clamped(_:within:)` 夹紧进可见区，保证面板完整可见、不溢出屏幕边缘。
+/// The HUD defaults to the lower-center of the screen; when a cursor point is provided, it instead floats above the cursor. Both anchors are finally
+/// clamped into the visible region by `clamped(_:within:)`, guaranteeing the panel is fully visible and does not overflow the screen edge.
 ///
-/// 坐标系约定：全部使用 AppKit 全局坐标（原点在主屏左下、y 向上），与 `NSScreen.visibleFrame`
-/// / `NSWindow.setFrameOrigin` 同源；调用方负责把 AX/CG 的左上原点坐标在传入前翻转好。
+/// Coordinate-system convention: everything uses AppKit global coordinates (origin at the main screen's bottom-left, y upward), consistent with `NSScreen.visibleFrame`
+/// / `NSWindow.setFrameOrigin`; the caller is responsible for flipping AX/CG top-left-origin coordinates before passing them in.
 public enum HUDPositioning {
-    /// 屏幕中下方锚点：水平居中，底边距可见区底部 `bottomMargin`。
+    /// Lower-center screen anchor: horizontally centered, the bottom edge `bottomMargin` from the bottom of the visible region.
     /// - Parameters:
-    ///   - size: HUD 窗口尺寸（点）。
-    ///   - vf: 目标屏可见区（AppKit 全局坐标，左下原点）。
-    ///   - bottomMargin: HUD 底边与可见区底边的间距。
-    /// - Returns: 未夹紧的 HUD 左下角原点（AppKit 全局坐标）。
+    ///   - size: the HUD window size (points).
+    ///   - vf: the target screen's visible region (AppKit global coordinates, bottom-left origin).
+    ///   - bottomMargin: the spacing of the HUD's bottom edge from the bottom edge of the visible region.
+    /// - Returns: the unclamped bottom-left origin of the HUD (AppKit global coordinates).
     public static func bottomCenterOrigin(size: CGSize, within vf: CGRect,
                                           bottomMargin: CGFloat) -> CGPoint {
         let x = vf.minX + (vf.width - size.width) / 2
@@ -24,12 +24,12 @@ public enum HUDPositioning {
         return CGPoint(x: x, y: y)
     }
 
-    /// 光标上方锚点：水平以光标为中心，底边距光标点上方 `gap`。
+    /// Above-cursor anchor: horizontally centered on the cursor, the bottom edge `gap` above the cursor point.
     /// - Parameters:
-    ///   - cursor: 光标点（AppKit 全局坐标，左下原点）。
-    ///   - size: HUD 窗口尺寸（点）。
-    ///   - gap: HUD 底边与光标点的垂直间距。
-    /// - Returns: 未夹紧的 HUD 左下角原点（AppKit 全局坐标）。
+    ///   - cursor: the cursor point (AppKit global coordinates, bottom-left origin).
+    ///   - size: the HUD window size (points).
+    ///   - gap: the vertical spacing of the HUD's bottom edge from the cursor point.
+    /// - Returns: the unclamped bottom-left origin of the HUD (AppKit global coordinates).
     public static func aboveCursorOrigin(cursor: CGPoint, size: CGSize,
                                          gap: CGFloat) -> CGPoint {
         let x = cursor.x - size.width / 2
@@ -37,14 +37,14 @@ public enum HUDPositioning {
         return CGPoint(x: x, y: y)
     }
 
-    /// 把任意锚点夹紧进可见区 `vf`，保证 HUD 完整可见。
-    /// 夹紧规则：x∈[vf.minX, vf.maxX - size.width]、y∈[vf.minY, vf.maxY - size.height]。
-    /// 当 HUD 比可见区还大（极端情形）时，下界优先，至少左下角对齐可见区左下角。
+    /// Clamps an arbitrary anchor into the visible region `vf`, guaranteeing the HUD is fully visible.
+    /// Clamping rule: x in [vf.minX, vf.maxX - size.width], y in [vf.minY, vf.maxY - size.height].
+    /// When the HUD is larger than the visible region (extreme case), the lower bound takes priority, so at least the bottom-left corner aligns with the visible region's bottom-left.
     /// - Parameters:
-    ///   - origin: 未夹紧的 HUD 左下角原点。
-    ///   - size: HUD 窗口尺寸（点）。
-    ///   - vf: 目标屏可见区（visibleFrame）。
-    /// - Returns: 夹紧后的 HUD 左下角原点。
+    ///   - origin: the unclamped bottom-left origin of the HUD.
+    ///   - size: the HUD window size (points).
+    ///   - vf: the target screen's visible region (visibleFrame).
+    /// - Returns: the clamped bottom-left origin of the HUD.
     public static func clamped(origin: CGPoint, size: CGSize, within vf: CGRect) -> CGPoint {
         let maxX = max(vf.minX, vf.maxX - size.width)
         let maxY = max(vf.minY, vf.maxY - size.height)

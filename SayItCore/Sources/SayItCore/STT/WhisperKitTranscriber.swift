@@ -1,61 +1,61 @@
 import Foundation
 import WhisperKit
 
-// 说明：WhisperKit 自身也定义了一个名为 `TranscriptionResult` 的类，与本模块
-// （SayItCore）的同名结构体冲突；而本模块内还存在一个枚举 `SayItCore`（占位命名空间）
-// 又屏蔽了模块名，使得既无法用 `WhisperKit.` 也无法用 `SayItCore.` 前缀消歧。
-// 因此本文件不直接以名字引用 WhisperKit 的 `TranscriptionResult`：
-// 由类型推断接住 `engine.transcribe(...)` 的返回值，映射逻辑在闭包里完成，
-// 这样文件内出现的裸 `TranscriptionResult` 始终指本模块的类型。
+// Note: WhisperKit itself also defines a class named `TranscriptionResult`, conflicting with this module's
+// (SayItCore) struct of the same name; and within this module there is also an enum `SayItCore` (a placeholder namespace)
+// that shadows the module name, making it impossible to disambiguate with either a `WhisperKit.` or a `SayItCore.` prefix.
+// So this file does not reference WhisperKit's `TranscriptionResult` by name directly:
+// type inference captures the return value of `engine.transcribe(...)`, the mapping logic is done inside a closure,
+// so that any bare `TranscriptionResult` appearing in this file always refers to this module's type.
 
-/// 基于 WhisperKit（Core ML）的本地语音转写实现。
+/// A local speech transcription implementation based on WhisperKit (Core ML).
 ///
-/// 离线、隐私优先：模型在运行期首次使用时从 HuggingFace 拉取并缓存到本地，
-/// 之后纯本地推理。模型下载属于运行期行为，不在构建/测试阶段发生。
+/// Offline, privacy-first: the model is fetched from HuggingFace on first use at runtime and cached locally,
+/// then inference is purely local. The model download is a runtime behavior, not happening during the build/test stage.
 ///
-/// 典型用法：
+/// Typical usage:
 /// ```swift
 /// let stt = WhisperKitTranscriber(model: "large-v3-turbo")
-/// try await stt.preload()                       // 可选：提前下载并加载模型
+/// try await stt.preload()                       // optional: download and load the model ahead of time
 /// let result = try await stt.transcribe(samples, sampleRate: 16_000, language: "en")
 /// ```
 ///
-/// 实现为 `actor`，保证对底层 ``WhisperKit`` 引擎的串行访问，因而是 `Sendable`。
+/// Implemented as an `actor`, guaranteeing serial access to the underlying ``WhisperKit`` engine, so it is `Sendable`.
 public actor WhisperKitTranscriber: Transcriber {
-    /// 期望的输入采样率（Hz）。WhisperKit 要求 16kHz 单声道 PCM。
+    /// The expected input sample rate (Hz). WhisperKit requires 16kHz mono PCM.
     public static let requiredSampleRate: Double = 16_000
 
-    /// 模型标识（如 `"large-v3-turbo"`、`"base"`、`"small.en"`）。
+    /// The model identifier (e.g. `"large-v3-turbo"`, `"base"`, `"small.en"`).
     public nonisolated let model: String
 
-    /// 是否在加载阶段预热模型（降低首帧延迟，代价是峰值内存更高、加载更慢）。
+    /// Whether to prewarm the model during loading (reduces first-frame latency, at the cost of higher peak memory and slower loading).
     private let prewarm: Bool
 
-    /// 已加载的 WhisperKit 引擎；首次 ``preload()`` 或 ``transcribe(_:sampleRate:language:)`` 时惰性构建。
+    /// The loaded WhisperKit engine; lazily built on the first ``preload()`` or ``transcribe(_:sampleRate:language:)``.
     private var engine: WhisperKit?
 
-    /// 创建一个本地 WhisperKit 转写器。
+    /// Creates a local WhisperKit transcriber.
     ///
     /// - Parameters:
-    ///   - model: 模型标识。缺省 `"large-v3-turbo"`，与 ``AppConfig`` 的默认本地模型一致。
-    ///   - prewarm: 是否预热模型以降低首帧延迟。缺省 `false`。
+    ///   - model: the model identifier. Defaults to `"large-v3-turbo"`, consistent with ``AppConfig``'s default local model.
+    ///   - prewarm: whether to prewarm the model to reduce first-frame latency. Defaults to `false`.
     public init(model: String = "large-v3-turbo", prewarm: Bool = false) {
         self.model = model
         self.prewarm = prewarm
     }
 
-    /// 确保模型已下载并加载就绪。
+    /// Ensures the model is downloaded and loaded ready.
     ///
-    /// 首次调用会触发模型从 HuggingFace 下载（如本地无缓存），随后加载进内存；
-    /// 重复调用是幂等的。建议在用户首次录音前的空闲时机调用以降低首帧延迟。
+    /// The first call triggers a model download from HuggingFace (if not cached locally), then loads it into memory;
+    /// repeated calls are idempotent. Recommended to call during idle time before the user's first recording to reduce first-frame latency.
     ///
-    /// - Throws: 模型下载/加载失败时抛出 ``STTError/transcriptionFailed(reason:)``
-    ///   （``loadedEngine()`` 把底层失败统一映射为该 case，不会抛 `notReady`）。
+    /// - Throws: ``STTError/transcriptionFailed(reason:)`` on model download/load failure
+    ///   (``loadedEngine()`` uniformly maps the underlying failure to that case, never throwing `notReady`).
     public func preload() async throws {
         _ = try await loadedEngine()
     }
 
-    /// 当前模型是否已加载就绪。
+    /// Whether the current model is loaded ready.
     public var isReady: Bool {
         engine != nil
     }
@@ -75,12 +75,12 @@ public actor WhisperKitTranscriber: Transcriber {
         let engine = try await loadedEngine()
 
         let options = Self.makeDecodingOptions(language: language)
-        // 不显式标注返回类型，让推断接住 WhisperKit 的 `[TranscriptionResult]`，
-        // 随即在闭包内把每个分段抽取为本模块无关的原始元组，避免命名歧义。
-        // `engine.transcribe(...)` 抛的是 WhisperKit 自己的错误类型，永远不是本模块的
-        // ``STTError``，因此这里只需一个把任意底层失败统一映射为
-        // ``STTError/transcriptionFailed(reason:)`` 的 catch（不再保留命不中的
-        // `catch let error as STTError` 死分支）。
+        // Do not explicitly annotate the return type, let inference capture WhisperKit's `[TranscriptionResult]`,
+        // then within the closure extract each segment into a module-agnostic raw tuple, to avoid the naming ambiguity.
+        // `engine.transcribe(...)` throws WhisperKit's own error type, never this module's
+        // ``STTError``, so here we only need one catch that uniformly maps any underlying failure to
+        // ``STTError/transcriptionFailed(reason:)`` (no longer keeping the never-hit dead branch
+        // `catch let error as STTError`).
         do {
             let wkResults = try await engine.transcribe(audioArray: audio, decodeOptions: options)
             let rawSegments: [RawSegment] = wkResults.flatMap { result in
@@ -95,17 +95,17 @@ public actor WhisperKitTranscriber: Transcriber {
         }
     }
 
-    // MARK: - 内部
+    // MARK: - Internal
 
-    /// 构造一次转写所用的 ``DecodingOptions``。
+    /// Constructs the ``DecodingOptions`` used for one transcription.
     ///
-    /// 两条不可动摇的约束（修复「中文被转写/翻译成英文」的回归）：
-    /// - `task` 恒为 `.transcribe`：始终把语音转写为「其本来的语言」，绝不 `.translate`（翻成英文）。
-    /// - 当未显式指定语言（`language == nil`）时开启 `detectLanguage`，让 WhisperKit 先检测语种再解码。
-    ///   否则 WhisperKit 在 `language == nil` 且 `detectLanguage` 关闭时会回落到默认语言码 `"en"`，
-    ///   把中文等非英语语音按英文解码（实际表现为被「翻译」成英文）。
+    /// Two unshakable constraints (fixing the regression of "Chinese transcribed/translated into English"):
+    /// - `task` is always `.transcribe`: always transcribes speech into "its own language", never `.translate` (translating into English).
+    /// - When no language is explicitly specified (`language == nil`), enable `detectLanguage`, letting WhisperKit detect the language before decoding.
+    ///   Otherwise, with `language == nil` and `detectLanguage` off, WhisperKit falls back to the default language code `"en"`,
+    ///   decoding non-English speech such as Chinese as English (manifesting as being "translated" into English).
     ///
-    /// 该函数为纯函数、不触发任何模型下载/加载，可独立单测。
+    /// This function is pure, triggers no model download/load, and can be unit-tested standalone.
     static func makeDecodingOptions(language: String?) -> DecodingOptions {
         DecodingOptions(
             task: .transcribe,
@@ -114,13 +114,13 @@ public actor WhisperKitTranscriber: Transcriber {
         )
     }
 
-    /// 返回已加载的引擎，必要时惰性构建（含下载+加载）。
+    /// Returns the loaded engine, lazily building it when necessary (including download+load).
     private func loadedEngine() async throws -> WhisperKit {
         if let engine {
             return engine
         }
-        // downloadBase 显式取自 ``ModelManager/downloadBase`` 这一单一真相源：
-        // 与 ``ModelManager/download(model:)`` 落盘的根目录完全一致，确保「下了就用得上」。
+        // downloadBase is taken explicitly from the single source of truth ``ModelManager/downloadBase``:
+        // completely consistent with the root directory ``ModelManager/download(model:)`` writes to, ensuring "downloaded means usable".
         let config = WhisperKitConfig(
             model: ModelManager.variant(for: model),
             downloadBase: ModelManager.downloadBase,
@@ -139,20 +139,20 @@ public actor WhisperKitTranscriber: Transcriber {
         }
     }
 
-    /// 与 WhisperKit 解耦的中间分段表示，便于在不引用 WhisperKit 类型的情况下做纯映射与单测。
+    /// An intermediate segment representation decoupled from WhisperKit, for pure mapping and unit testing without referencing WhisperKit types.
     struct RawSegment: Equatable, Sendable {
         let text: String
         let start: Double
         let end: Double
     }
 
-    /// 把一次转写的拼接文本与原始分段映射为本模块的 ``TranscriptionResult``。
+    /// Maps one transcription's concatenated text and raw segments into this module's ``TranscriptionResult``.
     ///
-    /// WhisperKit 可能因分块（chunking）返回多个结果片段，调用方已按顺序拼接文本并展开分段。
-    /// 该函数为纯函数，不依赖模型，可独立单测。
+    /// WhisperKit may return multiple result fragments due to chunking; the caller has already concatenated the text in order and expanded the segments.
+    /// This function is pure, does not depend on the model, and can be unit-tested standalone.
     static func mapResult(joinedText: String, segments rawSegments: [RawSegment]) -> TranscriptionResult {
-        // 先去首尾空白，再把内部连续空白折叠成单个空格：分块拼接时（` ` 分隔）各段自带的
-        // 首尾空格容易拼出双空格，折叠一次可避免最终文本出现 "a  b" 这类伪影。
+        // First trim leading/trailing whitespace, then collapse consecutive internal whitespace into a single space: during chunked concatenation (` `-separated), each segment's own
+        // leading/trailing spaces easily concatenate into double spaces; collapsing once avoids artifacts like "a  b" in the final text.
         let text = Self.collapseWhitespace(joinedText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines))
 
         let segments = rawSegments.map { raw in
@@ -163,13 +163,13 @@ public actor WhisperKitTranscriber: Transcriber {
             )
         }
 
-        // 以最后一个分段的结束时间作为整体时长估计；无分段时为 nil。
+        // Use the last segment's end time as the overall duration estimate; nil when there are no segments.
         let duration: Double? = segments.last.map { $0.end }
 
         return TranscriptionResult(text: text, segments: segments, duration: duration)
     }
 
-    /// 把字符串中任意连续的空白（空格/制表/换行）折叠为单个空格。首尾空白应在调用前已去除。
+    /// Collapses any consecutive whitespace (space/tab/newline) in a string into a single space. Leading/trailing whitespace should already be removed before calling.
     static func collapseWhitespace(_ string: String) -> String {
         string
             .split(whereSeparator: { $0.isWhitespace })

@@ -1,10 +1,10 @@
 import SwiftUI
 import SayItCore
 
-/// 「权限」分区：展示麦克风与辅助功能授权状态，并提供「去系统设置」引导。
+/// The "Permissions" section: shows microphone and accessibility authorization status, and provides a "go to System Settings" guide.
 ///
-/// 状态查询复用 `SayItCore` 已有助手（``MicrophonePermission`` / ``HotkeyManager/isProcessTrusted``），
-/// 不在此处新造权限判定逻辑。
+/// State queries reuse existing helpers in `SayItCore` (``MicrophonePermission`` / ``HotkeyManager/isProcessTrusted``),
+/// without creating new permission-decision logic here.
 struct PermissionsSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
 
@@ -58,7 +58,7 @@ struct PermissionsSettingsView: View {
         }
     }
 
-    /// 未决时按钮发起系统弹窗；否则引导去系统设置。
+    /// When undetermined the button initiates the system prompt; otherwise it guides to System Settings.
     private var microphoneActionTitle: String {
         viewModel.microphoneStatus == .notDetermined
             ? String(localized: "perm.requestAccess", defaultValue: "Request Access")

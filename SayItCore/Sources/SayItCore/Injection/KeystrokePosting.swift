@@ -1,23 +1,23 @@
 import AppKit
 import ApplicationServices
 
-/// 模拟键盘事件的最小抽象，便于单测时注入桩、不真正向系统发键。
+/// A minimal abstraction for simulating keyboard events, to allow injecting stubs in unit tests without sending real keys to the system.
 @MainActor
 public protocol KeystrokePosting: Sendable {
-    /// 模拟 ⌘V 粘贴。返回 keyDown/keyUp 两个 CGEvent 是否都成功创建并投递。
+    /// Simulates a Cmd-V paste. Returns whether both the keyDown/keyUp CGEvents were successfully created and delivered.
     func postPaste() -> Bool
 }
 
-/// 基于 CGEvent 的实现。参考 ZhiYu InserterProbe 的发键/键码/cghidEventTap 模式。
+/// Implementation based on CGEvent. Refers to ZhiYu's InserterProbe key-sending/keycode/cghidEventTap pattern.
 @MainActor
 public final class CGEventKeystrokePoster: KeystrokePosting {
-    /// 虚拟键码（macOS ANSI 键盘）：V。
+    /// Virtual keycode (macOS ANSI keyboard): V.
     private static let keyCodeV: CGKeyCode = 9
 
     public init() {}
 
-    /// 投递一对带 ⌘ flag 的 V keyDown/keyUp，模拟粘贴。
-    /// CGEventSource / down / up 任一为 nil（系统未能建事件）时返回 false，粘贴未真正发出。
+    /// Delivers a pair of V keyDown/keyUp with the Cmd flag set, simulating a paste.
+    /// Returns false if any of CGEventSource / down / up is nil (the system failed to build the event), meaning the paste was not actually sent.
     public func postPaste() -> Bool {
         let src = CGEventSource(stateID: .combinedSessionState)
         let down = CGEvent(keyboardEventSource: src, virtualKey: Self.keyCodeV, keyDown: true)

@@ -1,8 +1,8 @@
 import Foundation
 @testable import SayItCore
 
-/// 可控的假录音器：注入「停止时返回的样本」或「启动时抛错」，并记录调用次数。
-/// 实现为 `actor`（与真实 `AudioRecorder` 一致），在不触碰麦克风硬件下走通录音相关分支。
+/// A controllable fake recorder: injects "the samples returned on stop" or "an error thrown on start", and records the call counts.
+/// Implemented as an `actor` (consistent with the real `AudioRecorder`), exercising recording-related branches without touching microphone hardware.
 actor FakeAudioRecorder: AudioRecording {
     enum StartBehavior: Sendable { case succeeds; case throwsDenied }
 
@@ -11,16 +11,16 @@ actor FakeAudioRecorder: AudioRecording {
 
     private(set) var startCount = 0
     private(set) var stopCount = 0
-    /// 最近一次 `start(deviceUID:)` 收到的设备 UID（供测试断言端到端听写带上了持久化的麦克风选择）。
+    /// The device UID received by the most recent `start(deviceUID:)` (for tests to assert that end-to-end dictation carried the persisted microphone selection).
     private(set) var lastStartDeviceUID: String?
     private var recording = false
 
-    /// 每会话重建的电平流持有器（镜像真实 `AudioRecorder`：每次 `start()` 换一对全新的
-    /// single-consumer 流）。这样测试才能复现真实生命周期——编排层若仍在启动前一次性捕获旧流，
-    /// 本会话 `start()` 重建后 `emitLevel` 的值就到不了消费者，断言失败。
+    /// The per-session rebuilt level stream holder (mirroring the real `AudioRecorder`: each `start()` swaps in a brand-new pair of
+    /// single-consumer streams). This lets the test reproduce the real lifecycle -- if the orchestration layer still captures the old stream once before start,
+    /// the value of `emitLevel` after this session's `start()` rebuild would not reach the consumer, and the assertion would fail.
     private nonisolated let levelStream = FakeLevelStreamHolder()
 
-    /// 实时电平流：读取当前会话的流（须在 `start()` 之后读取才拿到本会话的新流）。
+    /// The live level stream: reads the current session's stream (must be read after `start()` to get this session's new stream).
     nonisolated var levels: AsyncStream<Double> { levelStream.currentStream }
 
     init(samples: [Float] = [0.1, 0.2, 0.3], startBehavior: StartBehavior = .succeeds) {
@@ -32,22 +32,22 @@ actor FakeAudioRecorder: AudioRecording {
         try await start(deviceUID: nil)
     }
 
-    /// 与 `start()` 共用同一套录音逻辑（仅忽略设备选择，假实现不接真实硬件）。
-    /// 让本 fake 重新满足 `AudioRecording`（协议要求 `start(deviceUID:)`）。
+    /// Shares the same recording logic as `start()` (only ignoring the device selection, the fake implementation does not connect to real hardware).
+    /// Lets this fake re-satisfy `AudioRecording` (the protocol requires `start(deviceUID:)`).
     func start(deviceUID: String?) async throws {
         startCount += 1
         lastStartDeviceUID = deviceUID
         switch startBehavior {
         case .succeeds:
             recording = true
-            // 镜像真实录音器：每次 start 重建本会话的电平流。
+            // Mirror the real recorder: each start rebuilds this session's level stream.
             levelStream.beginSession()
         case .throwsDenied:
             throw AudioRecordingError.microphonePermissionDenied
         }
     }
 
-    /// 测试用：把一个归一化电平投递进当前会话的流（模拟真实 tap 的 yield）。
+    /// For testing: deliver a normalized level into the current session's stream (simulating a real tap's yield).
     nonisolated func emitLevel(_ level: Double) {
         levelStream.currentContinuation.yield(level)
     }
@@ -64,8 +64,8 @@ actor FakeAudioRecorder: AudioRecording {
     var isRecording: Bool { recording }
 }
 
-/// `FakeAudioRecorder` 的「每会话可重建」电平流持有器（镜像 `AudioRecorder.LevelStreamHolder`）。
-/// 用锁守护一对 `AsyncStream` + `Continuation`，供 `nonisolated` 上下文安全读写。
+/// The "per-session rebuildable" level stream holder of `FakeAudioRecorder` (mirroring `AudioRecorder.LevelStreamHolder`).
+/// Guards a pair of `AsyncStream` + `Continuation` with a lock, for safe read/write from a `nonisolated` context.
 private final class FakeLevelStreamHolder: @unchecked Sendable {
     private struct Pair {
         var stream: AsyncStream<Double>
@@ -91,14 +91,14 @@ private final class FakeLevelStreamHolder: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }; return pair.continuation
     }
 
-    /// 开始新会话：结束旧流并换上一对全新的流。
+    /// Start a new session: end the old stream and swap in a brand-new pair of streams.
     func beginSession() {
         lock.lock(); defer { lock.unlock() }
         pair.continuation.finish()
         pair = Self.makePair()
     }
 
-    /// 结束当前会话：归零后结束流。
+    /// End the current session: zero out then end the stream.
     func endSession() {
         lock.lock(); defer { lock.unlock() }
         pair.continuation.yield(0)
@@ -106,7 +106,7 @@ private final class FakeLevelStreamHolder: @unchecked Sendable {
     }
 }
 
-/// 可控的假注入器：记录被注入的文本，并按预设返回成功/失败。
+/// A controllable fake injector: records the injected text and returns success/failure per the preset.
 final class FakeTextInjector: TextInjecting, @unchecked Sendable {
     private let lock = NSLock()
     private let result: InjectionResult

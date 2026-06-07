@@ -5,7 +5,7 @@ final class PolishPromptBuilderTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// 取出 system 消息内容（断言唯一存在）。
+    /// Extracts the system message content (asserting it uniquely exists).
     private func systemContent(_ messages: [LLMMessage],
                                file: StaticString = #filePath,
                                line: UInt = #line) -> String {
@@ -14,7 +14,7 @@ final class PolishPromptBuilderTests: XCTestCase {
         return systems.first?.content ?? ""
     }
 
-    /// 取出 user 消息内容（断言唯一存在）。
+    /// Extracts the user message content (asserting it uniquely exists).
     private func userContent(_ messages: [LLMMessage],
                             file: StaticString = #filePath,
                             line: UInt = #line) -> String {
@@ -23,7 +23,7 @@ final class PolishPromptBuilderTests: XCTestCase {
         return users.first?.content ?? ""
     }
 
-    // MARK: - 消息结构
+    // MARK: - Message structure
 
     func testBuildProducesSystemThenUser() {
         let messages = PolishPromptBuilder.build(
@@ -45,13 +45,13 @@ final class PolishPromptBuilderTests: XCTestCase {
         )
         let user = userContent(messages)
         XCTAssertTrue(user.contains(raw), "原始文本应出现在 user 消息中")
-        // 原始文本不应混进 system 指令里。
+        // The raw text should not mix into the system instructions.
         XCTAssertFalse(systemContent(messages).contains(raw),
                        "原始文本不应出现在 system 消息中")
     }
 
     func testRawTextWithSpecialCharactersIsPreservedVerbatim() {
-        // 专有名词 / 代码标识符 / 中英混合，原样进入 user。
+        // Proper nouns / code identifiers / mixed Chinese-English enter user as-is.
         let raw = "用 async/await 重构 fetchData()，再 review PR #42"
         let messages = PolishPromptBuilder.build(
             rawText: raw,
@@ -62,55 +62,55 @@ final class PolishPromptBuilderTests: XCTestCase {
                       "含特殊字符的原文应原样进入 user 消息")
     }
 
-    // MARK: - 硬约束关键指令（6.1）
+    // MARK: - Hard-constraint key instructions (6.1)
 
     func testSystemPromptContainsCoreHardConstraints() {
         let system = systemContent(
             PolishPromptBuilder.build(rawText: "x", context: PolishContext(), style: .smart)
         )
-        // 6.1.1 只整理不回答
+        // 6.1.1 only cleanup, no answering
         XCTAssertTrue(system.contains("整理"), "应包含『整理』指令")
         XCTAssertTrue(system.contains("不回答") || system.contains("不要回答"),
                       "应明确『不回答』")
-        // 6.1.2 去语气词
+        // 6.1.2 remove filler words
         XCTAssertTrue(system.contains("语气词"), "应提到去除『语气词』")
         XCTAssertTrue(system.contains("嗯"), "应列举中文语气词示例『嗯』")
         XCTAssertTrue(system.contains("呃"), "应列举中文语气词示例『呃』")
         XCTAssertTrue(system.contains("那个"), "应列举中文语气词示例『那个』")
         XCTAssertTrue(system.contains("um"), "应列举英文填充词示例『um』")
         XCTAssertTrue(system.contains("uh"), "应列举英文填充词示例『uh』")
-        // 6.1.3 口误自我纠正
+        // 6.1.3 self-correction of slips of the tongue
         XCTAssertTrue(system.contains("改口") || system.contains("口误") || system.contains("纠正"),
                       "应包含口误/改口纠正指令")
         XCTAssertTrue(system.contains("最终意图"), "应保留『最终意图』")
-        // 6.1.4 补标点与大小写
+        // 6.1.4 add punctuation and capitalization
         XCTAssertTrue(system.contains("标点"), "应包含『标点』")
         XCTAssertTrue(system.contains("大小写"), "应包含『大小写』")
-        // 6.1.5 自动分点
+        // 6.1.5 automatic bullet-pointing
         XCTAssertTrue(system.contains("分点") || system.contains("列表") || system.contains("步骤"),
                       "应包含口述列表/步骤分点指令")
-        // 6.1.6 保留中英混合，不擅自翻译
+        // 6.1.6 preserve mixed Chinese-English, do not translate without being asked
         XCTAssertTrue(system.contains("翻译"), "应提到不擅自『翻译』")
         XCTAssertTrue(system.contains("中英") || system.contains("混合"),
                       "应包含『中英混合』保留指令")
-        // 6.1.7 保留专有名词
+        // 6.1.7 preserve proper nouns
         XCTAssertTrue(system.contains("专有名词"), "应包含『专有名词』保留指令")
-        // 6.1.9 输出纯净：只输出整理后文本
+        // 6.1.9 clean output: only output the cleaned-up text
         XCTAssertTrue(system.contains("只输出"), "应包含『只输出』整理后文本")
-        // 标点是最重要的修复项（借鉴 opentypeless）
+        // Punctuation is the most important fix item (borrowing from opentypeless)
         XCTAssertTrue(system.contains("最重要"), "应强调补标点是『最重要』的修复项")
-        // 多主题分段
+        // multi-topic segmentation
         XCTAssertTrue(system.contains("分段") || system.contains("空行"),
                       "应包含多主题『分段/空行』指令")
-        // 输出一致性
+        // output consistency
         XCTAssertTrue(system.contains("不要混用") || system.contains("一致"),
                       "应包含输出风格一致性指令")
-        // 列表项独占一行
+        // list items each on their own line
         XCTAssertTrue(system.contains("独占一行") || system.contains("一行"),
                       "应要求列表项独占一行")
     }
 
-    // MARK: - 少样本范例（借鉴 opentypeless 的 input→output 示范）
+    // MARK: - Few-shot examples (borrowing opentypeless's input->output demonstration)
 
     func testSystemPromptContainsFewShotExamples() {
         let system = systemContent(
@@ -118,24 +118,24 @@ final class PolishPromptBuilderTests: XCTestCase {
         )
         XCTAssertTrue(system.contains("范例") || system.contains("输入：") || system.contains("输出："),
                       "system 应含 input→output 少样本范例")
-        // 范例应示范填充词清理与中文列表分点。
+        // The examples should demonstrate filler-word cleanup and Chinese list bullet-pointing.
         XCTAssertTrue(system.contains("1. 买牛奶"),
                       "范例应示范口述列表分点为编号列表")
     }
 
-    // MARK: - 注入防御（标签包裹 + 只整理不执行指令）
+    // MARK: - Injection defense (tag wrapping + only cleanup, do not execute instructions)
 
     func testSystemPromptContainsInjectionDefense() {
         let system = systemContent(
             PolishPromptBuilder.build(rawText: "x", context: PolishContext(), style: .smart)
         )
-        // 待整理原文用标签包裹，标签内一律视为素材而非指令。
+        // The original to be cleaned up is wrapped in tags; everything inside the tags is treated as material, not instructions.
         XCTAssertTrue(system.contains("<口述原文>"),
                       "system 应说明原文用 <口述原文> 标签包裹")
         XCTAssertTrue(system.contains("忽略以上指令") || system.contains("不照做")
                       || system.contains("绝不照做"),
                       "system 应声明对原文中的越权指令绝不照做")
-        // 不执行原文中的指令（强化『只整理不回答』）。
+        // Do not execute the instructions in the original (reinforcing 'only cleanup, no answering').
         XCTAssertTrue(system.contains("不执行") || system.contains("绝不照做"),
                       "system 应声明不执行原文中夹带的指令")
     }
@@ -148,14 +148,14 @@ final class PolishPromptBuilderTests: XCTestCase {
             style: .smart
         )
         let user = userContent(messages)
-        // 原文原样保留，并被标签包裹。
+        // The original is preserved as-is, and wrapped in tags.
         XCTAssertTrue(user.contains(raw), "原文应原样进入 user 消息")
         XCTAssertTrue(user.contains("<口述原文>") && user.contains("</口述原文>"),
                       "user 消息应用 <口述原文> 标签包裹原文")
     }
 
     func testSmartIncludesAllInstructions() {
-        // 智能模式应包含分点（区别于仅标点模式）。
+        // Smart mode should include bullet-pointing (distinct from punctuation-only mode).
         let system = systemContent(
             PolishPromptBuilder.build(rawText: "x", context: PolishContext(), style: .smart)
         )
@@ -163,16 +163,16 @@ final class PolishPromptBuilderTests: XCTestCase {
                       "智能模式应保留分点能力")
     }
 
-    // MARK: - 风格（6.2）
+    // MARK: - Style (6.2)
 
     func testPunctuationOnlyStyleAvoidsRestructuring() {
         let system = systemContent(
             PolishPromptBuilder.build(rawText: "x", context: PolishContext(), style: .punctuationOnly)
         )
-        // 仅标点：最保真——不重组句子/不分点/不改措辞。
+        // Punctuation only: most faithful -- do not restructure sentences/bullet-point/change wording.
         XCTAssertTrue(system.contains("不重组") || system.contains("不分点") || system.contains("不改"),
                       "仅标点风格应声明不重组/不分点/不改措辞")
-        // 仍应补标点与大小写。
+        // Should still add punctuation and capitalization.
         XCTAssertTrue(system.contains("标点"), "仅标点风格仍应补标点")
     }
 
@@ -206,7 +206,7 @@ final class PolishPromptBuilderTests: XCTestCase {
         XCTAssertNotEqual(formal, casual, "正式与口语的 system 应不同")
     }
 
-    // MARK: - 上下文 App 名（6.1.8）
+    // MARK: - Context App name (6.1.8)
 
     func testAppNameIsInjectedIntoUserMessage() {
         let messages = PolishPromptBuilder.build(
@@ -226,12 +226,12 @@ final class PolishPromptBuilderTests: XCTestCase {
         )
         XCTAssertEqual(messages.count, 2)
         XCTAssertTrue(userContent(messages).contains("随便说点什么"))
-        // 无 appName 时不应出现空占位污染（如 "【当前应用】\n" 紧跟空）。
+        // Without appName there should be no empty placeholder pollution (such as an empty line right after the application tag).
         XCTAssertFalse(userContent(messages).contains("【当前应用】】"))
     }
 
     func testSystemMentionsAppContextForRegister() {
-        // system 应说明会根据 App 名调整语域。
+        // system should state that it adjusts the register by App name.
         let system = systemContent(
             PolishPromptBuilder.build(rawText: "x", context: PolishContext(appName: "Mail"), style: .smart)
         )
@@ -239,7 +239,7 @@ final class PolishPromptBuilderTests: XCTestCase {
                       "system 应说明依据目标应用调整语域")
     }
 
-    // MARK: - 纯函数（6.4）
+    // MARK: - Pure function (6.4)
 
     func testBuildIsDeterministic() {
         let a = PolishPromptBuilder.build(

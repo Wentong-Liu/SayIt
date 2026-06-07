@@ -2,13 +2,13 @@ import CoreAudio
 import XCTest
 @testable import SayItCore
 
-/// `AudioInputDeviceManager` 单测。
+/// `AudioInputDeviceManager` unit test.
 ///
-/// 设备枚举依赖宿主硬件，CI/无麦环境可能为空，故只断言**结构不变量**而非具体设备：
-/// - 列出的设备 UID/名称非空、UID 唯一；
-/// - 系统默认设备（若存在）必在列表中；
-/// - 已知设备的 UID 能解析回 `AudioDeviceID`；不存在的 UID 解析为 nil。
-/// 真实采集不在此跑，但全部 API 路径需编译并可被调用。
+/// Device enumeration depends on the host hardware, and may be empty on CI/no-mic environments, so it only asserts **structural invariants** rather than specific devices:
+/// - the listed devices' UID/name are non-empty, UID unique;
+/// - the system default device (if it exists) must be in the list;
+/// - a known device's UID can be resolved back to an `AudioDeviceID`; a non-existent UID resolves to nil.
+/// Real capture does not run here, but all API paths must compile and be callable.
 final class AudioInputDeviceManagerTests: XCTestCase {
     func testAvailableDevicesHaveNonEmptyStableFields() {
         let devices = AudioInputDeviceManager.availableInputDevices()
@@ -27,7 +27,7 @@ final class AudioInputDeviceManagerTests: XCTestCase {
     func testDefaultDeviceIsAmongAvailableWhenPresent() {
         let devices = AudioInputDeviceManager.availableInputDevices()
         guard let defaultUID = AudioInputDeviceManager.defaultInputDeviceUID() else {
-            // 无默认输入设备（如无麦环境）：跳过，不算失败。
+            // No default input device (e.g. a no-mic environment): skip, not counted as a failure.
             return
         }
         XCTAssertTrue(
@@ -38,7 +38,7 @@ final class AudioInputDeviceManagerTests: XCTestCase {
 
     func testKnownUIDResolvesToDeviceID() {
         guard let first = AudioInputDeviceManager.availableInputDevices().first else {
-            return // 无可用设备，跳过。
+            return // No available devices, skip.
         }
         let resolved = AudioInputDeviceManager.deviceID(forUID: first.uid)
         XCTAssertNotNil(resolved, "已枚举到的设备 UID 应能解析为 AudioDeviceID")

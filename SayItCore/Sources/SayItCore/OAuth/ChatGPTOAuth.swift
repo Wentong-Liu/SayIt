@@ -1,27 +1,27 @@
 import Foundation
 
-/// ChatGPT(Codex) OAuth：构造授权 URL、换/刷 token 请求、解析 token、从 JWT 取 account_id。
-/// 协议常量来自 openai/codex 与 OpenClaw 源码（originator=openclaw）。
+/// ChatGPT(Codex) OAuth: builds the authorization URL, exchange/refresh token requests, parses tokens, extracts account_id from the JWT.
+/// The protocol constants come from the openai/codex and OpenClaw source (originator=openclaw).
 public enum ChatGPTOAuth {
     public static let clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
     public static let authorizeEndpoint = "https://auth.openai.com/oauth/authorize"
     public static let tokenEndpoint = "https://auth.openai.com/oauth/token"
-    /// Codex Responses API（SSE）端点（单一真相源，供 CodexResponsesProvider 复用）。
+    /// The Codex Responses API (SSE) endpoint (single source of truth, reused by CodexResponsesProvider).
     public static let responsesEndpoint = "https://chatgpt.com/backend-api/codex/responses"
-    /// OAuth 回调本地回环服务的端口/host（单一真相源，供 CodexLoginService 起 NWListener、拼回调 URL 复用）。
+    /// The port/host of the OAuth callback local loopback service (single source of truth, reused by CodexLoginService to start NWListener and assemble the callback URL).
     public static let callbackHost = "127.0.0.1"
     public static let callbackPort: UInt16 = 1455
-    /// 授权服务器登记的 redirect_uri（值固定为 http://localhost:1455/auth/callback，端口复用 callbackPort）。
+    /// The redirect_uri registered with the authorization server (the value is fixed to http://localhost:1455/auth/callback, the port reuses callbackPort).
     public static let redirectURI = "http://localhost:\(callbackPort)/auth/callback"
     public static let scope = "openid profile email offline_access"
-    /// 协议 originator（单一真相源，供授权 URL、Responses header、User-Agent 派生复用）。
+    /// The protocol originator (single source of truth, reused to derive the authorization URL, Responses header, User-Agent).
     public static let originator = "openclaw"
-    /// User-Agent 的 OS 段（拼在 originator 之后）：最终 UA = originator + 此段。
+    /// The OS segment of the User-Agent (appended after originator): the final UA = originator + this segment.
     public static let userAgentOSSegment = " (macOS)"
-    /// 默认 User-Agent（originator + OS 段，单一真相源）：值与原内联 "\(originator) (macOS)" 逐字节一致。
+    /// The default User-Agent (originator + OS segment, single source of truth): the value is byte-for-byte identical to the original inline "\(originator) (macOS)".
     public static let defaultUserAgent = originator + userAgentOSSegment
-    /// token 响应缺省 expires_in 时的兜底有效期（秒）。
-    /// 注意须远大于 OAuthTokens.expiryLeeway，否则刚拿到的 token 会立即被判过期。
+    /// The fallback validity period (seconds) when the token response omits expires_in.
+    /// Note it must be far larger than OAuthTokens.expiryLeeway, otherwise a freshly obtained token would be immediately judged expired.
     public static let defaultExpiresIn: Double = 3600
 
     public static func authorizeURL(pkce: PKCE, state: String) -> URL {
@@ -50,7 +50,7 @@ public enum ChatGPTOAuth {
         formPost(body: "grant_type=refresh_token&refresh_token=\(enc(refreshToken))&client_id=\(enc(clientID))")
     }
 
-    /// 解析 token 响应为 OAuthTokens。refresh 响应可能不返回 refresh_token，用 fallback。
+    /// Parses the token response into OAuthTokens. The refresh response may not return a refresh_token, so use the fallback.
     public static func parseTokenResponse(_ data: Data, fallbackRefresh: String = "") throws -> OAuthTokens {
         struct Resp: Decodable {
             let access_token: String
@@ -62,7 +62,7 @@ public enum ChatGPTOAuth {
         do {
             r = try JSONDecoder().decode(Resp.self, from: data)
         } catch {
-            // token 响应（成功状态码下）解码失败：只记错误类型与本地化描述，绝不打印响应体（避免泄露 token）；行为不变，照常抛 .invalidResponse。
+            // The token response (under a success status code) failed to decode: only log the error type and localized description, never print the response body (avoiding token leaks); behavior unchanged, still throws .invalidResponse.
             NSLog("[SayIt][ChatGPTOAuth] token 响应解码失败 type=%@ desc=%@",
                   String(describing: type(of: error)), error.localizedDescription)
             throw ProviderError.invalidResponse
@@ -76,8 +76,8 @@ public enum ChatGPTOAuth {
             expiresAt: Date().addingTimeInterval(r.expires_in ?? defaultExpiresIn))
     }
 
-    /// JWT payload 中我们关心的部分：["https://api.openai.com/auth"]["chatgpt_account_id"]。
-    /// 用 Decodable 显式建模，避免 [String:Any] 取值时静默降级为空。
+    /// The part of the JWT payload we care about: ["https://api.openai.com/auth"]["chatgpt_account_id"].
+    /// Explicitly modeled with Decodable, to avoid silently degrading to empty when reading values from [String:Any].
     private struct JWTPayload: Decodable {
         struct Auth: Decodable {
             let chatgpt_account_id: String?
@@ -88,7 +88,7 @@ public enum ChatGPTOAuth {
         }
     }
 
-    /// 解 JWT payload，取 ["https://api.openai.com/auth"]["chatgpt_account_id"]。
+    /// Decodes the JWT payload and extracts ["https://api.openai.com/auth"]["chatgpt_account_id"].
     public static func accountID(fromJWT jwt: String) -> String? {
         let parts = jwt.split(separator: ".")
         guard parts.count >= 2 else { return nil }
@@ -110,8 +110,8 @@ public enum ChatGPTOAuth {
     }
 
     private static func enc(_ s: String) -> String {
-        // RFC 3986 unreserved 字符（含 _ - . ~）不编码，其余编码；
-        // 保证 client_id 的下划线在 form body 中保持原样。
+        // RFC 3986 unreserved characters (including _ - . ~) are not encoded, the rest are encoded;
+        // this guarantees the underscore in client_id stays as-is in the form body.
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")
         return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s

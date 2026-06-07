@@ -1,13 +1,13 @@
 import Foundation
 
-/// 用于测试与上层模块开发的 ``Transcriber`` 假实现。
+/// A ``Transcriber`` fake implementation for testing and upper-module development.
 ///
-/// 可注入一个预设的 ``TranscriptionResult`` 或一个 ``STTError``：
-/// 注入结果时每次调用都返回该结果；注入错误时每次调用都抛出该错误。
-/// 实现为 `actor`，因而是 `Sendable`，并在内部记录每次调用的入参，
-/// 供测试断言参数传递是否正确。
+/// You can inject a preset ``TranscriptionResult`` or an ``STTError``:
+/// when a result is injected, every call returns that result; when an error is injected, every call throws that error.
+/// Implemented as an `actor`, so it is `Sendable`, and it internally records the arguments of each call,
+/// for tests to assert that argument passing is correct.
 public actor FakeTranscriber: Transcriber {
-    /// 一次 ``transcribe(_:sampleRate:language:)`` 调用的入参快照。
+    /// A snapshot of the arguments of one ``transcribe(_:sampleRate:language:)`` call.
     public struct Call: Equatable, Sendable {
         public let audio: [Float]
         public let sampleRate: Double
@@ -27,20 +27,20 @@ public actor FakeTranscriber: Transcriber {
 
     private let outcome: Outcome
 
-    /// 按调用先后顺序记录的全部调用入参。
+    /// All call arguments recorded in call order.
     public private(set) var calls: [Call] = []
 
-    /// 注入一个完整的预设结果。
+    /// Injects a complete preset result.
     public init(result: TranscriptionResult) {
         self.outcome = .success(result)
     }
 
-    /// 便捷初始化：仅指定返回文本，其余字段使用默认值。
+    /// Convenience initializer: specify only the returned text, with all other fields using default values.
     public init(text: String) {
         self.outcome = .success(TranscriptionResult(text: text))
     }
 
-    /// 注入一个错误，使每次调用都抛出它。
+    /// Injects an error so that every call throws it.
     public init(error: STTError) {
         self.outcome = .failure(error)
     }

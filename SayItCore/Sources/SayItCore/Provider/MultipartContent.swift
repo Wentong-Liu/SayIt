@@ -1,17 +1,17 @@
 import Foundation
 
-/// 一条 message 的 content 的「字符串 或 内容块数组」多态编码，OpenAI / Anthropic 协议共用此形状：
-/// - `.text(s)`：编为单值字符串（与无图旧行为逐字节一致）。
-/// - `.parts(text:images:)`：编为数组 `[文本块, 图片块...]`，文本块固定为 `{"type":"text","text":...}`，
-///   图片块由各 Provider 提供自己的 leaf（OpenAI 的 image_url part / Anthropic 的 base64 source part）。
+/// Polymorphic encoding of a message's content as "a string OR an array of content blocks", shared by the OpenAI / Anthropic protocols:
+/// - `.text(s)`: encoded as a single string value (byte-for-byte identical to the old image-free behavior).
+/// - `.parts(text:images:)`: encoded as an array `[text block, image blocks...]`, where the text block is fixed to `{"type":"text","text":...}`,
+///   and the image blocks come from each Provider's own leaf (OpenAI's image_url part / Anthropic's base64 source part).
 ///
-/// 仅封装这层「string OR [text-part, image-parts...]」骨架；具体 leaf 类型由泛型参数 `ImagePart` 决定，
-/// 故两个 Provider 编码出的字节与各自旧实现完全一致。
+/// This only wraps the "string OR [text-part, image-parts...]" skeleton; the concrete leaf type is decided by the generic parameter `ImagePart`,
+/// so the bytes encoded by both Providers stay exactly identical to their respective old implementations.
 enum MultipartContent<ImagePart: Encodable>: Encodable {
     case text(String)
     case parts(text: String, images: [ImagePart])
 
-    /// 文本块：两协议均为 `{"type":"text","text":...}`，故可共用。
+    /// Text block: both protocols use `{"type":"text","text":...}`, so it can be shared.
     private struct TextPart: Encodable { let type = "text"; let text: String }
 
     func encode(to encoder: Encoder) throws {

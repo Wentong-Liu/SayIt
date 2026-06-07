@@ -1,7 +1,7 @@
 import Foundation
 
-/// 用 ChatGPT(Codex) OAuth token 调 codex/responses（Responses API + SSE）。
-/// 把 [LLMMessage] 映射为 instructions(系统) + input(其余)，流式累积 output_text.delta。
+/// Uses the ChatGPT(Codex) OAuth token to call codex/responses (Responses API + SSE).
+/// Maps [LLMMessage] to instructions (system) + input (the rest), streamingly accumulating output_text.delta.
 public struct CodexResponsesProvider: LLMProvider {
     private let accessToken: String
     private let accountId: String
@@ -9,13 +9,13 @@ public struct CodexResponsesProvider: LLMProvider {
     private let userAgent: String
     private let session: URLSession
 
-    /// 单次请求的连接/响应超时（秒）。
+    /// The connection/response timeout (seconds) for a single request.
     private static let requestTimeout = LLMDefaults.requestTimeout
-    /// SSE 读取循环的整体上限（秒）：超过则判定流卡死并失败，避免无限挂起。
-    /// 须 >= requestTimeout：requestTimeout 只覆盖建连/首字节，流级超时要包住整段流式读取，
-    /// 取更小值会在正常长回复尚未读完时就误杀；故此处恒应大于等于单次请求超时。
+    /// The overall ceiling (seconds) of the SSE read loop: beyond it the stream is judged stalled and fails, avoiding an infinite hang.
+    /// Must be >= requestTimeout: requestTimeout only covers connecting/first byte, while the stream-level timeout must wrap the entire streamed read;
+    /// a smaller value would wrongly kill a normal long reply before it finishes reading; so this must always be greater than or equal to the single-request timeout.
     private static let maxStreamSeconds: TimeInterval = 90
-    /// SSE 行的数据前缀（判前缀与剥前缀共用，避免同串写两遍）。
+    /// The data prefix of an SSE line (shared by prefix-checking and prefix-stripping, avoiding writing the same string twice).
     private static let dataPrefix = "data:"
 
     public init(accessToken: String, accountId: String, model: String,
@@ -27,9 +27,9 @@ public struct CodexResponsesProvider: LLMProvider {
         self.session = session
     }
 
-    /// input[].content 里的一项：文本项（input_text/output_text）或图片项（input_image）。
-    /// 用自定义 Encodable 表达这种多态——编码出的键与旧 [String:Any] 等价：
-    /// 文本项 {type,text}，图片项 {type,image_url}。
+    /// One item in input[].content: a text item (input_text/output_text) or an image item (input_image).
+    /// Uses a custom Encodable to express this polymorphism -- the encoded keys are equivalent to the old [String:Any]:
+    /// text item {type,text}, image item {type,image_url}.
     private enum ContentItem: Encodable {
         case text(type: String, text: String)
         case image(url: String)
@@ -49,24 +49,24 @@ public struct CodexResponsesProvider: LLMProvider {
         }
     }
 
-    /// 一条 input 消息：role + content 项数组。
+    /// One input message: role + an array of content items.
     private struct InputMessage: Encodable {
         let role: String
         let content: [ContentItem]
     }
 
-    /// 单条 SSE 事件的强类型解析体（替代旧的 JSONSerialization as? [String:Any] 弱类型取键）：
-    /// 只关心 type（事件类型）与 delta（增量文本，仅 output_text.delta 有），二者均可选——
-    /// 解析的是同样的事件，type 取键、delta 取值口径与旧实现一致，正常 delta 增量逐字节不变。
+    /// The strongly-typed parse body of a single SSE event (replacing the old weakly-typed JSONSerialization as? [String:Any] key access):
+    /// only cares about type (the event type) and delta (the incremental text, present only for output_text.delta), both optional --
+    /// it parses the same events, the type key and delta value semantics match the old implementation, and the normal delta increment is byte-for-byte unchanged.
     private struct StreamEvent: Decodable {
         let type: String?
         let delta: String?
     }
 
-    /// text 字段：{"verbosity":"low"}。
+    /// The text field: {"verbosity":"low"}.
     private struct TextOption: Encodable { let verbosity: String }
 
-    /// Responses API 请求体：instructions(系统提示) + input(消息序列) + 流式/工具等开关，键类型安全。
+    /// The Responses API request body: instructions (system prompt) + input (message sequence) + streaming/tool toggles, with type-safe keys.
     private struct RequestBody: Encodable {
         let model: String
         let store: Bool
@@ -113,7 +113,7 @@ public struct CodexResponsesProvider: LLMProvider {
         req.setValue("responses=experimental", forHTTPHeaderField: "OpenAI-Beta")
         req.setValue("text/event-stream", forHTTPHeaderField: HTTPConstants.acceptHeader)
         req.setValue(HTTPConstants.applicationJSON, forHTTPHeaderField: HTTPConstants.contentTypeHeader)
-        // 配置 .withoutEscapingSlashes 保留原 JSONSerialization 的输出行为（image_url 里的 dataURL 含 /，不转义）。
+        // Configures .withoutEscapingSlashes to preserve the original JSONSerialization output behavior (the dataURL in image_url contains /, not escaped).
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
         req.httpBody = try encoder.encode(body)
@@ -126,16 +126,16 @@ public struct CodexResponsesProvider: LLMProvider {
         }
         let http = try HTTPResponseValidator.httpResponse(from: response)
         if !HTTPResponseValidator.successRange.contains(http.statusCode) {
-            // 读尽剩余 body 供报错（按换行 join，保留各行边界）。
+            // Read all the remaining body for error reporting (joined by newline, preserving each line's boundary).
             var errLines: [String] = []
             for try await line in bytes.lines { errLines.append(line) }
             try HTTPResponseValidator.throwIfHTTPError(http, body: errLines.joined(separator: "\n"))
         }
 
-        // 流级超时：旧实现用「每行进入循环时比对 systemUptime」做超时，上游半开挂起时
-        // for-await 永远卡在等下一行、超时分支永不触发→整条请求挂死。改用 withThrowingTaskGroup
-        // 让「读流」与「Task.sleep(maxStreamSeconds)」竞速：读流先完成则取消计时并返回；
-        // 计时先到则抛 streamFailed 并随组取消读流（AsyncBytes 迭代响应取消，半开连接被放弃）。
+        // Stream-level timeout: the old implementation used "compare systemUptime each time a line enters the loop" for the timeout; when upstream half-opens and hangs,
+        // for-await is forever stuck waiting for the next line and the timeout branch never fires -> the whole request hangs dead. Switched to withThrowingTaskGroup
+        // to race "read stream" against "Task.sleep(maxStreamSeconds)": if the read stream finishes first, cancel the timer and return;
+        // if the timer fires first, throw streamFailed and cancel the read stream with the group (AsyncBytes iteration responds to cancellation, the half-open connection is abandoned).
         let decoder = JSONDecoder()
         return try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask {
@@ -145,15 +145,15 @@ public struct CodexResponsesProvider: LLMProvider {
                 try await Task.sleep(nanoseconds: UInt64(Self.maxStreamSeconds * 1_000_000_000))
                 throw ProviderError.streamFailed(body: "stream timed out after \(Int(Self.maxStreamSeconds))s")
             }
-            // 先完成的那个胜出：读流成功返回文本→取消计时；计时先到→其抛出向上传播并取消读流。
+            // Whichever finishes first wins: the read stream returns text successfully -> cancel the timer; the timer fires first -> its throw propagates up and cancels the read stream.
             let result = try await group.next()!
             group.cancelAll()
             return result
         }
     }
 
-    /// 逐行读 SSE，累积 output_text.delta；遇终止事件返回已累积文本，遇错误事件抛出。
-    /// 正常 delta 增量逐字节不变（解析的是同样的事件、同样的 type/delta 取键）。
+    /// Reads SSE line by line, accumulating output_text.delta; on a terminal event returns the accumulated text, on an error event throws.
+    /// The normal delta increment is byte-for-byte unchanged (it parses the same events, with the same type/delta key access).
     private static func readStream(_ bytes: URLSession.AsyncBytes, decoder: JSONDecoder) async throws -> String {
         var text = ""
         for try await line in bytes.lines {
@@ -174,7 +174,7 @@ public struct CodexResponsesProvider: LLMProvider {
                 continue
             }
         }
-        // 流自然结束却没收到 response.completed/done/incomplete 终止事件：记录助排查（行为不变，仍返回已累积文本）。
+        // The stream ended naturally without receiving a response.completed/done/incomplete terminal event: logged to aid debugging (behavior unchanged, still returns the accumulated text).
         NSLog("[SayIt][CodexResponses] SSE 流结束但未收到终止事件，返回已累积文本 长度=%d", text.count)
         return text
     }

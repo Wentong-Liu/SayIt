@@ -2,9 +2,9 @@ import XCTest
 import AppKit
 @testable import SayItCore
 
-// MARK: - 测试桩
+// MARK: - Test stubs
 
-/// 内存版 pasteboard，不触碰系统真实剪贴板，记录所有操作便于断言。
+/// An in-memory pasteboard that does not touch the real system clipboard, recording all operations for assertions.
 @MainActor
 final class FakePasteboard: PasteboardProtocol {
     private(set) var change = 0
@@ -35,7 +35,7 @@ final class FakePasteboard: PasteboardProtocol {
         return change
     }
 
-    /// 直接塞入预置内容，模拟「注入前剪贴板已有东西」。
+    /// Directly stuffs in preset content, simulating "the clipboard already has something before injection".
     func seedString(_ text: String) {
         items = [[NSPasteboard.PasteboardType.string.rawValue: Data(text.utf8)]]
         change += 1
@@ -76,7 +76,7 @@ final class StubAXInserter: AXTextInserting {
     }
 }
 
-// MARK: - PasteboardBackup 纯逻辑测试
+// MARK: - PasteboardBackup pure-logic test
 
 @MainActor
 final class PasteboardBackupTests: XCTestCase {
@@ -102,7 +102,7 @@ final class PasteboardBackupTests: XCTestCase {
 
     func testRestoreEmptyBackupClearsToCapturedEmptyState() {
         let pb = FakePasteboard()
-        // 捕获时剪贴板为空。
+        // The clipboard is empty at capture time.
         let backup = PasteboardBackup.capture(from: pb)
         XCTAssertTrue(backup.items.isEmpty)
 
@@ -114,7 +114,7 @@ final class PasteboardBackupTests: XCTestCase {
     }
 }
 
-// MARK: - TextInjector 编排测试
+// MARK: - TextInjector orchestration test
 
 @MainActor
 final class TextInjectorTests: XCTestCase {
@@ -122,7 +122,7 @@ final class TextInjectorTests: XCTestCase {
         InjectionTarget(bundleIdentifier: "com.example.app", localizedName: "Example", processIdentifier: 123)
     }
 
-    /// 不等待的 sleeper，避免拖慢测试；配合 await 让还原 Task 有机会执行。
+    /// A non-waiting sleeper, to avoid slowing the test; combined with await it gives the restore Task a chance to execute.
     private let instantSleeper: @Sendable (Duration) async -> Void = { _ in await Task.yield() }
 
     func testEmptyTextIsNoOpSuccess() {
@@ -171,8 +171,8 @@ final class TextInjectorTests: XCTestCase {
         XCTAssertEqual(result, .success(method: .pasteboard))
         XCTAssertEqual(keystroke.postCount, 1, "应模拟一次 ⌘V")
 
-        // 还原在单独的 @MainActor Task 里延迟执行；确定性地等它真正跑完，
-        // 而不是假设几次 yield 就够（整套测试并发调度下会偶发未完成）。
+        // The restore runs with a delay in a separate @MainActor Task; deterministically wait for it to actually finish,
+        // rather than assuming a few yields are enough (under the whole suite's concurrent scheduling it would occasionally not complete).
         for _ in 0..<1000 where pb.restoreCount == 0 {
             await Task.yield()
         }
@@ -238,7 +238,7 @@ final class TextInjectorTests: XCTestCase {
         XCTAssertEqual(ax.insertCount, 1, "应先尝试 AX")
         XCTAssertEqual(keystroke.postCount, 1, "AX 失败后应回退剪贴板粘贴")
 
-        // 确定性等待延迟还原 Task 跑完（见上一测试说明）。
+        // Deterministically wait for the delayed restore Task to finish (see the previous test's note).
         for _ in 0..<1000 where pb.restoreCount == 0 {
             await Task.yield()
         }
@@ -246,12 +246,12 @@ final class TextInjectorTests: XCTestCase {
     }
 }
 
-// MARK: - InjectionTarget 捕获测试
+// MARK: - InjectionTarget capture test
 
 @MainActor
 final class InjectionTargetTests: XCTestCase {
     func testInitFromRunningApplicationCapturesIdentity() {
-        // 用当前测试进程作为 NSRunningApplication 来源，验证字段拷贝。
+        // Use the current test process as the NSRunningApplication source to verify the field copy.
         let current = NSRunningApplication.current
         let target = InjectionTarget(running: current)
         XCTAssertEqual(target.processIdentifier, current.processIdentifier)

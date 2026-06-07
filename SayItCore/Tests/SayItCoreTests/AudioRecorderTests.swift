@@ -11,7 +11,7 @@ final class AudioFormatTests: XCTestCase {
 }
 
 final class FloatSampleAccumulatorTests: XCTestCase {
-    /// 造一个 Float32 单声道 PCM 缓冲，channel-0 填入给定样本。
+    /// Builds a Float32 mono PCM buffer, filling channel 0 with the given samples.
     private func makeBuffer(_ samples: [Float], sampleRate: Double = AudioFormat.sampleRate) -> AVAudioPCMBuffer {
         let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -57,7 +57,7 @@ final class FloatSampleAccumulatorTests: XCTestCase {
     }
 
     func testAppendNonFloat32BufferIsIgnored() {
-        // Int16 缓冲（非 Float32）应被忽略。
+        // An Int16 buffer (not Float32) should be ignored.
         let int16Format = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: AudioFormat.sampleRate,
@@ -81,7 +81,7 @@ final class FloatSampleAccumulatorTests: XCTestCase {
 
     func testDurationSecondsUsesTargetSampleRate() {
         var acc = FloatSampleAccumulator()
-        // 16000 个样本应为 1 秒。
+        // 16000 samples should be 1 second.
         acc.append(contentsOf: [Float](repeating: 0, count: 16_000))
         XCTAssertEqual(acc.durationSeconds, 1.0, accuracy: 1e-9)
     }
@@ -133,19 +133,19 @@ final class AudioRecorderStateTests: XCTestCase {
     }
 }
 
-/// 复现并锁定「mic 测试第二次没有绿条」的回归测试。
+/// A regression test that reproduces and locks down "the mic test has no green bars the second time".
 ///
-/// 根因：`AudioRecorder.levels` 旧实现是「整个生命周期单一共享」的 `AsyncStream`。
-/// `AsyncStream` 是单消费者流——一旦其唯一消费迭代被取消/结束（`MicTestViewModel`
-/// 在 `stopTesting()` 里 `levelTask?.cancel()` 即触发），整条流便永久 finish；
-/// 第二次测试新建任务读取同一条已结束的流，立刻收到结束、零电平到达——表现为
-/// 「首测有绿条、复测无绿条」。
+/// Root cause: the old implementation of `AudioRecorder.levels` was a "single shared for the whole lifecycle" `AsyncStream`.
+/// `AsyncStream` is a single-consumer stream -- once its sole consuming iteration is cancelled/ended (`MicTestViewModel`
+/// triggers it via `levelTask?.cancel()` in `stopTesting()`), the whole stream finishes permanently;
+/// the second test's new task reads the same already-finished stream and immediately receives end, with zero level arriving -- manifesting as
+/// "green bars on the first test, no green bars on the retest".
 ///
-/// 修复：每次 `start()` 会话重建一对全新的流 + continuation；消费者在 `start()`
-/// 之后读取 `recorder.levels`（MicTest/HUD 均如此），拿到的是本会话的新流。
+/// Fix: each `start()` session rebuilds a brand-new pair of stream + continuation; the consumer reads `recorder.levels` after `start()`
+/// (both MicTest/HUD do so), getting this session's new stream.
 final class AudioLevelStreamReconsumableTests: XCTestCase {
-    /// 在给定流上消费，直到收到 `count` 个 **非零** 电平或超时；返回收到的非零个数。
-    /// 模拟 HUD/MicTest：`for await value in recorder.levels`。
+    /// Consumes on the given stream until receiving `count` **non-zero** levels or timing out; returns the number of non-zero ones received.
+    /// Simulates HUD/MicTest: `for await value in recorder.levels`.
     private func consumeNonZero(
         _ stream: AsyncStream<Double>,
         upTo count: Int,
@@ -159,7 +159,7 @@ final class AudioLevelStreamReconsumableTests: XCTestCase {
             }
             return received
         }
-        // 超时兜底：避免第二次会话拿不到值时永久挂起（即旧 bug 的表现）。
+        // Timeout fallback: avoid hanging forever when the second session gets no values (i.e. the old bug's manifestation).
         let timeoutTask = Task { () -> Int in
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             task.cancel()
@@ -170,19 +170,19 @@ final class AudioLevelStreamReconsumableTests: XCTestCase {
         return result
     }
 
-    /// 核心回归：两次顺序「会话 + 消费」，第二次必须仍能拿到电平。
+    /// Core regression: two sequential "session + consume", the second must still be able to get levels.
     ///
-    /// 复刻真实流程：
-    ///  会话1：`start()`(beginSession) → 读 `levels` → for-await 消费 → 任务被取消（stopTesting）→ `stop()`(endSession)
-    ///  会话2：`start()`(beginSession) → **重新读** `levels` → for-await 消费 → 断言仍有非零电平
-    /// 旧实现下会话2 会拿到 0 个非零值（流已永久结束）——本测试即用来复现并防回归。
+    /// Replicates the real flow:
+    ///  Session 1: `start()`(beginSession) -> read `levels` -> for-await consume -> the task is cancelled (stopTesting) -> `stop()`(endSession)
+    ///  Session 2: `start()`(beginSession) -> **re-read** `levels` -> for-await consume -> assert there are still non-zero levels
+    /// Under the old implementation session 2 would get 0 non-zero values (the stream is permanently finished) -- this test is exactly for reproducing and preventing regression.
     func testLevelsAreReconsumableAcrossSessions() async {
         let recorder = AudioRecorder()
 
-        // —— 会话 1 ——
-        recorder.beginLevelSessionForTesting()        // 等价于 start() 内的 beginSession()
-        let session1 = recorder.levels                // 消费者在 start() 之后读取 levels
-        // 持续产电平的「tap」，直到被取消。
+        // -- Session 1 --
+        recorder.beginLevelSessionForTesting()        // equivalent to beginSession() inside start()
+        let session1 = recorder.levels                // the consumer reads levels after start()
+        // A "tap" that keeps producing levels until cancelled.
         let tap1 = Task {
             while !Task.isCancelled {
                 recorder.emitLevelForTesting(0.5)
@@ -192,12 +192,12 @@ final class AudioLevelStreamReconsumableTests: XCTestCase {
         let got1 = await consumeNonZero(session1, upTo: 3, timeout: 2.0)
         tap1.cancel()
         XCTAssertGreaterThanOrEqual(got1, 3, "会话1 应能拿到电平（首测有绿条）")
-        // 模拟 stopTesting()：消费任务已结束（上面 for-await 已 break），再 endSession()。
-        recorder.endLevelSessionForTesting()          // 等价于 stop() 内的 endSession()
+        // Simulate stopTesting(): the consuming task has ended (the for-await above has broken), then endSession().
+        recorder.endLevelSessionForTesting()          // equivalent to endSession() inside stop()
 
-        // —— 会话 2 ——（关键：复用同一个 recorder，旧实现此处会拿到 0）
-        recorder.beginLevelSessionForTesting()        // 第二次 start()
-        let session2 = recorder.levels                // 重新读取 levels：必须是全新的流
+        // -- Session 2 -- (key: reuse the same recorder; the old implementation would get 0 here)
+        recorder.beginLevelSessionForTesting()        // the second start()
+        let session2 = recorder.levels                // re-read levels: must be a brand-new stream
         let tap2 = Task {
             while !Task.isCancelled {
                 recorder.emitLevelForTesting(0.7)
@@ -212,12 +212,12 @@ final class AudioLevelStreamReconsumableTests: XCTestCase {
         )
     }
 
-    /// 即便上一次会话的消费任务是被「取消」而非自然 break 结束（正是 stopTesting 的真实路径），
-    /// 下一次会话仍应能拿到电平。这是旧实现最致命的失败路径。
+    /// Even if the previous session's consuming task ended via "cancel" rather than a natural break (which is exactly stopTesting's real path),
+    /// the next session should still be able to get levels. This is the old implementation's most fatal failure path.
     func testLevelsReconsumableAfterConsumerTaskCancelled() async {
         let recorder = AudioRecorder()
 
-        // 会话1：消费任务被显式 cancel（模拟 stopTesting 的 levelTask?.cancel()）。
+        // Session 1: the consuming task is explicitly cancelled (simulating stopTesting's levelTask?.cancel()).
         recorder.beginLevelSessionForTesting()
         let session1 = recorder.levels
         let consumer1 = Task { () -> Int in
@@ -234,12 +234,12 @@ final class AudioLevelStreamReconsumableTests: XCTestCase {
             }
         }
         try? await Task.sleep(nanoseconds: 100_000_000)
-        consumer1.cancel()                            // 关键：取消消费任务（旧 bug 触发点）
+        consumer1.cancel()                            // key: cancel the consuming task (the old bug's trigger point)
         tap1.cancel()
         _ = await consumer1.value
         recorder.endLevelSessionForTesting()
 
-        // 会话2：读取全新流，必须仍能拿到非零电平。
+        // Session 2: read the brand-new stream, must still be able to get non-zero levels.
         recorder.beginLevelSessionForTesting()
         let session2 = recorder.levels
         let tap2 = Task {
@@ -267,7 +267,7 @@ final class AudioLevelTests: XCTestCase {
     }
 
     func testFullScaleIsOne() {
-        // RMS = 1（满量程）→ 0 dBFS → 归一化为 1。
+        // RMS = 1 (full scale) -> 0 dBFS -> normalized to 1.
         XCTAssertEqual(AudioRecorder.normalizedLevel([Float](repeating: 1, count: 128)), 1, accuracy: 1e-6)
     }
 

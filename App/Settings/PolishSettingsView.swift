@@ -1,8 +1,8 @@
 import SwiftUI
 import SayItCore
 
-/// 「润色」分区：开关、风格、Provider 与模型选择，以及凭据
-/// （ChatGPT 登录按钮走 OAuth / 各 Provider 的 API Key 录入）。
+/// The "Polish" section: toggle, style, Provider and model selection, and credentials
+/// (the ChatGPT login button goes through OAuth / API Key entry for each Provider).
 struct PolishSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
 
@@ -63,7 +63,7 @@ struct PolishSettingsView: View {
         .onAppear { viewModel.reloadCredentials() }
     }
 
-    /// ChatGPT OAuth 登录/登出。
+    /// ChatGPT OAuth login/logout.
     @ViewBuilder
     private var chatGPTCredentialView: some View {
         HStack {
@@ -88,7 +88,7 @@ struct PolishSettingsView: View {
         }
     }
 
-    /// 普通 Provider 的 API Key 录入。
+    /// API Key entry for ordinary Providers.
     @ViewBuilder
     private var apiKeyCredentialView: some View {
         SecureField(String(localized: "polish.apiKeyField \(viewModel.providerKind.displayName)"),

@@ -1,13 +1,13 @@
 import Foundation
 
-/// 把语音听写（STT）原始转写文本组装成发给模型的「润色」消息。
+/// Assembles the raw speech-to-text (STT) transcription text into a "polish" message sent to the model.
 ///
-/// 与 ZhiYu 微信版的 PromptBuilder 不同：这里是单段听写润色，不做多候选 / JSON 数组 /
-/// 多气泡拆分 / 表情 / 草稿续写 / 图片。仅沿用其「双消息（system + user）组装、像真人不客服」
-/// 的骨架与措辞灵感。
-/// 输入 = STT 原始转写文本；输出契约 = 单段润色后的纯文本（无编号、无解释、无引号包裹）。
+/// Different from the PromptBuilder of ZhiYu's WeChat version: this is single-segment dictation polish, with no multi-candidate / JSON array /
+/// multi-bubble splitting / emoji / draft continuation / images. It only reuses its "two-message (system + user) assembly, human-like not customer-service"
+/// skeleton and wording inspiration.
+/// Input = raw STT transcription text; output contract = a single segment of polished plain text (no numbering, no explanation, no quote wrapping).
 public enum PromptBuilder {
-    /// 默认润色 system prompt（单一真相源）。强调：保真去口水、不杜撰、保留原意与语言。
+    /// The default polish system prompt (single source of truth). Emphasizes: stay faithful and remove filler words, do not fabricate, preserve the original meaning and language.
     public static let defaultSystemPrompt = """
     你是一个语音听写润色助手。用户会给你一段语音转写（STT）得到的原始文本，
     它可能有口水词、重复、语气词、口误、断句混乱、缺标点。请把它润色成通顺、
@@ -22,10 +22,10 @@ public enum PromptBuilder {
     - 只输出润色后的正文本身，作为单段文本返回。
     """
 
-    /// 组装润色消息：system（润色指令）+ user（待润色的转写文本）。
+    /// Assembles the polish message: system (polish instructions) + user (the transcription text to polish).
     /// - Parameters:
-    ///   - transcript: STT 原始转写文本。
-    ///   - systemPrompt: 可覆盖的润色指令；默认用 `defaultSystemPrompt`。
+    ///   - transcript: the raw STT transcription text.
+    ///   - systemPrompt: overridable polish instructions; defaults to `defaultSystemPrompt`.
     public static func build(transcript: String,
                              systemPrompt: String = defaultSystemPrompt) -> [LLMMessage] {
         [

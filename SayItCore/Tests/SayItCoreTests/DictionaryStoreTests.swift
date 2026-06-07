@@ -1,10 +1,10 @@
 import XCTest
 @testable import SayItCore
 
-/// DictionaryEntry / UserDictionary 的 Codable 往返单测（确定性：固定 UUID + 固定 Date）。
+/// Codable round-trip unit test for DictionaryEntry / UserDictionary (deterministic: fixed UUID + fixed Date).
 final class DictionaryEntryCodableTests: XCTestCase {
 
-    /// 固定时间，规避 `Date()` 默认值带来的不确定性，使相等断言可重复。
+    /// A fixed time, sidestepping the indeterminacy from the `Date()` default, making equality assertions repeatable.
     private let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
 
     func testGlobalScopeEntryRoundTrips() throws {
@@ -43,7 +43,7 @@ final class DictionaryEntryCodableTests: XCTestCase {
     }
 
     func testMemberwiseInitDefaults() {
-        // 只传 canonical（+variants）即可建一条「手动 / 全局 / 启用 / 大小写不敏感」词条。
+        // Just passing canonical (+variants) creates a "manual / global / enabled / case-insensitive" entry.
         let entry = DictionaryEntry(canonical: "GPT", variants: ["gpt"])
         XCTAssertEqual(entry.canonical, "GPT")
         XCTAssertEqual(entry.variants, ["gpt"])
@@ -79,12 +79,12 @@ final class DictionaryEntryCodableTests: XCTestCase {
     }
 }
 
-/// DictionaryStore 持久化 + 变更通知单测：全部经注入的临时目录，绝不碰真实词典。
+/// DictionaryStore persistence + change-notification unit test: all through an injected temp directory, never touching the real dictionary.
 final class DictionaryStoreTests: XCTestCase {
 
     private let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
 
-    /// 每个用例独立临时根目录；tearDown 清理（镜像 ModelManagerTests 的 makeTempDir 风格）。
+    /// Each case has an independent temp root directory; tearDown cleans up (mirroring ModelManagerTests' makeTempDir style).
     private var tempDir: URL!
 
     override func setUp() {
@@ -113,26 +113,26 @@ final class DictionaryStoreTests: XCTestCase {
         )
     }
 
-    /// 直接从磁盘读 dictionary.json 并解码，证明原子写盘后留下的是合法 JSON。
+    /// Reads dictionary.json directly from disk and decodes it, proving that what the atomic write leaves behind is legal JSON.
     private func decodeOnDisk() throws -> UserDictionary {
         let fileURL = tempDir.appending(component: "dictionary.json")
         let data = try Data(contentsOf: fileURL)
         return try JSONDecoder().decode(UserDictionary.self, from: data)
     }
 
-    // MARK: - 持久化往返（新建一个 store 从盘里重读）
+    // MARK: - Persistence round-trip (a fresh store re-reads from disk)
 
     func testAddPersistsAcrossFreshStore() async throws {
         let entry = sampleEntry()
         let store1 = makeStore()
         await store1.add(entry)
 
-        // 全新 store 指向同一临时目录：读到的内容必须来自磁盘（而非内存）。
+        // A fresh store pointing at the same temp directory: the content read must come from disk (not memory).
         let store2 = makeStore()
         let loaded = await store2.all()
         XCTAssertEqual(loaded, [entry])
 
-        // 盘上文件存在且为合法 JSON。
+        // The on-disk file exists and is legal JSON.
         let onDisk = try decodeOnDisk()
         XCTAssertEqual(onDisk.entries, [entry])
     }
@@ -157,7 +157,7 @@ final class DictionaryStoreTests: XCTestCase {
         let store = makeStore()
         await store.add(entry)
 
-        // 一个不在词典里的 id：update 不应改变任何内容。
+        // An id not in the dictionary: update should not change anything.
         let stranger = sampleEntry(canonical: "Other")
         await store.update(stranger)
 
@@ -189,36 +189,36 @@ final class DictionaryStoreTests: XCTestCase {
         XCTAssertEqual(onDisk, replacement)
     }
 
-    /// 回归：replaceAll 作为全新 store 上的**首个**操作（此前无任何 all/add/update/remove
-    /// 触发懒加载建目录）时，也必须建目录并真正落盘——否则数据只留内存、下个进程静默丢失。
+    /// Regression: when replaceAll is the **first** operation on a fresh store (with no prior all/add/update/remove
+    /// triggering the lazy-load to create the directory), it must also create the directory and truly write to disk -- otherwise the data only stays in memory and the next process silently loses it.
     func testReplaceAllAsFirstOpPersistsOnFreshStore() async throws {
         let store = makeStore()
         let entries = [sampleEntry(canonical: "First")]
         await store.replaceAll(entries)
 
-        // 盘上文件必须存在且为合法 JSON。
+        // The on-disk file must exist and be legal JSON.
         let fileURL = tempDir.appending(component: "dictionary.json")
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: fileURL.path),
             "replaceAll 作为首个操作时应建目录并落盘")
         XCTAssertEqual(try decodeOnDisk().entries, entries)
 
-        // 指向同一目录的全新 store 必须从盘里重读出内容（而非读到空）。
+        // A fresh store pointing at the same directory must re-read the content from disk (not read empty).
         let reloaded = await makeStore().all()
         XCTAssertEqual(reloaded, entries)
     }
 
-    // MARK: - 容错：缺失 / 损坏文件以空词典起步，绝不崩溃
+    // MARK: - Fault tolerance: a missing / corrupt file starts with an empty dictionary, never crashing
 
     func testMissingFileStartsEmpty() async {
-        // tempDir 下尚无 dictionary.json：all() 应返回空且不崩溃。
+        // No dictionary.json under tempDir yet: all() should return empty and not crash.
         let store = makeStore()
         let entries = await store.all()
         XCTAssertTrue(entries.isEmpty)
     }
 
     func testCorruptFileStartsEmptyWithoutCrash() async throws {
-        // 先写入垃圾字节冒充损坏文件。
+        // First write garbage bytes to fake a corrupt file.
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let fileURL = tempDir.appending(component: "dictionary.json")
         try Data("{ not valid json".utf8).write(to: fileURL)
@@ -227,13 +227,13 @@ final class DictionaryStoreTests: XCTestCase {
         let entries = await store.all()
         XCTAssertTrue(entries.isEmpty, "损坏文件应以空词典起步")
 
-        // 之后仍可正常增改并落盘成合法 JSON（损坏内容被覆盖）。
+        // Afterwards it can still add/update normally and persist as legal JSON (the corrupt content is overwritten).
         let entry = sampleEntry()
         await store.add(entry)
         XCTAssertEqual(try decodeOnDisk().entries, [entry])
     }
 
-    // MARK: - 变更通知
+    // MARK: - Change notification
 
     func testAddPostsChangeNotification() async {
         let center = NotificationCenter()
@@ -261,7 +261,7 @@ final class DictionaryStoreTests: XCTestCase {
         let store = makeStore(notificationCenter: center)
         await store.add(sampleEntry())
 
-        // 对不存在的 id 做 update：不应投递通知。
+        // update on a non-existent id: should not post a notification.
         let exp = XCTNSNotificationExpectation(
             name: DictionaryStore.didChangeNotification, object: nil, notificationCenter: center)
         exp.isInverted = true
@@ -269,10 +269,10 @@ final class DictionaryStoreTests: XCTestCase {
         await fulfillment(of: [exp], timeout: 0.3)
     }
 
-    // MARK: - 默认目录复用约定
+    // MARK: - Default directory reuse convention
 
     func testDefaultBaseDirectoryIsApplicationSupportSayIt() {
-        // 与 ModelManager.downloadBase 同根：Application Support/SayIt（不另立目录方案）。
+        // Same root as ModelManager.downloadBase: Application Support/SayIt (not establishing a separate directory scheme).
         let appSupport = try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,

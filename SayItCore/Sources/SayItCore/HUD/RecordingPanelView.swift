@@ -2,14 +2,14 @@
 import Foundation
 import SwiftUI
 
-/// 听写 HUD 的视图模型：控制器写入状态/音量，视图观察后刷新。
+/// The dictation HUD's view model: the controller writes state/volume, the view observes and refreshes.
 ///
-/// `level` 是 0...1 的归一化输入电平，仅在 `.listening` 态用于驱动波形指示；其余状态忽略。
+/// `level` is the 0...1 normalized input level, used only in the `.listening` state to drive the waveform indicator; ignored in other states.
 @MainActor
 public final class RecordingPanelModel: ObservableObject {
-    /// 当前听写状态。
+    /// The current dictation state.
     @Published public var state: RecordingState = .idle
-    /// 归一化输入电平（0...1），驱动聆听态的波形/音量指示。
+    /// Normalized input level (0...1), driving the waveform/volume indicator in the listening state.
     @Published public var level: Double = 0
 
     public init(state: RecordingState = .idle, level: Double = 0) {
@@ -18,44 +18,44 @@ public final class RecordingPanelModel: ObservableObject {
     }
 }
 
-/// 听写 HUD 的 SwiftUI 内容（被 `NSHostingView` 包装进 borderless 透明面板）。
+/// The dictation HUD's SwiftUI content (wrapped by `NSHostingView` into a borderless transparent panel).
 ///
-/// 暗色胶囊卡片：左侧随状态切换的图标/波形指示，右侧主文案。控制器据此测自然尺寸并定位。
+/// A dark capsule card: an icon/waveform indicator on the left that switches with state, and primary copy on the right. The controller measures the natural size and positions accordingly.
 public struct RecordingPanelView: View {
-    /// 卡片四周透明外边距：给阴影留渲染空间，避免直角透明窗口四角被裁成色块。
-    /// 控制器据此补偿定位与尺寸，故卡片视觉位置不变。需 ≥ 阴影外扩范围。
+    /// Transparent outer margin around the card: leaves rendering space for the shadow, avoiding the corners of the square transparent window being clipped into color blocks.
+    /// The controller compensates positioning and size accordingly, so the card's visual position is unchanged. Must be >= the shadow's outward extent.
     public static let shadowPad: CGFloat = 16
 
-    /// 卡片圆角（胶囊感）。
+    /// Card corner radius (capsule feel).
     private static let cornerRadius: CGFloat = 16
-    /// 波形条数量。
+    /// Number of waveform bars.
     private static let barCount = 5
-    /// 处理态进度条轨道宽度（pt）。
+    /// Track width (pt) of the processing-state progress bar.
     private static let progressBarWidth: CGFloat = 48
-    /// 处理态进度条高度（pt）。
+    /// Height (pt) of the processing-state progress bar.
     private static let progressBarHeight: CGFloat = 5
 
-    /// 润色阶段的预期时长（秒）。进度条用它作为 50%→90% 缓动爬升的时间窗，
-    /// 也是「比往常要长」文案的触发阈值：超过此时长仍未拿到润色结果即翻文案。
+    /// The expected duration (seconds) of the polish phase. The progress bar uses it as the time window for the 50%->90% eased climb,
+    /// and it is also the trigger threshold for the "taking longer than usual" copy: if the polish result is still not received after this duration, the copy flips.
     private static let expectedPolishDuration: Double = 3
-    /// 润色阶段进度条的爬升上限（占比）。爬到 90% 后保持，绝不在拿到真实结果前越过此线。
+    /// The climb ceiling (fraction) of the polish-phase progress bar. After climbing to 90% it holds, never crossing this line before the real result arrives.
     private static let polishProgressCap: CGFloat = 0.9
-    /// 拿到润色结果后由当前位置吸附到 100% 的吸附动画时长（秒）。
+    /// The duration (seconds) of the snap animation from the current position to 100% after the polish result arrives.
     private static let snapDuration: Double = 0.3
 
     @ObservedObject var model: RecordingPanelModel
     @State private var appeared = false
-    /// 持续旋转的相位，驱动识别态的环形进度动画。
+    /// The continuously rotating phase, driving the transcribing-state ring progress animation.
     @State private var spin = false
 
-    /// 进度条当前展示值（0...1）：润色阶段由客户端定时缓动驱动（与后端解耦），
-    /// 而非直接绑定后端发布的离散值（后端仅发 0.5 起、1.0 完成两点）。
+    /// The progress bar's current displayed value (0...1): in the polish phase it is driven by a client-side timed ease (decoupled from the backend),
+    /// rather than directly bound to the discrete values published by the backend (the backend only emits two points: 0.5 at start, 1.0 at completion).
     @State private var displayedProgress: CGFloat = 0
-    /// 本轮润色起算时刻；`nil` 表示尚未进入润色阶段。用于判定是否超过预期时长。
+    /// The start time of this polish round; `nil` means the polish phase has not been entered yet. Used to decide whether the expected duration has been exceeded.
     @State private var polishStartedAt: Date?
-    /// 润色是否已超过 `expectedPolishDuration` 仍未返回：为真时主文案翻成「比往常要长」。
+    /// Whether polish has exceeded `expectedPolishDuration` without returning: when true the primary copy flips to "taking longer than usual".
     @State private var polishElapsedLong = false
-    /// 驱动「比往常要长」文案翻转的延时任务句柄；润色完成 / 离开处理态时取消。
+    /// The handle of the delayed task that drives the "taking longer than usual" copy flip; cancelled when polish completes / the processing state is left.
     @State private var longLabelTask: Task<Void, Never>?
 
     public init(model: RecordingPanelModel) {
@@ -88,21 +88,21 @@ public struct RecordingPanelView: View {
         .onAppear {
             withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { appeared = true }
             spin = true
-            // 首帧若已处于处理态（例如 HUD 在 .processing 时才挂载），同步驱动一次。
+            // If the first frame is already in the processing state (e.g. the HUD is mounted only at .processing), drive it once synchronously.
             handleStateChange(model.state)
         }
         .onChange(of: model.state) { _, newState in
             handleStateChange(newState)
         }
         .onDisappear {
-            // 视图卸载：取消挂起的文案翻转任务，避免悬挂的 Task 在下一轮误触发。
+            // View teardown: cancel the pending copy-flip task, to avoid a dangling Task triggering erroneously in the next round.
             longLabelTask?.cancel()
             longLabelTask = nil
         }
     }
 
-    /// HUD 主文案：润色阶段一旦超过预期时长（`polishElapsedLong`），就地替换成「比往常要长」；
-    /// 其余情况沿用 ``RecordingState/displayText``（识别/润色的常规文案与 info/error 文案均不变）。
+    /// HUD primary copy: in the polish phase, once the expected duration is exceeded (`polishElapsedLong`), replace in place with "taking longer than usual";
+    /// otherwise reuse ``RecordingState/displayText`` (the regular transcribing/polish copy and info/error copy are all unchanged).
     private var statusText: String {
         if polishElapsedLong, model.state.processingPhase == .polishing {
             return RecordingState.takingLongerMessage
@@ -110,41 +110,41 @@ public struct RecordingPanelView: View {
         return model.state.displayText
     }
 
-    /// 响应状态变化，驱动进度条的客户端缓动与「比往常要长」文案翻转（与后端解耦）。
+    /// Responds to state changes, driving the client-side ease of the progress bar and the "taking longer than usual" copy flip (decoupled from the backend).
     ///
-    /// 时间线（聚焦润色）：后端在识别完成时发布 `0.5 + .polishing`，本方法据此把展示值在
-    /// `expectedPolishDuration` 内以 `.easeOut` 缓动爬到 `polishProgressCap`(90%) 并自然保持；
-    /// 同时起一个延时任务，超过预期时长仍未返回则翻文案。后端在润色返回时发布 `1.0`，
-    /// 本方法据此把展示值吸附到 100% 并清理计时；离开处理态则把所有状态复位，保证下一轮干净起步。
+    /// Timeline (focused on polish): the backend publishes `0.5 + .polishing` when transcription completes; this method accordingly climbs the displayed value within
+    /// `expectedPolishDuration` with an `.easeOut` ease to `polishProgressCap` (90%) and naturally holds;
+    /// it also starts a delayed task that flips the copy if the expected duration is exceeded without a return. The backend publishes `1.0` when polish returns,
+    /// and this method accordingly snaps the displayed value to 100% and clears the timer; on leaving the processing state it resets all state, ensuring a clean start next round.
     private func handleStateChange(_ state: RecordingState) {
         switch (state.processingPhase, state.progress) {
         case (.transcribing?, let progress?):
-            // 识别阶段：直接跟随后端发布值（0.0 起步），交由进度条的既有缓动平滑过渡。
+            // Transcription phase: directly follow the backend-published value (starting at 0.0), letting the progress bar's existing ease smooth the transition.
             resetPolishTracking()
             withAnimation(.easeInOut(duration: Self.snapDuration)) {
                 displayedProgress = CGFloat(min(max(progress, 0), 1))
             }
         case (.polishing?, let progress?):
             if progress >= 1.0 {
-                // 润色返回：从当前位置（≤90%）吸附到 100%，并取消「比往常要长」计时。
+                // Polish returned: snap from the current position (<=90%) to 100%, and cancel the "taking longer than usual" timer.
                 longLabelTask?.cancel()
                 longLabelTask = nil
                 withAnimation(.easeInOut(duration: Self.snapDuration)) {
                     displayedProgress = 1.0
                 }
             } else if polishStartedAt == nil {
-                // 润色起步：从 50% 起以 ease-out 在 expectedPolishDuration 内爬到 90% 并保持。
+                // Polish start: climb from 50% with ease-out to 90% within expectedPolishDuration and hold.
                 beginPolishTrickle(from: CGFloat(min(max(progress, 0), 1)))
             }
         default:
-            // 离开处理态（idle/info/error/listening/transcribing-旧态）：复位，为下一轮做准备。
+            // Leaving the processing state (idle/info/error/listening/transcribing-old-state): reset, preparing for the next round.
             resetPolishTracking()
             displayedProgress = 0
         }
     }
 
-    /// 起步润色缓动：把展示值从起点（~50%）以 `.easeOut` 在预期时长内爬到 90% 上限并保持，
-    /// 同时排程一个延时任务——超过预期时长仍处于润色阶段则翻「比往常要长」文案。
+    /// Polish-start ease: climb the displayed value from the start point (~50%) with `.easeOut` within the expected duration to the 90% ceiling and hold,
+    /// and schedule a delayed task -- if still in the polish phase after the expected duration, flip to the "taking longer than usual" copy.
     private func beginPolishTrickle(from start: CGFloat) {
         polishStartedAt = Date()
         polishElapsedLong = false
@@ -156,7 +156,7 @@ public struct RecordingPanelView: View {
         longLabelTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(Self.expectedPolishDuration * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            // 仍在润色阶段（未返回结果）才翻文案；否则保持常规文案。
+            // Only flip the copy if still in the polish phase (no result returned); otherwise keep the regular copy.
             if model.state.processingPhase == .polishing,
                (model.state.progress ?? 1) < 1.0 {
                 polishElapsedLong = true
@@ -164,7 +164,7 @@ public struct RecordingPanelView: View {
         }
     }
 
-    /// 复位润色相关的计时与文案状态，并取消挂起的延时任务。
+    /// Resets the polish-related timer and copy state, and cancels the pending delayed task.
     private func resetPolishTracking() {
         longLabelTask?.cancel()
         longLabelTask = nil
@@ -172,7 +172,7 @@ public struct RecordingPanelView: View {
         polishElapsedLong = false
     }
 
-    /// 左侧状态指示：聆听=波形、识别=旋转环、出错=红色感叹号。
+    /// Left-side state indicator: listening = waveform, transcribing = rotating ring, error = red exclamation mark.
     @ViewBuilder private var indicator: some View {
         switch model.state {
         case .listening:
@@ -190,19 +190,19 @@ public struct RecordingPanelView: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Color.red.opacity(0.9))
         case .idle:
-            // idle 通常不展示；给一个静态点位避免布局塌缩。
+            // idle is usually not displayed; give a static dot to avoid layout collapse.
             Circle().fill(Color.white.opacity(0.5)).frame(width: 8, height: 8)
         }
     }
 
-    /// 音量波形：5 条圆点随实时麦克风电平起伏（声控，像 Typeless），静默时退化为轻柔的呼吸式波动而非僵死。
+    /// Volume waveform: 5 dots rise and fall with the live microphone level (voice-driven, like Typeless); when silent it degrades to a gentle breathing fluctuation rather than going dead.
     ///
-    /// 用 `TimelineView(.animation)` 每帧重渲染，驱动一个连续的「待机呼吸」相位（低幅度、按条错峰），
-    /// 再叠加由 `model.level` 决定的「声控幅度」项——说话时声控项主导、圆点明显弹跳，静默时仅剩呼吸波。
-    /// `model.level` 的瞬时变化仍用 `.easeOut` 平滑，让圆点对说话响应灵敏不抖动。
+    /// Uses `TimelineView(.animation)` to re-render every frame, driving a continuous "idle breathing" phase (low amplitude, staggered per bar),
+    /// then superimposes a "voice-driven amplitude" term determined by `model.level` -- when speaking the voice-driven term dominates and the dots bounce noticeably, when silent only the breathing wave remains.
+    /// Instantaneous changes in `model.level` are still smoothed with `.easeOut`, making the dots respond sensitively to speech without jitter.
     private var waveform: some View {
         TimelineView(.animation) { timeline in
-            // 连续相位（秒）：驱动待机呼吸；TimelineView 逐帧推进，无需 @State 计时器。
+            // Continuous phase (seconds): drives idle breathing; TimelineView advances it frame by frame, no @State timer needed.
             let phase = timeline.date.timeIntervalSinceReferenceDate
             HStack(alignment: .center, spacing: 3) {
                 ForEach(0..<Self.barCount, id: \.self) { i in
@@ -216,27 +216,27 @@ public struct RecordingPanelView: View {
         .frame(width: 24, height: 18)
     }
 
-    /// 第 i 条波形的高度 = 基线 + 声控幅度项 + 待机呼吸项，最终夹紧在 `baseline ... baseline + span`。
+    /// Height of the i-th waveform bar = baseline + voice-driven amplitude term + idle breathing term, finally clamped to `baseline ... baseline + span`.
     ///
-    /// - 声控幅度项：`span * level * weight`，按索引做对称凸起（中间高、两侧低），随说话幅度弹跳。
-    /// - 待机呼吸项：低幅度正弦波，每条带各自的相位偏移（错峰），即便 `level ≈ 0` 圆点也在轻轻起伏；
-    ///   其权重随 `level` 升高而衰减，确保说话时声控项主导、不被呼吸波稀释。
+    /// - Voice-driven amplitude term: `span * level * weight`, with a symmetric bulge by index (high in the middle, low on the sides), bouncing with speech amplitude.
+    /// - Idle breathing term: a low-amplitude sine wave, each bar with its own phase offset (staggered), so even when `level ~= 0` the dots gently fluctuate;
+    ///   its weight decays as `level` rises, ensuring the voice-driven term dominates when speaking and is not diluted by the breathing wave.
     private func barHeight(index i: Int, phase: Double) -> CGFloat {
         let baseline: CGFloat = 4
         let span: CGFloat = 14
-        // 中间条权重最高，向两侧递减，形成对称波形外观。
+        // The middle bar has the highest weight, decreasing toward the sides, forming a symmetric waveform appearance.
         let mid = Double(Self.barCount - 1) / 2
         let distance = abs(Double(i) - mid)
         let weight = 1.0 - distance / (mid + 1)
         let level = min(max(model.level, 0), 1)
 
-        // 声控幅度项：随说话电平起伏。
+        // Voice-driven amplitude term: rises and falls with the speech level.
         let amplitude = level * weight
 
-        // 待机呼吸项：连续正弦波，按条错峰；静默时是主要的「活着」信号，说话时随电平衰减让位。
-        let idleSpeed = 2.4            // 呼吸频率（rad/s 系数）
-        let idlePhaseStep = 0.9        // 相邻条的相位差，形成行进感的波
-        let idleMaxFraction = 0.16     // 待机起伏占 span 的最大比例（低幅度，仅轻柔呼吸）
+        // Idle breathing term: a continuous sine wave, staggered per bar; the main "alive" signal when silent, decaying with the level to yield when speaking.
+        let idleSpeed = 2.4            // breathing frequency (rad/s coefficient)
+        let idlePhaseStep = 0.9        // phase difference between adjacent bars, forming a traveling wave
+        let idleMaxFraction = 0.16     // max fraction of span for the idle fluctuation (low amplitude, gentle breathing only)
         let wave = (Foundation.sin(phase * idleSpeed + Double(i) * idlePhaseStep) + 1) / 2  // 0...1
         let idle = idleMaxFraction * wave * (1 - level)
 
@@ -244,7 +244,7 @@ public struct RecordingPanelView: View {
         return baseline + span * CGFloat(fraction)
     }
 
-    /// 识别态旋转进度环。
+    /// The transcribing-state rotating progress ring.
     private var spinner: some View {
         Circle()
             .trim(from: 0, to: 0.72)
@@ -254,15 +254,15 @@ public struct RecordingPanelView: View {
             .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: spin)
     }
 
-    /// 处理态进度条（Typeless 风格）：固定宽度轨道 + 按进度填充的前景胶囊。
-    /// 填充宽度绑定客户端展示值 `displayedProgress`（由 `handleStateChange` 驱动），而非后端发布的离散值：
-    /// 润色阶段从 50% 以 ease-out 在 `expectedPolishDuration` 内缓动爬到 90% 上限并保持，
-    /// 拿到真实结果后再吸附到 100%——绝不停在 50%，等待发生在 90% 上限附近。
-    /// 前景色随阶段切换以在 50% 边界强化「识别 → 润色」的相位变化。
+    /// Processing-state progress bar (Typeless style): a fixed-width track + a foreground capsule filled by progress.
+    /// The fill width is bound to the client-side displayed value `displayedProgress` (driven by `handleStateChange`), not the discrete values published by the backend:
+    /// in the polish phase it eases from 50% with ease-out within `expectedPolishDuration` to the 90% ceiling and holds,
+    /// then snaps to 100% after the real result arrives -- never stopping at 50%; the wait happens near the 90% ceiling.
+    /// The foreground color switches with the phase to reinforce the "transcribing -> polish" phase change at the 50% boundary.
     private func progressBar(progress: Double, phase: RecordingState.ProcessingPhase) -> some View {
         let fillColor: Color = (phase == .polishing)
-            ? Color.green.opacity(0.9)   // 润色：绿色
-            : Color.white.opacity(0.9)   // 识别：白色
+            ? Color.green.opacity(0.9)   // polish: green
+            : Color.white.opacity(0.9)   // transcribing: white
         let fill = min(max(displayedProgress, 0), 1)
         return ZStack(alignment: .leading) {
             Capsule()

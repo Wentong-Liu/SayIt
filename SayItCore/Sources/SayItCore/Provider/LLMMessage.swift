@@ -1,13 +1,13 @@
 import Foundation
 
-/// 发给大模型的一条对话消息。
+/// A single conversation message sent to the large model.
 public struct LLMMessage: Codable, Equatable, Sendable {
     public enum Role: String, Codable, Sendable {
         case system, user, assistant
     }
     public let role: Role
     public let content: String
-    /// 附带图像（base64 data URL）；仅视觉 Provider 使用，其它忽略。
+    /// Attached images (base64 data URL); used only by vision Providers, ignored by others.
     public let imageDataURLs: [String]
 
     public init(role: Role, content: String, imageDataURLs: [String] = []) {

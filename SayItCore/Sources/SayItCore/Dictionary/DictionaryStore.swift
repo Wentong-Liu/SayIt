@@ -1,33 +1,33 @@
 import Foundation
 import os
 
-/// 用户词典的持久化存储（基础层，**不接管线、不含匹配逻辑**）。
+/// Persistent storage for the user dictionary (foundation layer, **not hooked into the pipeline, no matching logic**).
 ///
-/// 职责：把 ``UserDictionary`` 以 JSON 落盘到 `Application Support/SayIt/dictionary.json`，
-/// 首次访问时一次性载入到内存缓存，之后每次增删改都**原子写盘**并发**变更通知**。
+/// Responsibility: persists ``UserDictionary`` as JSON to `Application Support/SayIt/dictionary.json`,
+/// loading it once into the in-memory cache on first access, then **atomically writing to disk** and posting a **change notification** on each add/update/remove.
 ///
-/// 设计要点：
-/// - **`actor`**：磁盘读写串行化，CRUD 全部经 actor 隔离天然并发安全（首个 public 且发通知的 actor）。
-/// - **App Support 目录复用**：默认根目录沿用 ``ModelManager/downloadBase`` 同款解析
-///   （`Application Support/SayIt`，取不到时回落到 `Caches/SayIt`），与模型缓存同根，不另立目录方案。
-/// - **可注入**：`baseDirectory` / `fileName` / `notificationCenter` / `fileManager` 均可注入，
-///   单测传临时目录与独立通知中心，绝不碰真实用户数据。
-/// - **变更通知**：镜像 ``AppConfig/didChangeNotification`` 的命名与「值确有变化才发」语义；
-///   每次真正改动状态的 CRUD 成功后投递 ``DictionaryStore/didChangeNotification``。
-///   `object` 传 `nil`（`actor` 实例非 `Sendable`，不可作通知 object；监听方收到后用 ``all()`` 重读）。
-/// - **永不崩溃**：文件缺失或解码失败时静默以空词典起步（记日志后继续），落盘失败只记日志不抛出——
-///   基础层不得把 I/O 错误传染给调用方。
+/// Design points:
+/// - **`actor`**: disk read/write serialized, all CRUD goes through actor isolation and is naturally concurrency-safe (the first public actor that posts notifications).
+/// - **App Support directory reuse**: the default root directory uses the same resolution as ``ModelManager/downloadBase``
+///   (`Application Support/SayIt`, falling back to `Caches/SayIt` when unavailable), sharing a root with the model cache, not establishing a separate directory scheme.
+/// - **Injectable**: `baseDirectory` / `fileName` / `notificationCenter` / `fileManager` are all injectable,
+///   unit tests pass a temp directory and an isolated notification center, never touching real user data.
+/// - **Change notification**: mirrors ``AppConfig/didChangeNotification``'s naming and "only post when the value actually changes" semantics;
+///   posts ``DictionaryStore/didChangeNotification`` after each CRUD that truly changes state succeeds.
+///   `object` is `nil` (an `actor` instance is not `Sendable` and cannot be a notification object; listeners re-read with ``all()`` on receipt).
+/// - **Never crashes**: starts with an empty dictionary silently when the file is missing or decoding fails (logs then continues), a write failure only logs without throwing --
+///   the foundation layer must not propagate I/O errors to the caller.
 public actor DictionaryStore {
-    /// 词典发生变化时投递的通知。镜像 ``AppConfig/didChangeNotification`` 的命名风格。
+    /// The notification posted when the dictionary changes. Mirrors ``AppConfig/didChangeNotification``'s naming style.
     ///
-    /// 在每次真正改动词典的 CRUD（add / update / remove / replaceAll）成功后投递。
-    /// `object` 为 `nil`（`actor` 不可作通知 object）；监听方收到后调用 ``all()`` 重读最新内容。
+    /// Posted after each CRUD that truly changes the dictionary (add / update / remove / replaceAll) succeeds.
+    /// `object` is `nil` (an `actor` cannot be a notification object); listeners call ``all()`` on receipt to re-read the latest content.
     public static let didChangeNotification = Notification.Name("com.liuwentong.SayIt.DictionaryStoreDidChange")
 
-    /// 默认词典根目录：`Application Support/SayIt`（与 ``ModelManager/downloadBase`` 同根）。
+    /// The default dictionary root directory: `Application Support/SayIt` (same root as ``ModelManager/downloadBase``).
     ///
-    /// 解析方式与 ``ModelManager`` 一致：取 Application Support（缺失则创建），失败回落到 Caches，
-    /// 始终避开受 TCC 保护的 `~/Documents`。词典文件落在此目录下的 `dictionary.json`。
+    /// Resolved the same way as ``ModelManager``: take Application Support (created if missing), fall back to Caches on failure,
+    /// always avoiding the TCC-protected `~/Documents`. The dictionary file lands as `dictionary.json` under this directory.
     nonisolated public static let defaultBaseDirectory: URL = {
         let fm = FileManager.default
         if let appSupport = try? fm.url(
@@ -38,7 +38,7 @@ public actor DictionaryStore {
         ) {
             return appSupport.appending(component: "SayIt")
         }
-        // 极端情况下取不到 Application Support：回退到缓存目录，仍避开受 TCC 保护的 Documents。
+        // In the extreme case Application Support cannot be obtained: fall back to the cache directory, still avoiding the TCC-protected Documents.
         let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
         return caches.appending(component: "SayIt")
     }()
@@ -49,14 +49,14 @@ public actor DictionaryStore {
     private let fileManager: FileManager
     private let logger = Logger(subsystem: "com.liuwentong.SayIt", category: "dictionary")
 
-    /// 内存缓存；`nil` 表示尚未从磁盘载入（懒加载一次）。
+    /// The in-memory cache; `nil` means it has not yet been loaded from disk (lazy-loaded once).
     private var cache: UserDictionary?
 
     /// - Parameters:
-    ///   - baseDirectory: 词典文件所在目录；默认 ``defaultBaseDirectory``，单测传临时目录。
-    ///   - fileName: 词典文件名；默认 `"dictionary.json"`。
-    ///   - notificationCenter: 变更通知中心；默认 `.default`，单测可传独立实例观察。
-    ///   - fileManager: 文件系统句柄；默认 `.default`。
+    ///   - baseDirectory: the directory the dictionary file lives in; defaults to ``defaultBaseDirectory``, unit tests pass a temp directory.
+    ///   - fileName: the dictionary file name; defaults to `"dictionary.json"`.
+    ///   - notificationCenter: the change-notification center; defaults to `.default`, unit tests can pass an isolated instance to observe.
+    ///   - fileManager: the file system handle; defaults to `.default`.
     public init(
         baseDirectory: URL = DictionaryStore.defaultBaseDirectory,
         fileName: String = "dictionary.json",
@@ -71,19 +71,19 @@ public actor DictionaryStore {
 
     // MARK: - CRUD
 
-    /// 返回当前全部词条（必要时先从磁盘载入）。
+    /// Returns all current entries (loading from disk first if necessary).
     public func all() -> [DictionaryEntry] {
         ensureLoaded().entries
     }
 
-    /// 追加一条词条；随后落盘并发变更通知。
+    /// Appends an entry; then writes to disk and posts a change notification.
     public func add(_ entry: DictionaryEntry) {
         var dict = ensureLoaded()
         dict.entries.append(entry)
         commit(dict)
     }
 
-    /// 按 `id` 替换已存在的词条；仅当找到**且内容确有变化**时才落盘+发通知。
+    /// Replaces an existing entry by `id`; only writes to disk + posts a notification when found **and the content actually changes**.
     public func update(_ entry: DictionaryEntry) {
         var dict = ensureLoaded()
         guard let index = dict.entries.firstIndex(where: { $0.id == entry.id }) else { return }
@@ -92,7 +92,7 @@ public actor DictionaryStore {
         commit(dict)
     }
 
-    /// 按 `id` 删除词条；仅当确有删除发生时才落盘+发通知。
+    /// Removes an entry by `id`; only writes to disk + posts a notification when a removal actually happens.
     public func remove(id: UUID) {
         var dict = ensureLoaded()
         let before = dict.entries.count
@@ -101,26 +101,26 @@ public actor DictionaryStore {
         commit(dict)
     }
 
-    /// 用给定词条整体替换词典；落盘并发变更通知（无条件视作一次变更）。
+    /// Replaces the dictionary wholesale with the given entries; writes to disk and posts a change notification (unconditionally treated as one change).
     public func replaceAll(_ entries: [DictionaryEntry]) {
-        // 先 ensureLoaded() 以保证基目录已建（它是唯一建目录处）；否则当 replaceAll 是
-        // 全新 store 上的首个操作时，目录缺失会导致原子写盘失败、数据只留在内存而静默丢失。
+        // ensureLoaded() first to guarantee the base directory has been created (it is the only place that creates the directory); otherwise when replaceAll is
+        // the first operation on a fresh store, a missing directory would cause the atomic write to fail, leaving the data only in memory and silently lost.
         ensureLoaded()
         commit(UserDictionary(entries: entries))
     }
 
-    // MARK: - 载入 / 落盘 / 通知
+    // MARK: - Load / write / notify
 
-    /// 懒加载一次：首访时建目录、读盘解码；文件缺失或损坏则以空词典起步（记日志，绝不抛/崩）。
+    /// Lazy-load once: on first access, create the directory and read+decode from disk; if the file is missing or corrupt, start with an empty dictionary (logs, never throws/crashes).
     @discardableResult
     private func ensureLoaded() -> UserDictionary {
         if let cache { return cache }
 
-        // 确保目录存在，使后续原子写盘可直接落地。
+        // Ensure the directory exists, so the subsequent atomic write can land directly.
         try? fileManager.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
 
         guard fileManager.fileExists(atPath: fileURL.path) else {
-            // 文件缺失（首次运行）：以空词典起步。
+            // File missing (first run): start with an empty dictionary.
             let empty = UserDictionary()
             cache = empty
             return empty
@@ -132,7 +132,7 @@ public actor DictionaryStore {
             cache = decoded
             return decoded
         } catch {
-            // 文件损坏/无法解码：记日志并以空词典起步，绝不崩溃。
+            // File corrupt/undecodable: log and start with an empty dictionary, never crashing.
             logger.error("Failed to load dictionary at \(self.fileURL.path, privacy: .public): \(String(describing: error), privacy: .public). Starting empty.")
             let empty = UserDictionary()
             cache = empty
@@ -140,17 +140,17 @@ public actor DictionaryStore {
         }
     }
 
-    /// 更新内存缓存 → 原子写盘 → 发变更通知。落盘失败只记日志，不抛出。
+    /// Update the in-memory cache -> atomic disk write -> post a change notification. A write failure only logs, does not throw.
     private func commit(_ dict: UserDictionary) {
         cache = dict
         persist(dict)
         notificationCenter.post(name: Self.didChangeNotification, object: nil)
     }
 
-    /// 原子写盘：`.atomic` 先写临时文件再 rename，故磁盘上永不残留半截/损坏文件。
+    /// Atomic disk write: `.atomic` writes a temp file first then renames, so no half-written/corrupt file is ever left on disk.
     ///
-    /// `JSONEncoder` 用 `.sortedKeys + .prettyPrinted` 输出稳定、可 diff 的 JSON；
-    /// 日期编码用默认 `.deferredToDate`，与解码默认一致。失败仅记日志，不传染给调用方。
+    /// `JSONEncoder` uses `.sortedKeys + .prettyPrinted` to output stable, diffable JSON;
+    /// date encoding uses the default `.deferredToDate`, consistent with the decoding default. A failure only logs, not contaminating the caller.
     private func persist(_ dict: UserDictionary) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

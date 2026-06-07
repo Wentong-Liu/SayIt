@@ -1,16 +1,16 @@
 import Foundation
 
-/// 调用 OpenAI 兼容的 /chat/completions。provider-agnostic：凡走该协议的 Provider 均复用本类型
-/// （当前 OpenAI / DeepSeek，及非 OAuth 的 OpenAI 视觉模型）。
-/// Key 由调用方传入（不读 Keychain，保持可测）。
+/// Calls the OpenAI-compatible /chat/completions. Provider-agnostic: every Provider using this protocol reuses this type
+/// (currently OpenAI / DeepSeek, and the non-OAuth OpenAI vision model).
+/// The Key is passed in by the caller (does not read the Keychain, staying testable).
 public struct OpenAICompatibleProvider: LLMProvider {
     private let config: ProviderConfig
     private let apiKey: String
     private let session: URLSession
-    /// 是否把图片发给模型。OpenAI（gpt-4o 等支持视觉）传 true；DeepSeek（纯文本）保持 false。
+    /// Whether to send images to the model. OpenAI (gpt-4o etc. supporting vision) passes true; DeepSeek (text-only) stays false.
     private let sendsImages: Bool
 
-    /// 单次请求超时（秒）。非流式 chat/completions 一次性返回，给足整体上限即可。
+    /// Single-request timeout (seconds). Non-streaming chat/completions returns all at once, so just give a generous overall ceiling.
     private static let requestTimeout = LLMDefaults.requestTimeout
 
     public init(config: ProviderConfig, apiKey: String, session: URLSession = .shared,
@@ -21,19 +21,19 @@ public struct OpenAICompatibleProvider: LLMProvider {
         self.sendsImages = sendsImages
     }
 
-    /// 图片 part 的 leaf：编为 `{"type":"image_url","image_url":{"url":...}}`，url 直接用 dataURL。
+    /// The image part's leaf: encoded as `{"type":"image_url","image_url":{"url":...}}`, the url directly uses the dataURL.
     private struct ImagePart: Encodable {
         struct URLBox: Encodable { let url: String }
         let type = "image_url"
         let image_url: URLBox
     }
 
-    /// 一条 message 的 content：要么纯字符串（无图/不发图），要么 parts 数组（文本 part + 每张图一个 image_url part）。
-    /// 多态骨架（string OR [text-part, image-parts...]）由 MultipartContent 提供；本类型只给出自己的 image_url leaf。
-    /// 纯字符串分支与旧行为逐字节一致。
+    /// The content of a message: either a plain string (no images/not sending images), or a parts array (text part + one image_url part per image).
+    /// The polymorphic skeleton (string OR [text-part, image-parts...]) is provided by MultipartContent; this type only supplies its own image_url leaf.
+    /// The plain-string branch is byte-for-byte identical to the old behavior.
     private typealias WireContent = MultipartContent<ImagePart>
 
-    /// 发给 chat/completions 的线上消息（content 可为字符串或 parts 数组）。
+    /// The wire message sent to chat/completions (content can be a string or a parts array).
     private struct WireMessage: Encodable { let role: String; let content: WireContent }
     private struct RequestBody: Encodable {
         let model: String
@@ -41,8 +41,8 @@ public struct OpenAICompatibleProvider: LLMProvider {
         let temperature: Double
     }
     private struct ResponseBody: Decodable {
-        // content 设为可空：模型「回了但 content 为 null/缺失」时仍能解码（取值处兜底空串），
-        // 不再因缺 content 抛 .invalidResponse。有 content 的正常路径不变。
+        // content is set nullable: when the model "replied but content is null/missing" it can still decode (falling back to an empty string where read),
+        // no longer throwing .invalidResponse due to missing content. The normal path with content is unchanged.
         struct Choice: Decodable { struct Msg: Decodable { let content: String? }; let message: Msg }
         let choices: [Choice]
     }
@@ -74,18 +74,18 @@ public struct OpenAICompatibleProvider: LLMProvider {
         try HTTPResponseValidator.throwIfHTTPError(http, body: String(data: data, encoding: .utf8) ?? "")
         guard let parsed = try? JSONDecoder().decode(ResponseBody.self, from: data),
               let message = parsed.choices.first?.message else {
-            // 成功状态码下却解不出 choices[].message：记录 body 片段助排查（行为不变，照常抛 .invalidResponse）。
+            // Under a success status code yet choices[].message cannot be parsed: log a body fragment to aid debugging (behavior unchanged, still throws .invalidResponse).
             let snippet = String((String(data: data, encoding: .utf8) ?? "").prefix(500))
             NSLog("[SayIt][OpenAICompatible] HTTP %d 成功但 JSON 解码失败，body 片段=%@", http.statusCode, snippet)
             throw ProviderError.invalidResponse
         }
-        // content 为 null/缺失（合法的空回复）兜底空串，不再误报 .invalidResponse；有 content 时原样返回。
+        // content is null/missing (a legal empty reply) falls back to an empty string, no longer falsely reporting .invalidResponse; when there is content it is returned as-is.
         return message.content ?? ""
     }
 
-    /// 把一条 LLMMessage 转成线上 content：
-    /// 仅当 sendsImages 且该消息带图时，编码为 parts 数组（文本 part + 每张图 image_url part，url 直接用 dataURL）；
-    /// 否则编码为纯字符串（与旧行为逐字节一致）。
+    /// Converts one LLMMessage into wire content:
+    /// only when sendsImages and the message has images, encodes into a parts array (text part + one image_url part per image, the url directly uses the dataURL);
+    /// otherwise encodes into a plain string (byte-for-byte identical to the old behavior).
     private static func wireContent(for msg: LLMMessage, sendsImages: Bool) -> WireContent {
         if sendsImages, !msg.imageDataURLs.isEmpty {
             let parts = msg.imageDataURLs.map { ImagePart(image_url: .init(url: $0)) }

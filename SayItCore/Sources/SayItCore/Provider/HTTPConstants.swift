@@ -1,25 +1,25 @@
 import Foundation
 
-/// 各 Provider 共享的 HTTP 字面量（header 名/值、路径后缀）单一真相源。
-/// 收敛散落在各 Provider 里的内联字符串，避免大小写/拼写漂移。
+/// Single source of truth for HTTP literals shared by all Providers (header names/values, path suffixes).
+/// Consolidates inline strings scattered across Providers to avoid case/spelling drift.
 enum HTTPConstants {
-    // MARK: - Header 名（按 HTTP 规范的规范化大小写；header 名本身大小写不敏感）
+    // MARK: - Header names (canonical casing per the HTTP spec; header names themselves are case-insensitive)
     static let contentTypeHeader = "Content-Type"
     static let acceptHeader = "Accept"
     static let authorizationHeader = "Authorization"
 
-    // MARK: - Header 值
+    // MARK: - Header values
     static let applicationJSON = "application/json"
 
-    // MARK: - 路径后缀
-    /// OpenAI 兼容协议的补全端点后缀（拼在 baseURL 之后）。
+    // MARK: - Path suffixes
+    /// Completion endpoint suffix for the OpenAI-compatible protocol (appended after baseURL).
     static let chatCompletionsPath = "/chat/completions"
-    /// Anthropic Messages API 的端点后缀（拼在 baseURL 之后）。
+    /// Endpoint suffix for the Anthropic Messages API (appended after baseURL).
     static let messagesPath = "/messages"
 }
 
 extension URLRequest {
-    /// 写入 `Authorization: Bearer <token>`。各 Provider 统一走这里，避免重复拼前缀。
+    /// Writes `Authorization: Bearer <token>`. All Providers go through here to avoid duplicating the prefix.
     mutating func setBearerAuthorization(_ token: String) {
         setValue("Bearer \(token)", forHTTPHeaderField: HTTPConstants.authorizationHeader)
     }

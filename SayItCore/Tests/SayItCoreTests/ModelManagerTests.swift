@@ -1,15 +1,15 @@
 import XCTest
 @testable import SayItCore
 
-/// ModelManager 纯逻辑单测：variant 映射、缓存路径布局、归一化匹配、权重检测与状态机。
-/// **不触发真实网络下载**（那需联网拉数 GB 模型，留到真机集成验证）。
+/// ModelManager pure-logic unit test: variant mapping, cache path layout, normalized matching, weight detection and the state machine.
+/// **Does not trigger a real network download** (that would require fetching multi-GB models online, left for on-device integration verification).
 final class ModelManagerTests: XCTestCase {
 
-    // MARK: - 友好名 → 真实仓库 variant 文件夹名映射
+    // MARK: - Friendly name -> real repository variant folder name mapping
 
     func testVariantMappingResolvesToRealRepoFolderNames() {
-        // 友好名必须映射到 argmaxinc/whisperkit-coreml 仓库内真实存在的文件夹名
-        // （经 HuggingFace HTTP 200 校验），否则 WhisperKit.download 解析不到、下载无声失败。
+        // The friendly name must map to a folder name that really exists in the argmaxinc/whisperkit-coreml repo
+        // (verified via HuggingFace HTTP 200), otherwise WhisperKit.download cannot resolve it and the download silently fails.
         XCTAssertEqual(ModelManager.variant(for: "large-v3-turbo"), "openai_whisper-large-v3-v20240930_turbo")
         XCTAssertEqual(ModelManager.variant(for: "large-v3"), "openai_whisper-large-v3")
         XCTAssertEqual(ModelManager.variant(for: "medium"), "openai_whisper-medium")
@@ -19,7 +19,7 @@ final class ModelManagerTests: XCTestCase {
     }
 
     func testVariantMappingPassesThroughRealFolderName() {
-        // 已是真实仓库文件夹名（含 openai_whisper- 前缀）应原样返回，不再重复加前缀。
+        // What is already a real repository folder name (with the openai_whisper- prefix) should be returned as-is, not prefixed again.
         XCTAssertEqual(
             ModelManager.variant(for: "openai_whisper-large-v3-v20240930_turbo"),
             "openai_whisper-large-v3-v20240930_turbo"
@@ -27,15 +27,15 @@ final class ModelManagerTests: XCTestCase {
     }
 
     func testVariantMappingFallsBackToPrefixedNameForUnknownModel() {
-        // 未知友好名按仓库命名约定加前缀兜底。
+        // An unknown friendly name falls back to adding the prefix per the repository naming convention.
         XCTAssertEqual(ModelManager.variant(for: "distil-large-v3"), "openai_whisper-distil-large-v3")
     }
 
-    // MARK: - 下载根目录 / 缓存布局（单一真相源）
+    // MARK: - Download root directory / cache layout (single source of truth)
 
     func testDownloadBaseIsApplicationSupportSayItModels() {
-        // ~/Documents 受 TCC 保护，签名 hardened-runtime 非沙盒 App 无法写入；
-        // 故根目录改用不受限的 Application Support/SayIt/models。
+        // ~/Documents is protected by TCC, a signed hardened-runtime non-sandboxed App cannot write into it;
+        // so the root directory uses the unrestricted Application Support/SayIt/models.
         let appSupport = try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -50,7 +50,7 @@ final class ModelManagerTests: XCTestCase {
     }
 
     func testDownloadBaseDirectoryExists() {
-        // 访问 downloadBase 时应已确保目录存在，使 WhisperKit/HubApi 能直接写入。
+        // Accessing downloadBase should have ensured the directory exists, so WhisperKit/HubApi can write directly.
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(
             atPath: ModelManager.downloadBase.path, isDirectory: &isDir)
@@ -59,7 +59,7 @@ final class ModelManagerTests: XCTestCase {
     }
 
     func testRepoCacheDirectoryLayoutMatchesHubApi() {
-        // HubApi.localRepoLocation 布局：downloadBase/<repoType=="models">/<repoId>
+        // HubApi.localRepoLocation layout: downloadBase/<repoType=="models">/<repoId>
         let expected = ModelManager.downloadBase
             .appending(component: "models")
             .appending(component: "argmaxinc/whisperkit-coreml")
@@ -70,7 +70,7 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertEqual(ModelManager.modelRepo, "argmaxinc/whisperkit-coreml")
     }
 
-    // MARK: - 归一化匹配（消除 - / _ / 大小写差异）
+    // MARK: - Normalized matching (eliminating - / _ / case differences)
 
     func testNormalizedVariantKeyStripsSeparatorsAndCase() {
         XCTAssertEqual(ModelManager.normalizedVariantKey("large-v3-turbo"), "largev3turbo")
@@ -79,14 +79,14 @@ final class ModelManagerTests: XCTestCase {
     }
 
     func testNormalizedFolderNameEqualsNormalizedVariant() {
-        // 真实仓库文件夹名归一化后应与 variant 归一化后**相等**（下载落盘即用此名）。
+        // A real repository folder name, after normalization, should be **equal** to the normalized variant (the download lands with this name).
         let folderKey = ModelManager.normalizedVariantKey("openai_whisper-large-v3-v20240930_turbo")
         let variantKey = ModelManager.normalizedVariantKey(ModelManager.variant(for: "large-v3-turbo"))
         XCTAssertEqual(folderKey, variantKey,
                        "归一化后仓库文件夹名应等于归一化后的 variant")
     }
 
-    // MARK: - 权重检测（用临时目录构造伪缓存）
+    // MARK: - Weight detection (constructing a fake cache with a temp directory)
 
     func testHasRequiredModelFilesTrueWhenAllThreePresent() throws {
         let folder = try makeTempModelFolder(present: ["MelSpectrogram", "AudioEncoder", "TextDecoder"])
@@ -108,7 +108,7 @@ final class ModelManagerTests: XCTestCase {
     }
 
     func testCachedModelFolderFindsByNormalizedNameWhenWeightsComplete() throws {
-        // 在临时 repo 根下放一个真实命名、权重齐全的文件夹；用连字符友好名应能命中（归一化后相等）。
+        // Put a really-named, weight-complete folder under the temp repo root; a hyphenated friendly name should hit it (equal after normalization).
         let repoRoot = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: repoRoot) }
         let variantFolder = repoRoot.appending(component: "openai_whisper-large-v3-v20240930_turbo")
@@ -116,7 +116,7 @@ final class ModelManagerTests: XCTestCase {
 
         let found = ModelManager.cachedModelFolder(for: "large-v3-turbo", in: repoRoot)
         XCTAssertNotNil(found)
-        // 比较解析后的路径，规避 /private 前缀与尾部斜杠等等价表示差异。
+        // Compare the resolved paths, sidestepping equivalent-representation differences such as the /private prefix and trailing slashes.
         XCTAssertEqual(found?.resolvingSymlinksInPath().standardizedFileURL.path,
                        variantFolder.resolvingSymlinksInPath().standardizedFileURL.path)
     }
@@ -125,19 +125,19 @@ final class ModelManagerTests: XCTestCase {
         let repoRoot = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: repoRoot) }
         let variantFolder = repoRoot.appending(component: "openai_whisper-large-v3-v20240930_turbo")
-        try createModelFiles(["MelSpectrogram"], in: variantFolder) // 缺两个
+        try createModelFiles(["MelSpectrogram"], in: variantFolder) // missing two
 
         XCTAssertNil(ModelManager.cachedModelFolder(for: "large-v3-turbo", in: repoRoot))
     }
 
     func testCachedModelFolderDoesNotMatchTurboFolderForLargeV3() throws {
-        // turbo 文件夹名归一化后包含 large-v3 的归一化键，但用「相等」匹配后不应被误命中。
+        // The turbo folder name, after normalization, contains large-v3's normalized key, but should not be wrongly hit under "equal" matching.
         let repoRoot = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: repoRoot) }
         let turboFolder = repoRoot.appending(component: "openai_whisper-large-v3-v20240930_turbo")
         try createModelFiles(["MelSpectrogram", "AudioEncoder", "TextDecoder"], in: turboFolder)
 
-        // 找 large-v3，仓库里只有 turbo：相等匹配下不应命中。
+        // Looking for large-v3, the repo only has turbo: should not hit under equal matching.
         XCTAssertNil(ModelManager.cachedModelFolder(for: "large-v3", in: repoRoot))
     }
 
@@ -147,7 +147,7 @@ final class ModelManagerTests: XCTestCase {
         let variantFolder = repoRoot.appending(component: "openai_whisper-base")
         try createModelFiles(["MelSpectrogram", "AudioEncoder", "TextDecoder"], in: variantFolder)
 
-        // 找 large-v3-turbo，仓库里只有 base：不应命中。
+        // Looking for large-v3-turbo, the repo only has base: should not hit.
         XCTAssertNil(ModelManager.cachedModelFolder(for: "large-v3-turbo", in: repoRoot))
     }
 
@@ -157,12 +157,12 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertNil(ModelManager.cachedModelFolder(for: "large-v3-turbo", in: absent))
     }
 
-    // MARK: - 状态机（无网络）
+    // MARK: - State machine (no network)
 
     @MainActor
     func testInitialStateNotDownloadedWhenNoCache() {
-        // 真实 Application Support/SayIt/models 下通常无该模型；若恰好已下载本断言会变 .downloaded，
-        // 故这里只断言状态是这两种合法之一（不联网、不下载）。
+        // Under the real Application Support/SayIt/models this model is usually absent; if it happens to be already downloaded this assertion would become .downloaded,
+        // so here we only assert the state is one of these two legal options (no network, no download).
         let mgr = ModelManager(model: "large-v3-turbo")
         XCTAssertTrue(mgr.state == .notDownloaded || mgr.state == .downloaded)
         XCTAssertEqual(mgr.model, "large-v3-turbo")
@@ -259,7 +259,7 @@ final class ModelManagerTests: XCTestCase {
         )
     }
 
-    // MARK: - 辅助
+    // MARK: - Helpers
 
     private func makeTempDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
@@ -274,7 +274,7 @@ final class ModelManagerTests: XCTestCase {
         return folder
     }
 
-    /// 在 `folder` 内为每个名字创建一个伪 `.mlmodelc` 目录（detectModelURL 直接命中 .mlmodelc 路径）。
+    /// Creates a fake `.mlmodelc` directory for each name inside `folder` (detectModelURL directly hits the .mlmodelc path).
     private func createModelFiles(_ names: [String], in folder: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)

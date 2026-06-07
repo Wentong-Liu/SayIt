@@ -1,49 +1,49 @@
 import AppKit
 import SayItCore
 
-/// 端到端听写编排器：把热键 → 录音 → 转写 → 润色 → 注入串成完整闭环。
+/// End-to-end dictation orchestrator: chains hotkey -> recording -> transcription -> polish -> injection into a complete loop.
 ///
-/// 这是 App 层把各 `SayItCore` 模块「接线」起来的唯一处。所有具体能力都复用
-/// 已有类型（不在此重复声明）：
-/// - 触发：``HotkeyManager``（按 ``AppConfig`` 的触发键与交互模式产出 `.start` / `.stop`）。
-/// - 录音：``AudioRecorder``（`actor`，麦克风 → 16kHz 单声道 `[Float]`）。
-/// - 转写：本地 ``WhisperKitTranscriber`` 或云端 ``CloudTranscriber``（按 ``STTMode`` 选）。
-/// - 润色：``PolishPipeline`` + App 层 ``ProviderFactory`` 构造的 ``LLMProvider``（失败自动回退原文）。
-/// - 注入：``TextInjector``（剪贴板 ⌘V，注入到聚焦 App 光标处）。
-/// - 反馈：``RecordingPanelController`` HUD（listening / transcribing / error / idle）。
+/// This is the App layer's single place that "wires up" the various `SayItCore` modules. All concrete capabilities reuse
+/// existing types (not redeclared here):
+/// - Trigger: ``HotkeyManager`` (emits `.start` / `.stop` per ``AppConfig``'s trigger key and interaction mode).
+/// - Recording: ``AudioRecorder`` (`actor`, microphone -> 16kHz mono `[Float]`).
+/// - Transcription: local ``WhisperKitTranscriber`` or cloud ``CloudTranscriber`` (chosen per ``STTMode``).
+/// - Polish: ``PolishPipeline`` + the ``LLMProvider`` constructed by the App-layer ``ProviderFactory`` (auto-falls back to the original on failure).
+/// - Injection: ``TextInjector`` (clipboard Cmd-V, injected at the focused App's cursor).
+/// - Feedback: the ``RecordingPanelController`` HUD (listening / transcribing / error / idle).
 ///
-/// 设计要点：
-/// - 整个类型 `@MainActor`：UI（HUD、菜单栏状态）、热键监听、注入都须在主线程；转写 / 润色这类
-///   耗时异步工作放进 `Task` 中 `await`，过程中 UI 切到 `transcribing`，不阻塞主线程。
-/// - **绝不丢用户的话**：润色失败回退原文（``PolishPipeline`` 内建）；注入失败文本留在剪贴板并提示。
-/// - **焦点漂移防护**：在 `.start` 时记录目标 App，注入前校验目标仍前台（漂移则仍注入到当前前台，
-///   但通过 ``TextInjector`` 的剪贴板回退保证不丢字）。
-/// - **空转写**：没说话 / 静音 → 不注入，HUD 给短暂提示后回到 idle。
+/// Design points:
+/// - The whole type is `@MainActor`: UI (HUD, menu-bar status), hotkey monitoring, and injection must all be on the main thread; time-consuming async work like transcription / polish
+///   is placed in a `Task` and `await`ed, with the UI switched to `transcribing` during the process, not blocking the main thread.
+/// - **Never lose the user's words**: polish failure falls back to the original (built into ``PolishPipeline``); injection failure leaves the text in the clipboard and hints.
+/// - **Focus-drift protection**: records the target App at `.start`, and verifies the target is still frontmost before injection (on drift, still injects into the current frontmost,
+///   but the ``TextInjector`` clipboard fallback guarantees no lost characters).
+/// - **Empty transcription**: nothing said / silence -> no injection, the HUD gives a brief hint then returns to idle.
 @MainActor
 final class DictationCoordinator {
-    /// 进程级单例：由 ``AppDelegate`` 在启动时 `start()`。
+    /// Process-level singleton: `start()`ed by ``AppDelegate`` at launch.
     static let shared = DictationCoordinator()
 
-    // MARK: 协作对象
+    // MARK: Collaborators
 
     private let config: AppConfig
     private let hotkeyManager: HotkeyManager
     private let recorder: AudioRecording
     private let panel: RecordingPanelController
     private let injector: TextInjecting
-    /// 润色管线：注入失败日志回调，便于排查（绝不丢字，仅观测）。
+    /// The polish pipeline: injects a failure-log callback for debugging (never loses characters, only observes).
     private let polishPipeline = PolishPipeline(logFailure: { reason in
         NSLog("[SayIt] 润色失败回退原文: %@", reason)
     })
 
-    /// 菜单栏 / 调用方可观察的高层状态（与 HUD 的细分态区分：这里只暴露 idle/listening/working）。
+    /// The high-level state observable by the menu bar / caller (distinct from the HUD's fine-grained states: this only exposes idle/listening/working).
     enum Phase: Equatable, Sendable {
         case idle
         case listening
         case working
     }
 
-    /// 当前高层状态变化回调（主线程），供菜单栏轻量反映 idle/listening。
+    /// Callback (main thread) for current high-level state changes, for the menu bar to lightly reflect idle/listening.
     var onPhaseChange: ((Phase) -> Void)?
 
     private(set) var phase: Phase = .idle {
@@ -53,51 +53,51 @@ final class DictationCoordinator {
         }
     }
 
-    // MARK: 运行期状态
+    // MARK: Runtime state
 
-    /// `.start` 时记录的注入目标 App，用于注入回填与焦点漂移校验。
+    /// The injection target App recorded at `.start`, used for injection back-fill and focus-drift verification.
     private var capturedTarget: InjectionTarget?
 
-    /// 正在进行的「停止 → 转写 → 润色 → 注入」任务；防止重入。
+    /// The in-progress "stop -> transcribe -> polish -> inject" task; prevents re-entry.
     private var processingTask: Task<Void, Never>?
 
-    /// 正在进行的 `recorder.start()` 任务句柄。极短按重入竞态防护：`handleStop` 须先 `await`
-    /// 它完成，确保 `stop()` 不会早于 `start()` 在 actor 上执行而触发 `.notRecording`。
+    /// The in-progress `recorder.start()` task handle. Re-entrancy race protection for extremely short presses: `handleStop` must first `await`
+    /// its completion, ensuring `stop()` does not execute on the actor before `start()` and trigger `.notRecording`.
     private var startTask: Task<Void, Never>?
 
-    /// 录音是否已成功启动（由启动 Task 在 `recorder.start()` 成功后置位）。
+    /// Whether recording has started successfully (set by the start Task after `recorder.start()` succeeds).
     private var isRecording = false
 
-    /// 转发录音电平到 HUD 的任务：**每轮录音会话**消费当前会话的 `recorder.levels`。
-    /// 关键：必须在 `recorder.start()` 成功后才读取 `recorder.levels`，因为 `AudioRecorder`
-    /// 每次 `start()` 都重建一对全新的 single-consumer 流（见 `LevelStreamHolder`）；在启动前
-    /// 一次性捕获的流会被 `beginSession()` finish 掉，导致转发循环空转、HUD 波形恒为 0、圆点僵死。
-    /// 录音停止时取消本任务，HUD 波形随 `stop()` 产出的 0 平复。
+    /// The task forwarding recording levels to the HUD: **each recording session** consumes the current session's `recorder.levels`.
+    /// Key: `recorder.levels` must be read only after `recorder.start()` succeeds, because `AudioRecorder`
+    /// rebuilds a brand-new pair of single-consumer streams on each `start()` (see `LevelStreamHolder`); a stream captured once before start
+    /// would be finished by `beginSession()`, causing the forwarding loop to spin idle, the HUD waveform to stay at 0, and the dots to go dead.
+    /// This task is cancelled when recording stops, and the HUD waveform settles with the 0 produced by `stop()`.
     private var levelTask: Task<Void, Never>?
 
-    /// 是否已启动监听（幂等保护）。
+    /// Whether monitoring has started (idempotency protection).
     private var isStarted = false
 
-    /// 监听热键事件的长生命周期任务。
+    /// The long-lived task listening for hotkey events.
     private var eventLoopTask: Task<Void, Never>?
 
-    /// 配置变更通知的观察者 token（block 形式注册，须用 token 移除）。
+    /// The observer token for the config-change notification (registered in block form, must be removed with the token).
     private var configObserver: NSObjectProtocol?
 
-    /// 复用的暖转写器实例：与 ``cachedSignature`` 配套。配置不变时跨多次听写复用，
-    /// 使 ``WhisperKitTranscriber`` 的 CoreML 引擎只加载一次并保持暖态（修复每次听写重载 ~1GB 模型 ~10s）。
+    /// The reused warm transcriber instance: paired with ``cachedSignature``. Reused across multiple dictations when the config is unchanged,
+    /// so ``WhisperKitTranscriber``'s CoreML engine loads only once and stays warm (fixing the ~10s reload of the ~1GB model per dictation).
     private var cachedTranscriber: (any Transcriber)?
 
-    /// 上次构造转写器时的相关 STT 配置签名；当前签名与之不同才重建（本地/云端切换、本地模型变更、
-    /// 云端模型/API key 变更）。其余无关配置变更（如触发键）不触发重建。
+    /// The relevant STT config signature from the last transcriber construction; only rebuilds when the current signature differs (local/cloud switch, local model change,
+    /// cloud model/API key change). Other unrelated config changes (such as the trigger key) do not trigger a rebuild.
     private var cachedSignature: TranscriberSignature?
 
-    /// 正在进行的后台预热任务（避免重复预热同一实例）。
+    /// The in-progress background prewarm task (avoiding prewarming the same instance repeatedly).
     private var preloadTask: Task<Void, Never>?
 
-    /// 决定是否需要重建转写器的相关 STT 配置快照。仅包含会改变转写器身份/行为的字段：
-    /// `sttMode`（本地/云端）、`localModel`（本地模型）、`cloudModel` 与 `cloudKey`（云端模型与凭据）。
-    /// 语言恒自动检测、不入签名。
+    /// A snapshot of the relevant STT config that decides whether the transcriber needs rebuilding. Contains only fields that change the transcriber's identity/behavior:
+    /// `sttMode` (local/cloud), `localModel` (local model), `cloudModel` and `cloudKey` (cloud model and credentials).
+    /// The language is always auto-detected and not part of the signature.
     private struct TranscriberSignature: Equatable {
         let mode: STTMode
         let localModel: String
@@ -105,36 +105,36 @@ final class DictationCoordinator {
         let cloudKey: String
     }
 
-    // MARK: 初始化
+    // MARK: Initialization
 
-    /// 转写器工厂：按当前配置产出 ``Transcriber``。默认按 ``STTMode`` 选本地/云端实现；
-    /// 测试时可注入返回 ``FakeTranscriber`` 的工厂，从而走通转写/空转写/转写失败等分支。
-    /// `throws` 以保留「构造失败（如云端缺 key）」语义。
+    /// The transcriber factory: produces a ``Transcriber`` per the current config. Defaults to choosing the local/cloud implementation per ``STTMode``;
+    /// tests can inject a factory returning ``FakeTranscriber``, to exercise the transcription/empty-transcription/transcription-failure branches.
+    /// `throws` to preserve the "construction failure (e.g. cloud missing key)" semantics.
     private let transcriberFactory: () throws -> any Transcriber
 
-    /// 辅助功能授权门禁覆盖：非 nil 时取代默认的 ``ensureAccessibilityOrGuide()``。
-    /// 测试注入恒 true 以绕开真实授权环境。
+    /// Accessibility authorization gate override: when non-nil, replaces the default ``ensureAccessibilityOrGuide()``.
+    /// Tests inject a constant true to bypass the real authorization environment.
     private let accessibilityGateOverride: (() -> Bool)?
 
-    /// 本地模型就绪检测：给定友好模型名，返回该模型是否已在本地缓存且可直接加载。
-    /// 默认只读地复用 ``ModelManager/isDownloaded(model:)``（不联网、不下载）；测试可注入以走通
-    /// 「模型未就绪」分支。**只读**——绝不在此触发下载。
+    /// Local model readiness detection: given a friendly model name, returns whether that model is already cached locally and can be loaded directly.
+    /// By default read-only reuses ``ModelManager/isDownloaded(model:)`` (no network, no download); tests can inject it to exercise
+    /// the "model not ready" branch. **Read-only** -- never triggers a download here.
     private let modelReadiness: (String) -> Bool
 
-    /// 转写硬超时：`transcribe(...)` 必须在此时限内返回，否则视为卡死并收敛到错误提示。
-    /// 默认 90s——足够本地推理在已加载模型上完成，但保证「绝不永久卡在识别中」。测试可注入极短值。
+    /// Transcription hard timeout: `transcribe(...)` must return within this limit, otherwise it is treated as stalled and converged to an error hint.
+    /// Defaults to 90s -- enough for local inference to complete on a loaded model, but guaranteeing "never permanently stuck transcribing". Tests can inject an extremely short value.
     private let transcribeTimeout: Duration
 
     /// - Parameters:
-    ///   - config: 应用配置；默认 `.shared`。
-    ///   - hotkeyManager: 热键管理器；默认按当前配置构造。
-    ///   - recorder: 录音器；默认 ``AudioRecorder``。
-    ///   - panel: HUD 控制器；默认共享实例。
-    ///   - injector: 文本注入器；默认 ``TextInjector``。
-    ///   - transcriberFactory: 转写器工厂；默认按配置选本地/云端（见 ``makeConfiguredTranscriber(_:)``）。
-    ///   - accessibilityGate: 辅助功能门禁；默认按需引导授权（见 ``ensureAccessibilityOrGuide()``）。
-    ///   - modelReadiness: 本地模型就绪检测；默认只读复用 ``ModelManager/isDownloaded(model:)``。
-    ///   - transcribeTimeout: 转写硬超时；默认 90s。
+    ///   - config: the application config; defaults to `.shared`.
+    ///   - hotkeyManager: the hotkey manager; defaults to constructing per the current config.
+    ///   - recorder: the recorder; defaults to ``AudioRecorder``.
+    ///   - panel: the HUD controller; defaults to the shared instance.
+    ///   - injector: the text injector; defaults to ``TextInjector``.
+    ///   - transcriberFactory: the transcriber factory; defaults to choosing local/cloud per the config (see ``makeConfiguredTranscriber(_:)``).
+    ///   - accessibilityGate: the accessibility gate; defaults to guiding authorization on demand (see ``ensureAccessibilityOrGuide()``).
+    ///   - modelReadiness: local model readiness detection; defaults to read-only reuse of ``ModelManager/isDownloaded(model:)``.
+    ///   - transcribeTimeout: the transcription hard timeout; defaults to 90s.
     init(config: AppConfig = .shared,
          hotkeyManager: HotkeyManager? = nil,
          recorder: AudioRecording = AudioRecorder(),
@@ -151,24 +151,24 @@ final class DictationCoordinator {
         self.hotkeyManager = hotkeyManager
             ?? HotkeyManager(triggerKey: config.triggerKey,
                              mode: Self.hotkeyMode(for: config.interactionMode))
-        // 默认工厂引用 config 的当前 STT 设置；测试可整体替换。
+        // The default factory references config's current STT settings; tests can replace it wholesale.
         let cfg = config
         self.transcriberFactory = transcriberFactory ?? { try Self.makeConfiguredTranscriber(cfg) }
         self.accessibilityGateOverride = accessibilityGate
-        // 默认就绪检测只读复用 ModelManager.isDownloaded（不联网、不下载、不修改 ModelManager）。
+        // The default readiness detection read-only reuses ModelManager.isDownloaded (no network, no download, no modification of ModelManager).
         self.modelReadiness = modelReadiness ?? { ModelManager.isDownloaded(model: $0) }
         self.transcribeTimeout = transcribeTimeout
     }
 
-    // MARK: 生命周期
+    // MARK: Lifecycle
 
-    /// 启动监听并接入配置变更。重复调用幂等。
+    /// Starts monitoring and hooks into config changes. Repeated calls are idempotent.
     func start() {
         guard !isStarted else { return }
         isStarted = true
 
-        // 配置变更（触发键 / 交互模式改动）后实时同步到热键管理器；
-        // 相关 STT 配置变更（切到本地模式 / 换本地模型）则机会性预热，让下次听写也快。
+        // After a config change (trigger key / interaction mode change), sync to the hotkey manager in real time;
+        // a relevant STT config change (switching to local mode / changing the local model) opportunistically prewarms, making the next dictation fast too.
         configObserver = NotificationCenter.default.addObserver(
             forName: AppConfig.didChangeNotification,
             object: nil,
@@ -185,11 +185,11 @@ final class DictationCoordinator {
         hotkeyManager.start()
         phase = .idle
 
-        // 启动机会性预热：本地模式且模型已下载时提前加载，让第一次听写也不慢（不阻塞主线程）。
+        // Start opportunistic prewarming: in local mode with the model already downloaded, load ahead of time so the first dictation is not slow either (not blocking the main thread).
         preloadLocalIfReady()
     }
 
-    /// 停止监听并清理（一般 App 退出前调用；非必需）。
+    /// Stops monitoring and cleans up (usually called before App exit; not required).
     func stop() {
         guard isStarted else { return }
         isStarted = false
@@ -212,11 +212,11 @@ final class DictationCoordinator {
         phase = .idle
     }
 
-    /// 把当前配置（触发键 / 交互模式）同步给热键管理器。
+    /// Syncs the current config (trigger key / interaction mode) to the hotkey manager.
     ///
-    /// 仅在值**确有变化**时回写：因为 `HotkeyManager.mode` 的 setter 会复位内部状态机，
-    /// 若在 hold 听写过程中（按住未松）收到无关配置变更通知而无条件回写同值，会把状态机
-    /// 打回起点、丢掉「正在按住」的事实，导致后续松开不产出 `.stop`。赋值前判等即可避免。
+    /// Writes back only when the value **actually changes**: because `HotkeyManager.mode`'s setter resets the internal state machine,
+    /// if during a hold dictation (held, not released) an unrelated config-change notification is received and the same value is unconditionally written back, it would knock the state machine
+    /// back to the start and lose the fact of "currently being held", causing the subsequent release to not produce `.stop`. Comparing before assignment avoids this.
     private func applyHotkeyConfig() {
         let desiredKey = config.triggerKey
         if hotkeyManager.triggerKey != desiredKey {
@@ -228,12 +228,12 @@ final class DictationCoordinator {
         }
     }
 
-    /// 为**本轮录音会话**启动电平转发：在 `recorder.start()` 成功后调用，此刻读取的
-    /// `recorder.levels` 才是本会话重建出的新流（见 `levelTask` / `AudioRecorder.levels` 注释）。
-    /// 取消上一轮残留任务后建新任务，逐值在主线程刷新 HUD 波形（`@MainActor` 上 `panel.update` 安全）。
+    /// Starts level forwarding for **this recording session**: called after `recorder.start()` succeeds, at which point the read
+    /// `recorder.levels` is the new stream rebuilt for this session (see the `levelTask` / `AudioRecorder.levels` comments).
+    /// After cancelling the previous round's leftover task, builds a new task, refreshing the HUD waveform value by value on the main thread (`panel.update` on `@MainActor` is safe).
     private func startLevelForwarding() {
         levelTask?.cancel()
-        // 录音已开始：在任务内读取当前会话的流（nonisolated，无需进 actor）。
+        // Recording has started: read the current session's stream inside the task (nonisolated, no need to enter the actor).
         let levels = recorder.levels
         levelTask = Task { [weak self] in
             for await level in levels {
@@ -244,13 +244,13 @@ final class DictationCoordinator {
         }
     }
 
-    /// 停止并清理本轮电平转发任务（录音停止 / 失败收敛时调用）。
+    /// Stops and cleans up this round's level forwarding task (called when recording stops / on failure convergence).
     private func stopLevelForwarding() {
         levelTask?.cancel()
         levelTask = nil
     }
 
-    /// 消费热键事件流：`.start` 起录音，`.stop` 起转写流水线。
+    /// Consumes the hotkey event stream: `.start` begins recording, `.stop` begins the transcription pipeline.
     private func startEventLoop() {
         let events = hotkeyManager.events
         eventLoopTask = Task { [weak self] in
@@ -266,20 +266,20 @@ final class DictationCoordinator {
         }
     }
 
-    // MARK: 闭环 —— 开始
+    // MARK: Loop -- start
 
-    /// `.start`：（首次）校验辅助功能授权 → 记录目标 App → 启动录音 → HUD 切 listening。
+    /// `.start`: (first time) verifies accessibility authorization -> records the target App -> starts recording -> HUD switches to listening.
     private func handleStart() {
-        // 上一轮还在处理（转写/润色/注入）时，忽略新的开始，避免交叠。
+        // When the previous round is still processing (transcribe/polish/inject), ignore the new start, to avoid overlap.
         guard processingTask == nil else { return }
-        // 上一次按下的录音启动还没收尾（极短按）时，忽略再次开始，交由那一次自然走完。
+        // When the last press's recording start has not wrapped up (an extremely short press), ignore another start, letting that one run its natural course.
         guard startTask == nil else { return }
 
-        // 按需引导辅助功能授权：首次按下听写键且未授权时弹系统对话框（不再在启动时打扰）。
-        // 未授权时全局热键虽能建立但收不到事件——但若能走到这里说明这次已收到，故仅做提示性引导。
+        // Guide accessibility authorization on demand: pop the system dialog when the dictation key is first pressed and unauthorized (no longer disturbing at launch).
+        // When unauthorized the global hotkey can be established but receives no events -- but reaching here means this one was received, so just do an informative guide.
         guard (accessibilityGateOverride ?? ensureAccessibilityOrGuide)() else { return }
 
-        // 记录注入目标（注入回填 + 焦点漂移校验用）。
+        // Record the injection target (for injection back-fill + focus-drift verification).
         capturedTarget = currentFrontmostTarget()
 
         panel.show(state: .listening)
@@ -289,43 +289,43 @@ final class DictationCoordinator {
             guard let self else { return }
             defer { self.startTask = nil }
             do {
-                // 用持久化的输入设备开始录音：每次按下都现读 config.inputDeviceUID，
-                // 让设置页里选定的麦克风对下一次听写立即生效（无需重启 App）。
-                // nil = 跟随系统默认（与 start() 等价）；UID 失效时 AudioRecorder 自动回落系统默认。
+                // Start recording with the persisted input device: read config.inputDeviceUID fresh on each press,
+                // letting the microphone selected in the settings page take effect immediately for the next dictation (no App restart needed).
+                // nil = follow the system default (equivalent to start()); when the UID is invalid, AudioRecorder automatically falls back to the system default.
                 try await self.recorder.start(deviceUID: self.config.inputDeviceUID)
                 self.isRecording = true
-                // 录音已起：订阅本会话重建出的电平流，驱动 HUD 圆点随说话幅度起伏。
+                // Recording started: subscribe to this session's rebuilt level stream, driving the HUD dots to rise and fall with speech amplitude.
                 self.startLevelForwarding()
             } catch {
-                // 录音启动失败（多为麦克风未授权）：提示并收敛到 idle。
+                // Recording start failed (mostly microphone unauthorized): hint and converge to idle.
                 self.isRecording = false
                 self.failToIdle(message: Self.recordingFailureMessage(error))
             }
         }
     }
 
-    /// 校验辅助功能授权；未授权则弹系统对话框引导并给 HUD 轻提示，返回 false（本次不录音）。
-    /// 已授权返回 true。
+    /// Verifies accessibility authorization; if unauthorized, pops the system dialog to guide and gives the HUD a light hint, returning false (no recording this time).
+    /// Returns true if authorized.
     private func ensureAccessibilityOrGuide() -> Bool {
         if AccessibilityAuthorization.isTrusted { return true }
-        // 未授权：触发系统授权对话框（prompt），并在 HUD 给一句引导。
+        // Unauthorized: trigger the system authorization dialog (prompt), and give a guiding line in the HUD.
         AccessibilityAuthorization.ensureTrusted(prompting: true)
         showTransientError(String(localized: "hud.needAccessibility",
                                   defaultValue: "Accessibility permission required — enable it in System Settings"))
         return false
     }
 
-    // MARK: 闭环 —— 结束 → 转写 → 润色 → 注入
+    // MARK: Loop -- end -> transcribe -> polish -> inject
 
-    /// `.stop`：停止录音拿样本，随后转写 → 润色 → 注入。
+    /// `.stop`: stops recording to get samples, then transcribe -> polish -> inject.
     private func handleStop() {
-        // 已在处理则忽略。
+        // Ignore if already processing.
         guard processingTask == nil else { return }
-        // 极短按竞态：可能 `.stop` 紧跟 `.start`，此刻录音启动 Task 也许还没跑完。
-        // 先取走启动句柄，进入 pipeline 后 `await` 它完成，确保 stop 不早于 start 在 actor 执行。
+        // Extremely-short-press race: `.stop` may closely follow `.start`, at which point the recording start Task may not have finished yet.
+        // Take the start handle first, then `await` its completion after entering the pipeline, ensuring stop does not execute on the actor before start.
         let pendingStart = startTask
 
-        // 进入处理态：从识别阶段、进度 0.0 起步（Typeless 风格进度条 0...0.5 = 识别）。
+        // Enter the processing state: start from the transcribing phase, progress 0.0 (Typeless-style progress bar 0...0.5 = transcribing).
         updateProcessing(0.0, .transcribing)
         phase = .working
 
@@ -336,20 +336,20 @@ final class DictationCoordinator {
         }
     }
 
-    /// 完整流水线：停止录音 → 转写 → （可选）润色 → 注入。在后台任务中执行，UI 调用切回主线程。
-    /// - Parameter pendingStart: 本轮录音的启动 Task（可能仍在进行）；先 `await` 它完成再 stop。
+    /// The complete pipeline: stop recording -> transcribe -> (optional) polish -> inject. Runs in a background task, switching back to the main thread for UI calls.
+    /// - Parameter pendingStart: this round's recording start Task (may still be in progress); `await` its completion before stopping.
     private func runPipeline(awaiting pendingStart: Task<Void, Never>?) async {
-        // 0) 等待录音启动收尾，避免 stop 早于 start 触发 `.notRecording`。
+        // 0) Wait for the recording start to wrap up, to avoid stop triggering `.notRecording` before start.
         await pendingStart?.value
 
-        // 启动失败（如麦克风被拒）时 isRecording 仍为 false：启动路径已提示并收敛，这里直接退出。
+        // On start failure (e.g. microphone denied) isRecording is still false: the start path already hinted and converged, so just exit here.
         guard isRecording else {
             panel.hide()
             phase = .idle
             return
         }
 
-        // 1) 停止录音，取样本。停录后电平转发已无意义（stop() 已产出 0 让波形平复）：清掉转发任务。
+        // 1) Stop recording, take the samples. After stopping, level forwarding is meaningless (stop() already produced 0 to settle the waveform): clear the forwarding task.
         let samples: [Float]
         do {
             samples = try await recorder.stop()
@@ -362,27 +362,27 @@ final class DictationCoordinator {
             return
         }
 
-        // 空音频（没说话）：不转写、不注入，短暂提示后 idle。
+        // Empty audio (nothing said): do not transcribe, do not inject, briefly hint then idle.
         guard !samples.isEmpty else {
             emptyToIdle()
             return
         }
 
-        // 1.5) 本地模型就绪门禁：本地转写依赖 WhisperKit 引擎，而引擎在模型未缓存时会先下载
-        // （可能耗时数分钟），其间 HUD 会一直停在「识别中」，表现为永久卡死。这里在调用 transcribe
-        // 之前**只读**检查模型是否已下载（不联网、不触发下载），未就绪则直接给清晰提示并收敛到 idle，
-        // 绝不进入会触发下载的本地转写路径。云端模式不受此门禁影响。
+        // 1.5) Local model readiness gate: local transcription depends on the WhisperKit engine, and the engine downloads first when the model is not cached
+        // (possibly taking several minutes), during which the HUD stays stuck at "transcribing", appearing permanently frozen. Here, before calling transcribe,
+        // **read-only** check whether the model is downloaded (no network, no triggering a download), and if not ready, give a clear hint and converge to idle,
+        // never entering the local transcription path that would trigger a download. Cloud mode is not affected by this gate.
         if config.sttMode == .local, !modelReadiness(config.localModel) {
             modelNotReadyToIdle()
             return
         }
 
-        // 2) 转写（包硬超时：transcribe 必须在 transcribeTimeout 内返回，否则视为卡死收敛到错误，
-        //    保证 HUD「绝不永久卡在识别中」——即便上面的就绪检查与真实加载之间出现竞态/边角情况）。
+        // 2) Transcribe (wrapped with a hard timeout: transcribe must return within transcribeTimeout, otherwise treated as stalled and converged to an error,
+        //    guaranteeing the HUD "never permanently stuck transcribing" -- even if a race/corner case occurs between the readiness check above and the real load).
         let transcript: String
         do {
             let transcriber = try currentTranscriber()
-            // 语音识别恒自动检测语言（T24）：始终传 nil 让后端按语音判断，不再读 AppConfig.language。
+            // Speech recognition always auto-detects the language (T24): always passes nil to let the backend judge by the speech, no longer reading AppConfig.language.
             let result = try await withTranscribeTimeout {
                 try await transcriber.transcribe(
                     samples,
@@ -392,7 +392,7 @@ final class DictationCoordinator {
             }
             transcript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch is TranscribeTimeout {
-            // 硬超时：转写迟迟不返回（如底层卡在模型加载/下载）。给错误提示并收敛到 idle。
+            // Hard timeout: transcription does not return in time (e.g. the underlying layer stuck loading/downloading the model). Give an error hint and converge to idle.
             failToIdle(message: String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed"))
             return
         } catch let error as STTError {
@@ -403,42 +403,42 @@ final class DictationCoordinator {
             return
         }
 
-        // 空转写（静音 / 听不清）：不注入，短暂提示后 idle。
+        // Empty transcription (silence / unintelligible): no injection, briefly hint then idle.
         guard !transcript.isEmpty else {
             emptyToIdle()
             return
         }
 
-        // 识别完成：到达进度条 50% 边界。开启润色则翻入润色阶段（0.5...1）；
-        // 关闭润色则按需求识别完成即直接填满到 1.0（不展示润色阶段）。
+        // Transcription done: reaching the 50% boundary of the progress bar. With polish on, flip into the polish phase (0.5...1);
+        // with polish off, per requirements transcription completion fills directly to 1.0 (the polish phase is not shown).
         if config.polishEnabled {
             updateProcessing(0.5, .polishing)
         } else {
             updateProcessing(1.0, .transcribing)
         }
 
-        // 3) 润色（开则走 LLM，失败/关闭自动回退原文，PolishPipeline 内建）。
+        // 3) Polish (on -> go through the LLM, auto-falls back to the original on failure/off, built into PolishPipeline).
         let polished = await polishIfEnabled(transcript)
 
-        // 润色结束：填满进度条到 100%（关闭润色时上面已置 1.0，这里幂等）。
+        // Polish done: fill the progress bar to 100% (with polish off it was already set to 1.0 above, idempotent here).
         if config.polishEnabled {
             updateProcessing(1.0, .polishing)
         }
 
-        // 4) 注入到目标 App 光标处（润色失败时附带轻提示，但绝不丢字）。
+        // 4) Inject at the target App's cursor (with a light hint on polish failure, but never losing characters).
         injectFinalText(polished.text, polishFailed: polished.failed)
     }
 
-    // MARK: 润色
+    // MARK: Polish
 
-    /// 一次润色步骤的结果：最终文本 + 是否「失败回退」（用于注入后的可选提示）。
+    /// The result of one polish step: the final text + whether it was a "failure fallback" (for an optional hint after injection).
     private struct PolishStep {
         let text: String
-        /// true 仅表示「调用了模型但失败/构造 Provider 失败」，跳过/关闭不计为失败。
+        /// true only means "the model was called but failed / Provider construction failed"; skip/off does not count as failure.
         let failed: Bool
     }
 
-    /// 按配置润色；构造 Provider 失败 / 润色失败都回退原文（绝不丢字）。
+    /// Polishes per the config; both Provider construction failure / polish failure fall back to the original (never losing characters).
     private func polishIfEnabled(_ transcript: String) async -> PolishStep {
         guard config.polishEnabled else { return PolishStep(text: transcript, failed: false) }
 
@@ -446,7 +446,7 @@ final class DictationCoordinator {
         do {
             provider = try await makePolishProvider()
         } catch {
-            // 无凭据 / 构造失败：直接用原文（不阻断注入），计为失败以便可选提示。
+            // No credentials / construction failure: use the original directly (not blocking injection), counted as failure for the optional hint.
             NSLog("[SayIt] 润色 Provider 构造失败，回退原文: %@", String(describing: error))
             return PolishStep(text: transcript, failed: true)
         }
@@ -458,13 +458,13 @@ final class DictationCoordinator {
             provider: provider,
             polishEnabled: true
         )
-        // 仅 .failedFallback 计为失败；.polished / .skipped 不提示。
+        // Only .failedFallback counts as failure; .polished / .skipped do not hint.
         let failed: Bool
         if case .failedFallback = outcome.resolution { failed = true } else { failed = false }
         return PolishStep(text: outcome.text, failed: failed)
     }
 
-    /// 用当前（或注入目标）前台 App 信息构造润色上下文，帮助模型判断语域。
+    /// Builds the polish context with the current (or injection target) frontmost App info, to help the model judge register.
     private func polishContext() -> PolishContext {
         if let target = capturedTarget {
             return PolishContext(appName: target.localizedName, bundleId: target.bundleIdentifier)
@@ -475,8 +475,8 @@ final class DictationCoordinator {
         return PolishContext()
     }
 
-    /// 按 ``AppConfig/providerKind`` + 凭据构造润色用 ``LLMProvider``。
-    /// 复用 App 层 ``ProviderFactory``，凭据 account 映射与设置页一致。
+    /// Builds the polish ``LLMProvider`` per ``AppConfig/providerKind`` + credentials.
+    /// Reuses the App-layer ``ProviderFactory``, with the credential account mapping consistent with the settings page.
     private func makePolishProvider() async throws -> any LLMProvider {
         let model = config.model
         switch config.providerKind {
@@ -499,14 +499,14 @@ final class DictationCoordinator {
         }
     }
 
-    // MARK: 转写超时
+    // MARK: Transcription timeout
 
-    /// `transcribe(...)` 超过 ``transcribeTimeout`` 仍未返回时抛出的标记错误。
+    /// The marker error thrown when `transcribe(...)` exceeds ``transcribeTimeout`` without returning.
     private struct TranscribeTimeout: Error {}
 
-    /// 给一段异步转写工作包上硬超时：先返回者胜出，另一个分支被取消。
-    /// 若超时分支先到则抛 ``TranscribeTimeout``（保证「绝不永久卡在识别中」）。
-    /// - Parameter work: 实际转写闭包（返回 ``TranscriptionResult``）。
+    /// Wraps a piece of async transcription work with a hard timeout: whoever returns first wins, the other branch is cancelled.
+    /// If the timeout branch arrives first, throws ``TranscribeTimeout`` (guaranteeing "never permanently stuck transcribing").
+    /// - Parameter work: the actual transcription closure (returns ``TranscriptionResult``).
     private func withTranscribeTimeout(
         _ work: @escaping @Sendable () async throws -> TranscriptionResult
     ) async throws -> TranscriptionResult {
@@ -517,7 +517,7 @@ final class DictationCoordinator {
                 try await Task.sleep(for: timeout)
                 throw TranscribeTimeout()
             }
-            // 先返回者胜出；随后取消其余分支（取消睡眠分支或仍在跑的转写分支）。
+            // Whoever returns first wins; then cancel the remaining branch (cancel the sleep branch or the still-running transcription branch).
             defer { group.cancelAll() }
             guard let result = try await group.next() else {
                 throw TranscribeTimeout()
@@ -526,13 +526,13 @@ final class DictationCoordinator {
         }
     }
 
-    // MARK: 转写器构造 / 复用 / 预热
+    // MARK: Transcriber construction / reuse / prewarm
 
-    /// 返回复用的暖转写器：当前相关配置签名与缓存一致则复用同一实例（本地引擎保持暖态，不重载模型）；
-    /// 否则经 ``transcriberFactory`` 重建并缓存，同时在后台预热（本地模型首帧不再慢）。
+    /// Returns the reused warm transcriber: when the current relevant config signature matches the cache, reuse the same instance (the local engine stays warm, no model reload);
+    /// otherwise rebuild and cache via ``transcriberFactory``, while prewarming in the background (the local model's first frame is no longer slow).
     ///
-    /// 这是修复「每次听写重载 ~1GB 模型 ~10s」的核心：旧逻辑每次听写都 `transcriberFactory()` 产新实例，
-    /// 而 ``WhisperKitTranscriber`` 的引擎是**实例级**缓存，新实例必惰性重载模型。复用单实例即可保持暖态。
+    /// This is the core fix for "reloading the ~1GB model ~10s per dictation": the old logic produced a new instance via `transcriberFactory()` on each dictation,
+    /// while ``WhisperKitTranscriber``'s engine is an **instance-level** cache, so a new instance necessarily lazily reloads the model. Reusing a single instance keeps it warm.
     private func currentTranscriber() throws -> any Transcriber {
         let signature = currentSignature()
         if let cachedTranscriber, cachedSignature == signature {
@@ -541,12 +541,12 @@ final class DictationCoordinator {
         let transcriber = try transcriberFactory()
         cachedTranscriber = transcriber
         cachedSignature = signature
-        // 新建即后台预热（本地模型会触发加载），不阻塞主线程，错误仅记录。
+        // A newly created one is prewarmed in the background (the local model triggers loading), not blocking the main thread, errors only logged.
         preloadInBackground(transcriber)
         return transcriber
     }
 
-    /// 当前相关 STT 配置的签名。云端 key 取自 Keychain（缺失记为空串），变更后会触发重建。
+    /// The signature of the current relevant STT config. The cloud key is taken from the Keychain (missing recorded as an empty string), and a change triggers a rebuild.
     private func currentSignature() -> TranscriberSignature {
         let cloudKey = (KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -558,8 +558,8 @@ final class DictationCoordinator {
         )
     }
 
-    /// 后台预热转写器：仅本地 ``WhisperKitTranscriber`` 有意义（加载 CoreML 引擎）。
-    /// 不阻塞 UI；预热失败只记录日志（不影响后续真正听写时的惰性加载兜底）。
+    /// Background prewarm the transcriber: only meaningful for the local ``WhisperKitTranscriber`` (loading the CoreML engine).
+    /// Does not block the UI; prewarm failure only logs (not affecting the lazy-load fallback during the real later dictation).
     private func preloadInBackground(_ transcriber: any Transcriber) {
         guard let whisper = transcriber as? WhisperKitTranscriber else { return }
         preloadTask?.cancel()
@@ -572,19 +572,19 @@ final class DictationCoordinator {
         }
     }
 
-    /// 启动时机会性预热：若当前为本地模式且模型已下载，则提前构造并预热转写器，
-    /// 让**第一次**听写也不慢。构造失败（理论上本地路径不会）仅记录，不影响后续按需构造。
+    /// Opportunistic prewarming at launch: if currently in local mode and the model is downloaded, construct and prewarm the transcriber ahead of time,
+    /// making the **first** dictation fast too. Construction failure (theoretically the local path will not) only logs, not affecting later on-demand construction.
     private func preloadLocalIfReady() {
         guard config.sttMode == .local else { return }
         guard ModelManager.isDownloaded(model: config.localModel) else { return }
-        // 复用 currentTranscriber 的缓存 + 预热路径，避免重复实例。
+        // Reuse currentTranscriber's cache + prewarm path, avoiding a duplicate instance.
         _ = try? currentTranscriber()
     }
 
-    /// 按 ``STTMode`` 选转写器。本地用 ``WhisperKitTranscriber``，云端用 ``CloudTranscriber``。
+    /// Chooses the transcriber per ``STTMode``. Local uses ``WhisperKitTranscriber``, cloud uses ``CloudTranscriber``.
     ///
-    /// 云端路径**从 ``KeychainStore`` 取出 OpenAI API key 注入** ``CloudTranscriber``（其本身不读 Keychain，
-    /// 保持可测）；key 缺失/空白则抛 `.notReady`，由调用方收敛到 HUD 提示。`static` 以便默认工厂闭包引用。
+    /// The cloud path **takes the OpenAI API key from ``KeychainStore`` and injects it into** ``CloudTranscriber`` (which itself does not read the Keychain,
+    /// staying testable); a missing/blank key throws `.notReady`, converged to a HUD hint by the caller. `static` so the default factory closure can reference it.
     private static func makeConfiguredTranscriber(_ config: AppConfig) throws -> any Transcriber {
         switch config.sttMode {
         case .local:
@@ -597,12 +597,12 @@ final class DictationCoordinator {
         }
     }
 
-    // MARK: 注入
+    // MARK: Injection
 
-    /// 注入最终文本：焦点漂移时仍注入到当前前台（剪贴板回退保证不丢字），结果驱动 HUD。
+    /// Injects the final text: on focus drift still injects into the current frontmost (the clipboard fallback guarantees no lost characters), the result drives the HUD.
     /// - Parameters:
-    ///   - text: 待注入文本。
-    ///   - polishFailed: 润色是否失败回退（仅用于注入成功后的轻提示，不影响注入本身）。
+    ///   - text: the text to inject.
+    ///   - polishFailed: whether polish failed and fell back (only used for a light hint after successful injection, not affecting the injection itself).
     private func injectFinalText(_ text: String, polishFailed: Bool) {
         let drifted = focusDrifted()
         let result = injector.inject(text)
@@ -610,11 +610,11 @@ final class DictationCoordinator {
         switch result {
         case .success:
             if drifted {
-                // 焦点漂移但仍粘贴成功：给一条短暂中性提示，告知粘到了当前窗口。
+                // Focus drifted but the paste still succeeded: give a brief neutral hint, informing it was pasted into the current window.
                 showTransientInfo(String(localized: "hud.pastedToCurrentWindow",
                                          defaultValue: "Pasted to the current window"))
             } else if polishFailed {
-                // 注入成功但润色失败回退了原文：轻提示（绝不丢字，仅告知）。
+                // Injection succeeded but polish failed and fell back to the original: a light hint (never losing characters, only informing).
                 showTransientInfo(String(localized: "hud.injectedPolishFailed",
                                          defaultValue: "Inserted (polish failed, used original text)"))
             } else {
@@ -622,7 +622,7 @@ final class DictationCoordinator {
                 phase = .idle
             }
         case .failedTextLeftInPasteboard:
-            // 文本已留剪贴板，提示用户手动粘贴。
+            // The text is left in the clipboard, hinting the user to paste manually.
             let hint = drifted
                 ? String(localized: "hud.driftedCopiedPasteManually",
                          defaultValue: "Focus changed — text copied, please paste manually")
@@ -632,7 +632,7 @@ final class DictationCoordinator {
         }
     }
 
-    /// 注入目标是否已不再前台（焦点漂移）。无记录目标时视为未漂移。
+    /// Whether the injection target is no longer frontmost (focus drift). When there is no recorded target it is treated as no drift.
     private func focusDrifted() -> Bool {
         guard let captured = capturedTarget,
               let current = currentFrontmostTarget() else {
@@ -641,67 +641,67 @@ final class DictationCoordinator {
         return captured.processIdentifier != current.processIdentifier
     }
 
-    // MARK: 状态收敛工具
+    // MARK: State convergence utilities
 
-    /// 把处理进度（0...1）与当前阶段推到 HUD（Typeless 风格进度条）。
-    /// 集中一处便于把贯穿流水线的进度更新写得紧凑、可读。
+    /// Pushes the processing progress (0...1) and current phase to the HUD (Typeless-style progress bar).
+    /// Centralized in one place to keep the progress updates running through the pipeline compact and readable.
     private func updateProcessing(_ progress: Double, _ phase: RecordingState.ProcessingPhase) {
         panel.update(state: .processing(progress: progress, phase: phase))
     }
 
-    /// 取当前前台 App 快照。
+    /// Takes a snapshot of the current frontmost App.
     private func currentFrontmostTarget() -> InjectionTarget? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         return InjectionTarget(running: app)
     }
 
-    /// 空音频 / 空转写：HUD 短暂提示后回到 idle。
+    /// Empty audio / empty transcription: the HUD briefly hints then returns to idle.
     private func emptyToIdle() {
         showTransientError(String(localized: "hud.didNotCatchThat", defaultValue: "Didn’t catch that, please try again"))
     }
 
-    /// 本地模型未就绪：HUD 短暂展示「模型仍在下载 / 请切换云端」错误提示后回到 idle，且不进入转写。
-    /// 文案为 ``RecordingState/modelNotReadyMessage`` 的包内本地化（en + zh-Hans）。
+    /// Local model not ready: the HUD briefly shows a "model still downloading / please switch to cloud" error hint then returns to idle, and does not enter transcription.
+    /// The copy is the in-bundle localization of ``RecordingState/modelNotReadyMessage`` (en + zh-Hans).
     private func modelNotReadyToIdle() {
-        // 用 .error 态承载本地化文案（不新增枚举 case，避免牵动 RecordingPanelView 的穷举 switch）。
+        // Use the .error state to carry the localized copy (no new enum case, avoiding disturbing RecordingPanelView's exhaustive switch).
         showTransientError(RecordingState.modelNotReadyMessage)
     }
 
-    /// 失败收敛：HUD 短暂报错后回到 idle，并尽力停掉仍在跑的录音。
+    /// Failure convergence: the HUD briefly reports an error then returns to idle, and best-effort stops any still-running recording.
     private func failToIdle(message: String) {
-        // 录音可能仍在进行（如启动后立即出错的边角场景），尽力停止以释放设备。
+        // Recording may still be in progress (e.g. a corner case of erroring immediately after start), best-effort stop it to release the device.
         isRecording = false
         stopLevelForwarding()
         Task { [recorder] in _ = try? await recorder.stop() }
         showTransientError(message)
     }
 
-    /// 在 HUD 上短暂显示错误，随后自动隐藏并回到 idle。
+    /// Briefly shows an error on the HUD, then automatically hides and returns to idle.
     private func showTransientError(_ message: String) {
         showTransient(.error(message))
     }
 
-    /// 在 HUD 上短暂显示中性提示（如「已粘贴到当前窗口」），随后自动隐藏并回到 idle。
+    /// Briefly shows a neutral hint on the HUD (e.g. "pasted into the current window"), then automatically hides and returns to idle.
     private func showTransientInfo(_ message: String) {
         showTransient(.info(message))
     }
 
-    /// 在 HUD 上短暂显示某一瞬态（error / info），随后自动隐藏并回到 idle。
+    /// Briefly shows a transient state (error / info) on the HUD, then automatically hides and returns to idle.
     private func showTransient(_ state: RecordingState) {
         phase = .idle
         panel.update(state: state)
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.6))
             guard let self else { return }
-            // 期间若已开始新一轮（HUD 在 listening/transcribing）则不要打断。
+            // If a new round has begun during this period (the HUD is in listening/transcribing), do not interrupt it.
             guard self.processingTask == nil, self.phase == .idle else { return }
             self.panel.hide()
         }
     }
 
-    // MARK: 静态映射 / 文案
+    // MARK: Static mapping / copy
 
-    /// ``InteractionMode`` → ``HotkeyMode``。
+    /// ``InteractionMode`` -> ``HotkeyMode``.
     private static func hotkeyMode(for mode: InteractionMode) -> HotkeyMode {
         switch mode {
         case .singleTap: return .singleTapToggle
@@ -709,7 +709,7 @@ final class DictationCoordinator {
         }
     }
 
-    /// 录音启动失败的用户文案。
+    /// The user-facing copy for recording start failure.
     private static func recordingFailureMessage(_ error: Error) -> String {
         if let audioError = error as? AudioRecordingError,
            case .microphonePermissionDenied = audioError {
@@ -718,7 +718,7 @@ final class DictationCoordinator {
         return String(localized: "hud.cannotStartRecording", defaultValue: "Cannot start recording")
     }
 
-    /// 转写失败的用户文案。
+    /// The user-facing copy for transcription failure.
     private static func transcriptionFailureMessage(_ error: STTError) -> String {
         switch error {
         case .notReady:
@@ -735,29 +735,29 @@ final class DictationCoordinator {
         }
     }
 
-    // MARK: 测试支撑（test-only seams）
+    // MARK: Test support (test-only seams)
     //
-    // 协调器经 HotkeyManager 的 AsyncStream 事件驱动，真实事件依赖 NSEvent 全局监听，无法在
-    // 单测中合成。这里暴露 internal 入口直接驱动同一套私有 handler，并 await 内部任务以保证确定性。
+    // The coordinator is driven by HotkeyManager's AsyncStream events; real events depend on NSEvent global monitoring, which cannot be
+    // synthesized in unit tests. Here we expose internal entry points to directly drive the same private handlers, and await the internal tasks for determinism.
 
-    /// 直接触发一次「开始」并等待录音启动收尾（等价于收到 `.start` 热键事件）。
+    /// Directly triggers one "start" and waits for the recording start to wrap up (equivalent to receiving a `.start` hotkey event).
     func _test_start() async {
         handleStart()
         await startTask?.value
     }
 
-    /// 直接触发一次「停止」并等待整条流水线（转写→润色→注入）跑完（等价于收到 `.stop`）。
+    /// Directly triggers one "stop" and waits for the whole pipeline (transcribe -> polish -> inject) to finish (equivalent to receiving a `.stop`).
     func _test_stop() async {
         handleStop()
         await processingTask?.value
     }
 
-    /// 当前是否记录为正在录音（供测试断言竞态保护）。
+    /// Whether currently recorded as recording (for tests to assert race protection).
     var _test_isRecording: Bool { isRecording }
 
-    /// 直接调用配置同步（供测试断言 item 2 的判等回写行为）。
+    /// Directly calls config sync (for tests to assert item 2's compare-before-write-back behavior).
     func _test_applyHotkeyConfig() { applyHotkeyConfig() }
 
-    /// 暴露热键管理器（供测试观察 triggerKey/mode）。
+    /// Exposes the hotkey manager (for tests to observe triggerKey/mode).
     var _test_hotkeyManager: HotkeyManager { hotkeyManager }
 }

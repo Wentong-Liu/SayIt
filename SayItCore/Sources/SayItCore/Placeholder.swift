@@ -1,8 +1,8 @@
 import Foundation
 
-/// SayItCore 占位：地基阶段仅验证包可编译。
-/// 后续将在此包内移植 OAuth / Provider / Keychain 等可移植逻辑。
+/// SayItCore placeholder: at the foundation stage this only verifies the package compiles.
+/// Portable logic such as OAuth / Provider / Keychain will be migrated into this package later.
 public enum SayItCore {
-    /// 包标识符（用于日志/诊断的单一真相源）。
+    /// Package identifier (single source of truth for logging/diagnostics).
     public static let identifier = "com.liuwentong.SayIt"
 }
