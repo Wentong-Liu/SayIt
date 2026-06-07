@@ -27,15 +27,22 @@ final class DictationCoordinatorTests: XCTestCase {
         recorder: FakeAudioRecorder,
         injector: FakeTextInjector,
         panel: RecordingPanelController = RecordingPanelController(),
+        dictionaryStore: DictionaryStore? = nil,
         modelReadiness: @escaping (String) -> Bool = { _ in true },
         transcribeTimeout: Duration = .seconds(5),
         transcriber: @escaping () throws -> any Transcriber
     ) -> DictationCoordinator {
-        DictationCoordinator(
+        // By default inject an empty-dictionary store backed by a temp directory: an empty dictionary -> Layer 3 rewriting is identity (zero behavior change),
+        // and it never touches the real user-dictionary file.
+        let store = dictionaryStore ?? DictionaryStore(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appending(component: "sayit-coord-dict-\(UUID().uuidString)"))
+        return DictationCoordinator(
             config: config,
             recorder: recorder,
             panel: panel,
             injector: injector,
+            dictionaryStore: store,
             transcriberFactory: transcriber,
             accessibilityGate: { true },
             modelReadiness: modelReadiness,
@@ -64,6 +71,31 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator._test_isRecording, "stop 后应清录音标记")
         let stopCount = await recorder.stopCount
         XCTAssertEqual(stopCount, 1)
+    }
+
+    // MARK: - User-dictionary Layer 3: empty dictionary = zero behavior change (injected text exactly equals transcript)
+
+    /// Regression guard (Layer 3 wire-in): when the dictionary is empty, the deterministic rewriting between polish and injection must be identity --
+    /// the injected text is byte-for-byte identical to the transcript, proving "zero behavior change" with an empty dictionary.
+    func testEmptyDictionaryInjectsIdenticalTranscript() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        // Explicitly inject an empty-dictionary store backed by a temp directory (all() returns []).
+        let emptyStore = DictionaryStore(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appending(component: "sayit-coord-empty-\(UUID().uuidString)"))
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector, dictionaryStore: emptyStore
+        ) {
+            FakeTranscriber(text: "Call use effect here")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertEqual(injector.injectedTexts, ["Call use effect here"],
+                       "with an empty dictionary the injected text should be exactly identical to the transcript (zero behavior change)")
     }
 
     // MARK: - Empty audio: no transcription, no injection
