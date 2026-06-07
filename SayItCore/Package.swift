@@ -3,6 +3,8 @@ import PackageDescription
 
 let package = Package(
     name: "SayItCore",
+    // 声明默认本地化：让 `Bundle.module` 能加载 Resources/Localizable.xcstrings（en + zh-Hans）。
+    defaultLocalization: "en",
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "SayItCore", targets: ["SayItCore"]),
@@ -17,6 +19,10 @@ let package = Package(
             name: "SayItCore",
             dependencies: [
                 .product(name: "WhisperKit", package: "WhisperKit"),
+            ],
+            // HUD 等包内 user-facing 文案的字符串目录（生成 Bundle.module 的 .lproj）。
+            resources: [
+                .process("Resources/Localizable.xcstrings"),
             ]
         ),
         .testTarget(name: "SayItCoreTests", dependencies: ["SayItCore"]),

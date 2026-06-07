@@ -43,6 +43,7 @@ public final class AppConfig {
         static let providerKind = "provider.kind"
         static let model = "provider.model"
         static let language = "language"
+        static let uiLanguage = "ui.language"
         static let inputDeviceUID = "audio.inputDeviceUID"
     }
 
@@ -118,9 +119,22 @@ public final class AppConfig {
     // MARK: 语言
 
     /// 听写/润色目标语言；"auto" 表示自动跟随转写语言。缺省 "auto"。
+    ///
+    /// - Note: 自 T24 起语音识别**恒自动检测**（``DictationCoordinator`` 传 `language=nil`），
+    ///   此字段不再驱动转写，仅为向后兼容保留（旧版本写入的值不会报错）。
     public var language: String {
         get { stringValue(Key.language, default: Self.defaultLanguage) }
         set { setString(newValue, forKey: Key.language) }
+    }
+
+    /// 界面显示语言；取值仅限 ``UILanguage`` 的两项（英文 / 简体中文）。
+    ///
+    /// 落盘 BCP-47 标识（`"en"` / `"zh-Hans"`）。缺省按系统首选语言映射到二者之一
+    /// （中文系 → 简体中文，其余 → 英文），见 ``UILanguage/systemDefault``。
+    /// 监听方收到变更通知后重读，并把 `Locale(identifier:)` 应用到根场景以即时重定位 UI。
+    public var uiLanguage: UILanguage {
+        get { enumValue(Key.uiLanguage, default: UILanguage.systemDefault) }
+        set { setEnum(newValue, forKey: Key.uiLanguage) }
     }
 
     // MARK: 音频输入设备

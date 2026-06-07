@@ -1,7 +1,7 @@
 import SwiftUI
 import SayItCore
 
-/// 「通用」分区：触发键、交互模式、麦克风（设备选择 + 测试电平）、识别语言。
+/// 「通用」分区：触发键、交互模式、麦克风（设备选择 + 测试电平）、界面语言。
 struct GeneralSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
 
@@ -11,13 +11,13 @@ struct GeneralSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("触发键", selection: $viewModel.triggerKey) {
+                Picker("general.triggerKey", selection: $viewModel.triggerKey) {
                     ForEach(TriggerKey.allCases) { key in
                         Text(key.displayName).tag(key)
                     }
                 }
 
-                Picker("交互方式", selection: $viewModel.interactionMode) {
+                Picker("general.interactionMode", selection: $viewModel.interactionMode) {
                     ForEach(InteractionMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
                     }
@@ -28,11 +28,11 @@ struct GeneralSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
-                Text("触发")
+                Text("general.section.trigger")
             }
 
             Section {
-                Picker("输入设备", selection: $micVM.selectedUID) {
+                Picker("general.inputDevice", selection: $micVM.selectedUID) {
                     Text(defaultDeviceLabel).tag(String?.none)
                     ForEach(micVM.devices) { device in
                         Text(device.name).tag(String?.some(device.uid))
@@ -40,7 +40,9 @@ struct GeneralSettingsView: View {
                 }
 
                 HStack {
-                    Button(micVM.isTesting ? "停止测试" : "测试麦克风") {
+                    Button(micVM.isTesting
+                           ? String(localized: "general.stopTest")
+                           : String(localized: "general.testMic")) {
                         micVM.toggleTesting()
                     }
                     MicLevelBar(level: micVM.level)
@@ -50,19 +52,19 @@ struct GeneralSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
-                Text("麦克风")
+                Text("general.section.microphone")
             }
 
             Section {
-                Picker("识别语言", selection: $viewModel.language) {
-                    ForEach(viewModel.languageOptions, id: \.code) { option in
-                        Text(option.label).tag(option.code)
+                Picker("general.uiLanguage", selection: $viewModel.uiLanguage) {
+                    ForEach(viewModel.uiLanguageOptions) { lang in
+                        Text(lang.displayName).tag(lang)
                     }
                 }
             } header: {
-                Text("语言")
+                Text("general.section.interfaceLanguage")
             } footer: {
-                Text("选择「自动检测」让识别引擎根据语音判断语言。")
+                Text("general.uiLanguage.footer")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -76,21 +78,27 @@ struct GeneralSettingsView: View {
     private var defaultDeviceLabel: String {
         if let uid = micVM.systemDefaultUID,
            let device = micVM.devices.first(where: { $0.uid == uid }) {
-            return "系统默认（\(device.name)）"
+            return String(localized: "general.systemDefault.named \(device.name)")
         }
-        return "系统默认"
+        return String(localized: "general.systemDefault", defaultValue: "System Default")
     }
 
     private var micHint: String {
         micVM.isTesting
-            ? "对着麦克风说话，电平条会随音量跳动。"
-            : "点击「测试麦克风」检查所选设备是否有输入。"
+            ? String(localized: "general.micHint.testing",
+                     defaultValue: "Speak into the mic — the level bar reacts to volume.")
+            : String(localized: "general.micHint.idle",
+                     defaultValue: "Tap “Test Microphone” to check the selected device has input.")
     }
 
     private var interactionHint: String {
         switch viewModel.interactionMode {
-        case .hold:   return "按住触发键开始录音，松开结束。"
-        case .toggle: return "单击触发键开始录音，再次单击结束。"
+        case .hold:
+            return String(localized: "general.interactionHint.hold",
+                          defaultValue: "Hold the trigger key to record, release to stop.")
+        case .toggle:
+            return String(localized: "general.interactionHint.toggle",
+                          defaultValue: "Tap the trigger key to start, tap again to stop.")
         }
     }
 }
@@ -114,7 +122,7 @@ private struct MicLevelBar: View {
             }
         }
         .frame(height: 8)
-        .accessibilityLabel("麦克风输入电平")
+        .accessibilityLabel(Text("general.micLevel.a11y"))
         .accessibilityValue("\(Int(clampedLevel * 100))%")
     }
 
