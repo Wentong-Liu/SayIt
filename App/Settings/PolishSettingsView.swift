@@ -9,24 +9,24 @@ struct PolishSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("启用 AI 润色", isOn: $viewModel.polishEnabled)
+                Toggle("polish.enable", isOn: $viewModel.polishEnabled)
             } footer: {
-                Text("关闭后直接注入原始识别文本，不做整理。")
+                Text("polish.enable.footer")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
             if viewModel.polishEnabled {
-                Section("风格") {
-                    Picker("润色风格", selection: $viewModel.polishStyle) {
+                Section("polish.section.style") {
+                    Picker("polish.style", selection: $viewModel.polishStyle) {
                         ForEach(PolishStyle.allCases) { style in
                             Text(style.displayName).tag(style)
                         }
                     }
                 }
 
-                Section("模型") {
-                    Picker("Provider", selection: $viewModel.providerKind) {
+                Section("polish.section.model") {
+                    Picker("polish.provider", selection: $viewModel.providerKind) {
                         ForEach(ProviderKind.allCases) { kind in
                             Text(kind.displayName).tag(kind)
                         }
@@ -35,14 +35,14 @@ struct PolishSettingsView: View {
                         viewModel.providerDidChange()
                     }
 
-                    Picker("模型", selection: $viewModel.model) {
+                    Picker("polish.model", selection: $viewModel.model) {
                         ForEach(viewModel.providerKind.modelOptions, id: \.id) { option in
                             Text(option.label).tag(option.id)
                         }
                     }
                 }
 
-                Section("凭据") {
+                Section("polish.section.credentials") {
                     if viewModel.providerUsesOAuth {
                         chatGPTCredentialView
                     } else {
@@ -69,10 +69,10 @@ struct PolishSettingsView: View {
         HStack {
             Image(systemName: viewModel.isChatGPTLoggedIn ? "checkmark.seal.fill" : "person.crop.circle.badge.questionmark")
                 .foregroundStyle(viewModel.isChatGPTLoggedIn ? .green : .secondary)
-            Text(viewModel.isChatGPTLoggedIn ? "已登录 ChatGPT" : "未登录")
+            Text(viewModel.isChatGPTLoggedIn ? "polish.loggedIn" : "polish.notLoggedIn")
             Spacer()
             if viewModel.isChatGPTLoggedIn {
-                Button("退出登录") { viewModel.logoutChatGPT() }
+                Button("polish.signOut") { viewModel.logoutChatGPT() }
             } else {
                 Button {
                     viewModel.loginWithChatGPT()
@@ -80,7 +80,7 @@ struct PolishSettingsView: View {
                     if viewModel.isLoggingIn {
                         ProgressView().controlSize(.small)
                     } else {
-                        Text("用 ChatGPT 登录")
+                        Text("polish.signInWithChatGPT")
                     }
                 }
                 .disabled(viewModel.isLoggingIn)
@@ -91,10 +91,11 @@ struct PolishSettingsView: View {
     /// 普通 Provider 的 API Key 录入。
     @ViewBuilder
     private var apiKeyCredentialView: some View {
-        SecureField("\(viewModel.providerKind.displayName) API Key", text: $viewModel.polishAPIKey)
+        SecureField(String(localized: "polish.apiKeyField \(viewModel.providerKind.displayName)"),
+                    text: $viewModel.polishAPIKey)
             .onSubmit { viewModel.savePolishAPIKey() }
 
-        Button("保存密钥") { viewModel.savePolishAPIKey() }
+        Button("polish.saveKey") { viewModel.savePolishAPIKey() }
             .disabled(viewModel.polishAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 }

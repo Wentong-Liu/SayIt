@@ -20,12 +20,18 @@ final class CodexLoginService {
         case serverFailed, stateMismatch, noCode, exchangeFailed(String), cancelled, timedOut
         var description: String {
             switch self {
-            case .serverFailed: return "本地回环服务启动失败（端口 \(ChatGPTOAuth.callbackPort) 可能被占用）"
-            case .stateMismatch: return "state 校验失败"
-            case .noCode: return "回调里没有授权码"
-            case .exchangeFailed(let m): return "换 token 失败：\(m)"
-            case .cancelled: return "登录已取消"
-            case .timedOut: return "登录超时，请重试"
+            case .serverFailed:
+                return String(localized: "login.serverFailed \(ChatGPTOAuth.callbackPort)")
+            case .stateMismatch:
+                return String(localized: "login.stateMismatch", defaultValue: "State verification failed")
+            case .noCode:
+                return String(localized: "login.noCode", defaultValue: "No authorization code in callback")
+            case .exchangeFailed(let m):
+                return String(localized: "login.exchangeFailed \(m)")
+            case .cancelled:
+                return String(localized: "login.cancelled", defaultValue: "Login cancelled")
+            case .timedOut:
+                return String(localized: "login.timedOut", defaultValue: "Login timed out, please try again")
             }
         }
     }
@@ -77,7 +83,9 @@ final class CodexLoginService {
             // 形如 "GET /auth/callback?code=...&state=... HTTP/1.1"
             let firstLine = reqText.split(separator: "\r\n").first.map(String.init) ?? ""
             let path = firstLine.split(separator: " ").dropFirst().first.map(String.init) ?? ""
-            let html = "<html><body><h3>SayIt: 登录完成，可关闭此页面返回 App。</h3></body></html>"
+            let doneText = String(localized: "login.browserDone",
+                                  defaultValue: "SayIt: Login complete. You can close this page and return to the app.")
+            let html = "<html><body><h3>\(doneText)</h3></body></html>"
             let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n\(html)"
             conn.send(content: Data(resp.utf8), completion: .contentProcessed { _ in conn.cancel() })
             Task { @MainActor [weak self] in self?.onCallback(path: path) }
@@ -108,7 +116,8 @@ final class CodexLoginService {
                 if KeychainStore.saveChatGPTTokens(tokens) {
                     self.finish(.success(tokens))
                 } else {
-                    self.finish(.failure(LoginError.exchangeFailed("无法写入钥匙串")))
+                    self.finish(.failure(LoginError.exchangeFailed(
+                        String(localized: "login.keychainWriteFailed", defaultValue: "Unable to write to keychain"))))
                 }
             } catch {
                 self.finish(.failure(LoginError.exchangeFailed(error.localizedDescription)))

@@ -59,23 +59,39 @@ final class HUDPositioningTests: XCTestCase {
 }
 
 final class RecordingStateTests: XCTestCase {
-    func testDisplayText() {
-        XCTAssertEqual(RecordingState.listening.displayText, "聆听中…")
-        XCTAssertEqual(RecordingState.transcribing.displayText, "识别中…")
+    /// 固定态文案自 T24 起本地化（en + zh-Hans），故按受支持语言断言「属于该语言集」，
+    /// 不再硬编码单一中文，以免随测试进程 locale 漂移而误红。同时确保不是未翻译的键名。
+    func testDisplayTextLocalizedToSupportedLanguage() {
+        let listening = ["Listening…", "聆听中…"]
+        let transcribing = ["Transcribing…", "识别中…"]
+        let idle = ["Ready", "准备就绪"]
+
+        XCTAssertTrue(listening.contains(RecordingState.listening.displayText),
+                      "got \(RecordingState.listening.displayText)")
+        XCTAssertTrue(transcribing.contains(RecordingState.transcribing.displayText),
+                      "got \(RecordingState.transcribing.displayText)")
+        XCTAssertTrue(idle.contains(RecordingState.idle.displayText),
+                      "got \(RecordingState.idle.displayText)")
+    }
+
+    /// 调用方传入的具体文案原样保留（与 locale 无关）。
+    func testDisplayTextPassesThroughProvidedMessage() {
         XCTAssertEqual(RecordingState.error("网络异常").displayText, "网络异常")
         XCTAssertEqual(RecordingState.info("已粘贴到当前窗口").displayText, "已粘贴到当前窗口")
-        XCTAssertEqual(RecordingState.idle.displayText, "准备就绪")
     }
 
     func testErrorTextTrimsAndFallsBack() {
         XCTAssertEqual(RecordingState.error("  超时  ").displayText, "超时")
-        XCTAssertEqual(RecordingState.error("   ").displayText, "出错了")
-        XCTAssertEqual(RecordingState.error("").displayText, "出错了")
+        // 空消息回落到本地化通用错误文案（en 或 zh-Hans 之一）。
+        let errorFallbacks = ["Something went wrong", "出错了"]
+        XCTAssertTrue(errorFallbacks.contains(RecordingState.error("   ").displayText))
+        XCTAssertTrue(errorFallbacks.contains(RecordingState.error("").displayText))
     }
 
     func testInfoTextTrimsAndFallsBack() {
         XCTAssertEqual(RecordingState.info("  已粘贴  ").displayText, "已粘贴")
-        XCTAssertEqual(RecordingState.info("   ").displayText, "完成")
+        let doneFallbacks = ["Done", "完成"]
+        XCTAssertTrue(doneFallbacks.contains(RecordingState.info("   ").displayText))
     }
 
     func testVisibility() {
