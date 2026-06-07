@@ -1,11 +1,11 @@
 import XCTest
 @testable import SayItCore
 
-/// 纯状态机单测：覆盖「孤立轻点判定」与「按住判定」的时间阈值与事件序列。
-/// 这些类型不依赖任何系统事件监听，可在 CI 上确定性运行。
+/// Pure state-machine unit test: covers the time thresholds and event sequences of "isolated tap detection" and "hold detection".
+/// These types depend on no system event monitoring and can run deterministically on CI.
 final class HotkeyStateMachineTests: XCTestCase {
 
-    // MARK: - HoldStateMachine（按住 -> start，松开 -> stop）
+    // MARK: - HoldStateMachine (hold -> start, release -> stop)
 
     func testHoldDownThenUpProducesStartStop() {
         var machine = HoldStateMachine()
@@ -16,7 +16,7 @@ final class HotkeyStateMachineTests: XCTestCase {
     func testHoldRepeatedKeyDownDoesNotRestart() {
         var machine = HoldStateMachine()
         XCTAssertEqual(machine.keyDown(), .start)
-        // 系统按键自动重复会发多次 keyDown，但不应重复触发 start。
+        // System key auto-repeat sends multiple keyDowns, but should not trigger start repeatedly.
         XCTAssertNil(machine.keyDown())
         XCTAssertNil(machine.keyDown())
         XCTAssertEqual(machine.keyUp(), .stop)
@@ -24,7 +24,7 @@ final class HotkeyStateMachineTests: XCTestCase {
 
     func testHoldKeyUpWithoutDownIsIgnored() {
         var machine = HoldStateMachine()
-        // 没按下就松开（例如监听刚启动时残留的 up）应被忽略。
+        // A release without a press (e.g. a leftover up right after monitoring starts) should be ignored.
         XCTAssertNil(machine.keyUp())
     }
 
@@ -32,46 +32,46 @@ final class HotkeyStateMachineTests: XCTestCase {
         var machine = HoldStateMachine()
         XCTAssertEqual(machine.keyDown(), .start)
         machine.reset()
-        // reset 后再次松开不应产生 stop（状态已清）。
+        // After reset, releasing again should not produce stop (the state is cleared).
         XCTAssertNil(machine.keyUp())
-        // 且可以重新开始。
+        // And it can start again.
         XCTAssertEqual(machine.keyDown(), .start)
     }
 
-    // MARK: - IsolatedTapDetector（孤立轻点：单击触发的核心判定）
+    // MARK: - IsolatedTapDetector (isolated tap: the core decision for tap triggering)
 
     func testIsolatedTapWithinWindowFires() {
         var detector = IsolatedTapDetector(window: 0.3)
         detector.modifierDown(at: 0.0)
-        // 按下→松开间隔在窗口内、中途没夹普通键 -> 是孤立轻点。
+        // The down -> up interval within the window with no ordinary key in between -> it is an isolated tap.
         XCTAssertTrue(detector.modifierUp(at: 0.1))
     }
 
     func testIsolatedTapAtExactWindowFires() {
         var detector = IsolatedTapDetector(window: 0.5)
         detector.modifierDown(at: 1.0)
-        // 间隔恰好等于窗口（<= 判定，含端点）-> 触发。用可精确表示的二进制小数避开浮点误差。
+        // The interval exactly equal to the window (<= decision, inclusive) -> triggers. Uses a precisely-representable binary fraction to avoid float error.
         XCTAssertTrue(detector.modifierUp(at: 1.5))
     }
 
     func testIsolatedTapBeyondWindowDoesNotFire() {
         var detector = IsolatedTapDetector(window: 0.3)
         detector.modifierDown(at: 0.0)
-        // 长按超过窗口 -> 不算轻点。
+        // A long press exceeding the window -> not a tap.
         XCTAssertFalse(detector.modifierUp(at: 0.5))
     }
 
     func testChordWithOtherKeyDoesNotFire() {
         var detector = IsolatedTapDetector(window: 0.3)
         detector.modifierDown(at: 0.0)
-        // 按住期间夹了普通键（如 ⌘C）-> 污染 -> 松开不触发，让位给快捷键。
+        // An ordinary key (e.g. Cmd-C) pressed during the hold -> tainted -> release does not trigger, yielding to the shortcut.
         detector.otherKeyDown()
         XCTAssertFalse(detector.modifierUp(at: 0.1))
     }
 
     func testOtherKeyBeforeModifierDownIsIgnored() {
         var detector = IsolatedTapDetector(window: 0.3)
-        // 修饰键未按下时的普通键按下不应污染下一次轻点。
+        // An ordinary key press while the modifier is not down should not taint the next tap.
         detector.otherKeyDown()
         detector.modifierDown(at: 0.0)
         XCTAssertTrue(detector.modifierUp(at: 0.1))
@@ -79,7 +79,7 @@ final class HotkeyStateMachineTests: XCTestCase {
 
     func testIsolatedTapUpWithoutDownIsIgnored() {
         var detector = IsolatedTapDetector(window: 0.3)
-        // 没按下就松开（监听启动残留）应被忽略，不触发。
+        // A release without a press (a monitoring-start leftover) should be ignored, not triggering.
         XCTAssertFalse(detector.modifierUp(at: 0.1))
     }
 
@@ -87,7 +87,7 @@ final class HotkeyStateMachineTests: XCTestCase {
         var detector = IsolatedTapDetector(window: 0.3)
         detector.modifierDown(at: 0.0)
         XCTAssertTrue(detector.modifierUp(at: 0.1), "第一次轻点")
-        // 状态已复位：第二次完整轻点仍应触发。
+        // The state is reset: a second complete tap should still trigger.
         detector.modifierDown(at: 1.0)
         XCTAssertTrue(detector.modifierUp(at: 1.1), "第二次轻点")
     }
@@ -97,7 +97,7 @@ final class HotkeyStateMachineTests: XCTestCase {
         detector.modifierDown(at: 0.0)
         detector.otherKeyDown()
         XCTAssertFalse(detector.modifierUp(at: 0.1), "夹键的这次不触发")
-        // 污染随松开复位：下一次干净轻点应触发。
+        // The taint resets on release: the next clean tap should trigger.
         detector.modifierDown(at: 1.0)
         XCTAssertTrue(detector.modifierUp(at: 1.05))
     }
@@ -105,13 +105,13 @@ final class HotkeyStateMachineTests: XCTestCase {
     func testIsolatedTapDownIsIdempotentKeepsFirstTimestamp() {
         var detector = IsolatedTapDetector(window: 0.3)
         detector.modifierDown(at: 0.0)
-        // 重复按下边沿不应刷新起点（保险防自动重复）。
+        // A repeated down edge should not refresh the start point (a safeguard against auto-repeat).
         detector.modifierDown(at: 0.25)
-        // 以首次 0.0 计：到 0.4 已超窗口 -> 不触发。
+        // Counting from the first 0.0: by 0.4 the window is already exceeded -> does not trigger.
         XCTAssertFalse(detector.modifierUp(at: 0.4))
     }
 
-    // MARK: - SingleTapToggleStateMachine（孤立轻点 -> start，再次 -> stop）
+    // MARK: - SingleTapToggleStateMachine (isolated tap -> start, again -> stop)
 
     func testSingleTapToggleAlternatesStartStop() {
         var machine = SingleTapToggleStateMachine(window: 0.3)
@@ -127,9 +127,9 @@ final class HotkeyStateMachineTests: XCTestCase {
         var machine = SingleTapToggleStateMachine(window: 0.3)
         machine.modifierDown(at: 0.0)
         machine.otherKeyDown()
-        // 夹了普通键（快捷键）-> 不触发、会话状态不变。
+        // An ordinary key (shortcut) in between -> does not trigger, the session state is unchanged.
         XCTAssertNil(machine.modifierUp(at: 0.1))
-        // 之后一次干净轻点应正常 start（证明会话仍处于未激活）。
+        // Afterwards one clean tap should start normally (proving the session is still inactive).
         machine.modifierDown(at: 1.0)
         XCTAssertEqual(machine.modifierUp(at: 1.1), .start)
     }
@@ -137,7 +137,7 @@ final class HotkeyStateMachineTests: XCTestCase {
     func testSingleTapToggleLongPressDoesNotToggle() {
         var machine = SingleTapToggleStateMachine(window: 0.3)
         machine.modifierDown(at: 0.0)
-        // 长按超窗口不触发。
+        // A long press exceeding the window does not trigger.
         XCTAssertNil(machine.modifierUp(at: 0.6))
     }
 
@@ -145,12 +145,12 @@ final class HotkeyStateMachineTests: XCTestCase {
         var machine = SingleTapToggleStateMachine(window: 0.3)
         machine.modifierDown(at: 0.0)
         XCTAssertEqual(machine.modifierUp(at: 0.1), .start)
-        // reset 仅作废进行中的候选轻点，不改变「已激活」会话。
+        // reset only voids the in-progress candidate tap, not changing the "already active" session.
         machine.modifierDown(at: 1.0)
         machine.reset()
-        // reset 后松开不触发（候选已作废）。
+        // After reset, releasing does not trigger (the candidate is voided).
         XCTAssertNil(machine.modifierUp(at: 1.05))
-        // 下一次干净轻点应给 .stop（会话仍是激活态）。
+        // The next clean tap should give .stop (the session is still active).
         machine.modifierDown(at: 2.0)
         XCTAssertEqual(machine.modifierUp(at: 2.1), .stop)
     }

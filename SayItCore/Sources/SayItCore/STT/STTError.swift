@@ -1,14 +1,14 @@
 import Foundation
 
-/// 语音转写（Speech-To-Text）过程中可能抛出的错误。
+/// Errors that may be thrown during Speech-To-Text transcription.
 public enum STTError: Error, Equatable, Sendable {
-    /// 转写后端尚未就绪（例如模型未加载、权限未授予）。
+/// The transcription backend is not ready yet (e.g. model not loaded, permission not granted).
     case notReady
-    /// 输入音频为空，无可转写内容。
+/// The input audio is empty, with nothing to transcribe.
     case emptyAudio
-    /// 不支持的采样率或音频格式。
+/// Unsupported sample rate or audio format.
     case unsupportedFormat
-    /// 转写失败，附带可读原因。
+/// Transcription failed, with a human-readable reason attached.
     case transcriptionFailed(reason: String)
 }
 

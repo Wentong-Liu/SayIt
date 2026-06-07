@@ -1,8 +1,8 @@
 import XCTest
 @testable import SayItCore
 
-/// HotkeyManager 壳层的可测面：配置默认值与启停生命周期（幂等性、isRunning 标志）。
-/// 真实的全局事件注入不在单测范围内——其判定逻辑已由纯状态机测试覆盖。
+/// The testable surface of the HotkeyManager shell layer: config default values and the start/stop lifecycle (idempotency, the isRunning flag).
+/// Real global event injection is out of unit-test scope -- its decision logic is already covered by the pure state-machine tests.
 @MainActor
 final class HotkeyManagerTests: XCTestCase {
 
@@ -53,7 +53,7 @@ final class HotkeyManagerTests: XCTestCase {
     }
 
     func testIsProcessTrustedIsQueryable() {
-        // 仅验证可被调用且返回布尔（CI 环境通常未授权 -> false）。
+        // Only verify it can be called and returns a bool (the CI environment is usually unauthorized -> false).
         let manager = HotkeyManager()
         _ = manager.isProcessTrusted
         _ = HotkeyManager.isProcessTrusted

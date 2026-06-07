@@ -3,7 +3,7 @@ import Foundation
 public enum ProviderError: Error, Equatable, Sendable {
     case missingAPIKey
     case httpError(status: Int, body: String)
-    /// 流式读取失败：上游返回 error/response.failed 事件，或流被判定卡死（超时）。
+    /// Streamed read failed: upstream returned an error/response.failed event, or the stream was judged stalled (timed out).
     case streamFailed(body: String)
     case invalidResponse
     case network(String)

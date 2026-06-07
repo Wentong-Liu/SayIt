@@ -1,15 +1,15 @@
 import AVFoundation
 import Foundation
 
-/// 麦克风权限的当前状态（对 `AVAuthorizationStatus` 的简化封装，便于上层判断）。
+/// Current microphone permission state (a simplified wrapper over `AVAuthorizationStatus` for easier upper-layer decisions).
 public enum MicrophoneAuthorization: Sendable, Equatable {
-    /// 尚未询问过用户，可调用 `MicrophonePermission.request()` 触发系统弹窗。
+    /// Not yet asked the user; calling `MicrophonePermission.request()` can trigger the system prompt.
     case notDetermined
-    /// 用户已授权。
+    /// The user has granted access.
     case authorized
-    /// 用户拒绝，或被家长控制/MDM 等限制。需引导用户去系统设置开启。
+    /// The user denied, or is restricted by parental controls/MDM, etc. The user must be guided to enable it in System Settings.
     case denied
-    /// 系统策略限制（无法通过设置变更）。
+    /// Restricted by system policy (cannot be changed via Settings).
     case restricted
 
     init(_ status: AVAuthorizationStatus) {
@@ -23,26 +23,26 @@ public enum MicrophoneAuthorization: Sendable, Equatable {
     }
 }
 
-/// 麦克风权限请求/查询的封装。
+/// Wrapper for microphone permission requests/queries.
 ///
-/// 使用 `AVCaptureDevice`（音频设备）的授权 API：macOS 上配合应用 Info.plist 的
-/// `NSMicrophoneUsageDescription` 使用。首次 `request()` 会弹出系统授权对话框。
+/// Uses the authorization API of `AVCaptureDevice` (audio device): on macOS it works together with the app's Info.plist
+/// `NSMicrophoneUsageDescription`. The first `request()` pops up the system authorization dialog.
 public enum MicrophonePermission {
-    /// 当前麦克风授权状态（不触发弹窗）。
+    /// Current microphone authorization status (does not trigger a prompt).
     public static var current: MicrophoneAuthorization {
         MicrophoneAuthorization(AVCaptureDevice.authorizationStatus(for: .audio))
     }
 
-    /// 请求麦克风权限。
+    /// Request microphone permission.
     ///
-    /// - 若状态为 `.notDetermined`，弹出系统授权对话框并等待用户选择。
-    /// - 若已授权/已拒绝，则直接返回当前结果而不弹窗（系统行为）。
-    /// - 返回 `true` 表示已获授权。
+    /// - If the status is `.notDetermined`, pops up the system authorization dialog and waits for the user's choice.
+    /// - If already authorized/denied, returns the current result directly without a prompt (system behavior).
+    /// - Returns `true` if authorized.
     public static func request() async -> Bool {
         await AVCaptureDevice.requestAccess(for: .audio)
     }
 
-    /// 请求权限并返回结构化状态（请求后重新查询，能区分 denied/restricted）。
+    /// Requests permission and returns a structured status (re-queries after the request, able to distinguish denied/restricted).
     public static func requestStatus() async -> MicrophoneAuthorization {
         _ = await request()
         return current

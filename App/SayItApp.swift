@@ -7,7 +7,7 @@ struct SayItApp: App {
 
     @Environment(\.openSettings) private var openSettings
 
-    /// 应用配置：监听其变更以即时应用界面语言。
+    /// The application config: observes its changes to instantly apply the UI language.
     @State private var uiLocale: Locale = AppConfig.shared.uiLanguage.locale
 
     var body: some Scene {
@@ -36,7 +36,7 @@ struct SayItApp: App {
         Settings {
             SettingsView()
                 .environment(\.locale, uiLocale)
-                // 设置页里切换界面语言后，立即把新 Locale 应用到设置窗口与菜单，无需重启即可见效。
+                // After switching the UI language in the settings page, immediately apply the new Locale to the settings window and menu, taking effect without a restart.
                 .onReceive(NotificationCenter.default.publisher(for: AppConfig.didChangeNotification)) { _ in
                     uiLocale = AppConfig.shared.uiLanguage.locale
                 }

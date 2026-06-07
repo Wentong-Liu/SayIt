@@ -1,16 +1,16 @@
 import Foundation
 
-/// 录音过程中可能发生的错误。
+/// Errors that may occur during recording.
 public enum AudioRecordingError: Error, Sendable {
-    /// 未获得麦克风权限（被拒绝/受限/用户未授权）。
+/// Microphone permission not granted (denied/restricted/user not authorized).
     case microphonePermissionDenied
-    /// 已经在录音中，重复调用 `start()`。
+/// Already recording, with `start()` called again.
     case alreadyRecording
-    /// 当前没有在录音，却调用了 `stop()`。
+/// Not currently recording, yet `stop()` was called.
     case notRecording
-    /// 无法为输入流构建目标格式的转换器（采样率/声道转换失败）。
+/// Cannot build a converter to the target format for the input stream (sample-rate/channel conversion failed).
     case converterUnavailable
-    /// AVAudioEngine 启动失败，附带底层错误描述。
+/// AVAudioEngine failed to start, with the underlying error description attached.
     case engineStartFailed(String)
 }
 
@@ -31,44 +31,44 @@ extension AudioRecordingError: CustomStringConvertible {
     }
 }
 
-/// 麦克风录音抽象：开始采集、停止并取回累积的 Float32 单声道 16kHz 样本。
+/// Microphone recording abstraction: start capture, stop, and retrieve the accumulated Float32 mono 16kHz samples.
 ///
-/// 设计为协议，便于上层（听写流水线）依赖抽象、单测时替换为假实现，
-/// 也方便后续替换底层采集方案而不影响调用方。
+/// Designed as a protocol so upper layers (the dictation pipeline) depend on the abstraction and can swap in a fake implementation in unit tests,
+/// and so the underlying capture approach can be replaced later without affecting callers.
 ///
-/// 约定：`stop()` 返回的样本即为 `AudioFormat`（16kHz / 单声道 / Float32）。
+/// Contract: the samples returned by `stop()` are exactly `AudioFormat` (16kHz / mono / Float32).
 public protocol AudioRecording: Sendable {
-    /// 开始录音（用系统默认输入设备）。若未授权会先尝试请求权限；仍未授权则抛
-    /// `.microphonePermissionDenied`。已在录音时抛 `.alreadyRecording`。
+    /// Start recording (using the system default input device). If unauthorized it first tries to request permission; if still unauthorized it throws
+    /// `.microphonePermissionDenied`. Throws `.alreadyRecording` when already recording.
     func start() async throws
 
-    /// 用指定输入设备开始录音。
+    /// Start recording with a specified input device.
     ///
-    /// - Parameter deviceUID: 目标输入设备 UID（``AudioInputDevice/uid``）；
-    ///   传 `nil` 等价于 ``start()``（系统默认设备）。
-    ///   若 UID 解析不到设备（已拔出/失效），自动回落到系统默认设备。
-    /// 其余行为与 ``start()`` 一致（权限、16kHz/mono/Float32、levels 流）。
+    /// - Parameter deviceUID: target input device UID (``AudioInputDevice/uid``);
+    ///   passing `nil` is equivalent to ``start()`` (system default device).
+    ///   If the UID resolves to no device (unplugged/invalid), it automatically falls back to the system default device.
+    /// All other behavior matches ``start()`` (permission, 16kHz/mono/Float32, levels stream).
     func start(deviceUID: String?) async throws
 
-    /// 停止录音并返回本次累积的全部样本（16kHz / 单声道 / Float32）。
-    /// 未在录音时抛 `.notRecording`。
+    /// Stop recording and return all samples accumulated this time (16kHz / mono / Float32).
+    /// Throws `.notRecording` when not recording.
     @discardableResult
     func stop() async throws -> [Float]
 
-    /// 是否正在录音。
+    /// Whether recording is in progress.
     var isRecording: Bool { get async }
 
-    /// 实时输入电平流：每段采集缓冲产出一个归一化 RMS 电平（0...1）。
+    /// Real-time input level stream: each captured buffer segment produces one normalized RMS level (0...1).
     ///
-    /// 供 HUD 波形/音量指示消费（`for await level in recorder.levels { ... }`）。
-    /// 录音停止后不再产出新值；跨多次录音持续有效（同一长生命周期流）。
-    /// 0 表示静音，1 表示接近满量程。具体映射由实现决定（可含对数压缩以贴合听感）。
+    /// Consumed by the HUD waveform/volume indicator (`for await level in recorder.levels { ... }`).
+    /// No new values are produced after recording stops; stays valid across multiple recordings (same long-lived stream).
+    /// 0 means silence, 1 means near full scale. The exact mapping is implementation-defined (may include log compression to match perception).
     var levels: AsyncStream<Double> { get }
 }
 
 public extension AudioRecording {
-    /// 默认实现：用系统默认输入设备开始录音（转发到 `start(deviceUID: nil)`）。
-    /// 既保证既有调用方 `start()` 不变，也让仅实现 `start(deviceUID:)` 的类型自动获得它。
+    /// Default implementation: start recording with the system default input device (forwards to `start(deviceUID: nil)`).
+    /// This both keeps the existing caller's `start()` unchanged and gives types that only implement `start(deviceUID:)` an automatic version of it.
     func start() async throws {
         try await start(deviceUID: nil)
     }

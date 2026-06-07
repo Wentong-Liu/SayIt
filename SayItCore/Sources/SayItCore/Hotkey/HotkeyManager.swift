@@ -1,36 +1,36 @@
 import AppKit
 
-/// 全局热键管理器：监听系统级按键，按所选模式产出 `.start` / `.stop` 事件。
+/// Global hotkey manager: listens for system-level key events and emits `.start` / `.stop` events per the selected mode.
 ///
-/// 支持两种模式（见 ``HotkeyMode``）：
-/// - **hold-to-talk**：按住触发键说话（keyDown -> `.start`，keyUp -> `.stop`）。
-/// - **single-tap-to-toggle**：孤立轻点修饰键开始，再次轻点结束（默认）。「孤立轻点」=
-///   修饰键按下→松开且中途没夹普通键、在短窗口内完成，故不与 ⌘C 等快捷键冲突。
+/// Supports two modes (see ``HotkeyMode``):
+/// - **hold-to-talk**: hold the trigger key to speak (keyDown -> `.start`, keyUp -> `.stop`).
+/// - **single-tap-to-toggle**: an isolated tap of the modifier key starts, another tap ends (default). An "isolated tap" =
+///   the modifier key goes down -> up with no ordinary key in between, completed within a short window, so it does not conflict with shortcuts like Cmd-C.
 ///
-/// 事件以两种方式对外发出，二者同时生效：
-/// - 回调 ``onEvent``（在主线程调用）；
-/// - 异步序列 ``events``（`AsyncStream`，便于 `for await` 消费）。
+/// Events are emitted in two ways, both active simultaneously:
+/// - the callback ``onEvent`` (invoked on the main thread);
+/// - the async sequence ``events`` (`AsyncStream`, convenient for `for await` consumption).
 ///
-/// ## 所需系统权限
-/// 全局监听其它 app 的按键属于敏感操作，macOS 需要用户授权，二者按使用的 API 取其一或并需：
-/// - **辅助功能（Accessibility）**：系统设置 › 隐私与安全性 › 辅助功能。
-///   `NSEvent.addGlobalMonitorForEvents` 监听 `.keyDown` / `.keyUp` 通常需要此项。
-/// - **输入监控（Input Monitoring）**：系统设置 › 隐私与安全性 › 输入监控。
-///   若改用 `CGEventTap` 截获按键，则需要此项。
+/// ## Required system permissions
+/// Globally monitoring other apps' key events is a sensitive operation; macOS requires user authorization, one or both depending on the API used:
+/// - **Accessibility**: System Settings > Privacy & Security > Accessibility.
+///   `NSEvent.addGlobalMonitorForEvents` listening for `.keyDown` / `.keyUp` usually needs this.
+/// - **Input Monitoring**: System Settings > Privacy & Security > Input Monitoring.
+///   This is needed if you switch to `CGEventTap` to intercept keys instead.
 ///
-/// 本实现采用 `NSEvent` 全局监听（不截获、不阻断事件，仅观察），优先依赖「辅助功能」授权。
-/// 未授权时监听器会被创建但收不到回调——调用方应先用 ``isProcessTrusted`` 检查并引导用户授权。
+/// This implementation uses `NSEvent` global monitoring (observe only, no interception or blocking of events), relying primarily on Accessibility authorization.
+/// When unauthorized, the monitor is created but receives no callbacks -- callers should first check with ``isProcessTrusted`` and guide the user to authorize.
 ///
-/// 该类型为 `@MainActor`：`NSEvent` 监听 API 须在主线程使用，状态也仅在主线程读写。
+/// This type is `@MainActor`: the `NSEvent` monitoring API must be used on the main thread, and state is read/written only on the main thread.
 @MainActor
 public final class HotkeyManager {
 
-    // MARK: 配置
+    // MARK: Configuration
 
-    /// 当前触发键。改值后下一次事件即生效；监听回调里实时读取，无需重启监听。
+    /// The current trigger key. Changes take effect on the next event; read live inside the monitoring callback, no restart needed.
     public var triggerKey: TriggerKey
 
-    /// 当前模式。改值后会复位内部状态机，避免跨模式残留。
+    /// The current mode. Changing it resets the internal state machine to avoid cross-mode residue.
     public var mode: HotkeyMode {
         didSet {
             guard oldValue != mode else { return }
@@ -38,19 +38,19 @@ public final class HotkeyManager {
         }
     }
 
-    /// single-tap 模式判定「孤立轻点」的按下→松开最大间隔（秒）。
+    /// The maximum down -> up interval (seconds) used by single-tap mode to judge an "isolated tap".
     public let singleTapWindow: TimeInterval
 
-    // MARK: 事件输出
+    // MARK: Event output
 
-    /// 主线程事件回调（与 ``events`` 同时生效）。
+    /// Main-thread event callback (active simultaneously with ``events``).
     public var onEvent: ((HotkeyEvent) -> Void)?
 
-    /// 事件异步序列，便于 `for await event in manager.events { ... }`。
+    /// Event async sequence, convenient for `for await event in manager.events { ... }`.
     public let events: AsyncStream<HotkeyEvent>
     private let eventContinuation: AsyncStream<HotkeyEvent>.Continuation
 
-    // MARK: 内部状态
+    // MARK: Internal state
 
     private var holdMachine = HoldStateMachine()
     private var singleTapMachine: SingleTapToggleStateMachine
@@ -59,15 +59,15 @@ public final class HotkeyManager {
     private var keyDownMonitor: Any?
     private var keyUpMonitor: Any?
 
-    /// 是否正在监听。
+    /// Whether monitoring is active.
     public private(set) var isRunning = false
 
-    // MARK: 初始化
+    // MARK: Initialization
 
     /// - Parameters:
-    ///   - triggerKey: 触发键，默认右 ⌘。
-    ///   - mode: 触发模式，默认单击切换。
-    ///   - singleTapWindow: single-tap 孤立轻点按下→松开窗口（秒），默认 0.3。
+    ///   - triggerKey: the trigger key, defaults to the right Command.
+    ///   - mode: the trigger mode, defaults to single-tap toggle.
+    ///   - singleTapWindow: the single-tap isolated-tap down -> up window (seconds), defaults to 0.3.
     public init(
         triggerKey: TriggerKey = .default,
         mode: HotkeyMode = .singleTapToggle,
@@ -87,32 +87,32 @@ public final class HotkeyManager {
         eventContinuation.finish()
     }
 
-    // MARK: 权限
+    // MARK: Permissions
 
-    /// 进程是否已获得「辅助功能」信任（全局键盘监听的前置条件）。
+    /// Whether the process has been granted Accessibility trust (a prerequisite for global keyboard monitoring).
     ///
-    /// 返回 `false` 时，应引导用户到「系统设置 › 隐私与安全性 › 辅助功能」勾选本 app，
-    /// 否则全局监听虽能建立但收不到事件。
+    /// When it returns `false`, the user should be guided to System Settings > Privacy & Security > Accessibility to check this app,
+    /// otherwise global monitoring can be established but receives no events.
     public static var isProcessTrusted: Bool {
         AXIsProcessTrusted()
     }
 
-    /// 同上，实例便捷访问。
+    /// Same as above, an instance convenience accessor.
     public var isProcessTrusted: Bool { Self.isProcessTrusted }
 
-    // MARK: 启停
+    // MARK: Start/stop
 
-    /// 开始全局监听。重复调用是幂等的。
+    /// Start global monitoring. Repeated calls are idempotent.
     public func start() {
         guard !isRunning else { return }
         isRunning = true
         resetStateMachines()
 
-        // 触发键为修饰键，其按下/松开走 .flagsChanged。
+        // The trigger key is a modifier; its down/up goes through .flagsChanged.
         flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             MainActor.assumeIsolated { self?.handleFlagsChanged(event) }
         }
-        // 普通键的 keyDown 用于污染 single-tap 的候选轻点（夹了快捷键不触发）。
+        // An ordinary key's keyDown is used to taint the single-tap candidate (a shortcut in between does not trigger).
         keyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             MainActor.assumeIsolated { self?.handleKeyDown(event) }
         }
@@ -121,7 +121,7 @@ public final class HotkeyManager {
         }
     }
 
-    /// 停止监听并移除所有系统监视器。重复调用是幂等的。
+    /// Stop monitoring and remove all system monitors. Repeated calls are idempotent.
     public func stop() {
         guard isRunning else { return }
         isRunning = false
@@ -134,7 +134,7 @@ public final class HotkeyManager {
         resetStateMachines()
     }
 
-    // MARK: 事件处理（壳层 -> 纯状态机）
+    // MARK: Event handling (shell layer -> pure state machine)
 
     private func handleFlagsChanged(_ event: NSEvent) {
         let key = triggerKey
@@ -148,31 +148,31 @@ public final class HotkeyManager {
         }
     }
 
-    /// single-tap 模式下，触发键的按下/松开走 `.flagsChanged`（修饰键不发 keyDown/keyUp）。
-    /// 按下开始候选轻点，松开时由状态机判定是否构成孤立轻点（中途夹普通键由 `handleKeyDown` 污染）。
+    /// In single-tap mode, the trigger key's down/up goes through `.flagsChanged` (modifier keys do not send keyDown/keyUp).
+    /// Down begins a candidate tap; on up the state machine decides whether it constitutes an isolated tap (an ordinary key in between is tainted by `handleKeyDown`).
     private func handleSingleTapFlagsChanged(_ event: NSEvent, key: TriggerKey) {
         if isTriggerPressEdge(event, key: key) {
             singleTapMachine.modifierDown(at: event.timestamp)
         } else if key == .fnGlobe || event.keyCode == key.keyCode {
-            // 目标键的松开边沿（标志被清）。
+            // The release edge of the target key (the flag is cleared).
             if let result = singleTapMachine.modifierUp(at: event.timestamp) {
                 emit(result)
             }
         } else {
-            // 另一修饰键按下/松开（如同时按了 ⌘＋⌥）：视为夹了别的键，作废本次候选轻点。
+            // Another modifier key down/up (e.g. Cmd+Option pressed together): treated as another key in between, voiding this candidate tap.
             singleTapMachine.otherKeyDown()
         }
     }
 
-    /// 判断本次 `.flagsChanged` 是否为触发键的「按下」边沿（该键的修饰标志此刻被 set）。
-    /// Fn/Globe 的物理 keyCode 不稳定，故对它只比对 `.function` 标志。
+    /// Decides whether this `.flagsChanged` is the "down" edge of the trigger key (that key's modifier flag is set at this moment).
+    /// Fn/Globe's physical keyCode is unstable, so for it we only compare the `.function` flag.
     private func isTriggerPressEdge(_ event: NSEvent, key: TriggerKey) -> Bool {
         key == .fnGlobe
             ? event.modifierFlags.contains(.function)
             : (event.keyCode == key.keyCode && event.modifierFlags.contains(key.modifierFlag))
     }
 
-    /// hold 模式下，若触发键本身是修饰键，其按下/松开走 `.flagsChanged`（修饰键不发 keyDown/keyUp）。
+    /// In hold mode, if the trigger key itself is a modifier, its down/up goes through `.flagsChanged` (modifier keys do not send keyDown/keyUp).
     private func handleHoldFlagsChanged(_ event: NSEvent, key: TriggerKey) {
         let isPressed: Bool = key == .fnGlobe
             ? event.modifierFlags.contains(.function)
@@ -181,7 +181,7 @@ public final class HotkeyManager {
         if isPressed {
             if let result = holdMachine.keyDown() { emit(result) }
         } else if key == .fnGlobe || event.keyCode == key.keyCode {
-            // 目标键的松开边沿（标志被清）。
+            // The release edge of the target key (the flag is cleared).
             if let result = holdMachine.keyUp() { emit(result) }
         }
     }
@@ -189,19 +189,19 @@ public final class HotkeyManager {
     private func handleKeyDown(_ event: NSEvent) {
         switch mode {
         case .singleTapToggle:
-            // 修饰键按住期间按了普通键（如 ⌘C）：污染本次候选轻点，松开不再触发 -> 让位给快捷键。
+            // An ordinary key (e.g. Cmd-C) was pressed while the modifier was held: taint this candidate tap, release no longer triggers -> yield to the shortcut.
             singleTapMachine.otherKeyDown()
         case .holdToTalk:
-            // 触发键为修饰键时由 .flagsChanged 处理；此处仅处理非修饰触发键（预留扩展）。
+            // When the trigger key is a modifier it is handled by .flagsChanged; here we only handle non-modifier trigger keys (reserved for extension).
             break
         }
     }
 
     private func handleKeyUp(_ event: NSEvent) {
-        // 当前触发键均为修饰键，松开走 .flagsChanged；普通键的 keyUp 暂无需处理（预留扩展）。
+        // The current trigger keys are all modifiers, release goes through .flagsChanged; an ordinary key's keyUp needs no handling for now (reserved for extension).
     }
 
-    // MARK: 工具
+    // MARK: Utilities
 
     private func emit(_ event: HotkeyEvent) {
         onEvent?(event)

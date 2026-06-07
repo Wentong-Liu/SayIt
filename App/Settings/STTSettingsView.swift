@@ -1,7 +1,7 @@
 import SwiftUI
 import SayItCore
 
-/// 「语音识别（STT）」分区：本地/云端切换、本地模型选择、云端模型 + API Key 录入。
+/// The "Speech Recognition (STT)" section: local/cloud switch, local model selection, cloud model + API Key entry.
 struct STTSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
 
@@ -62,7 +62,7 @@ struct STTSettingsView: View {
         .formStyle(.grouped)
         .onAppear {
             viewModel.reloadCredentials()
-            // 进入页面时按当前模型的本地缓存实况刷新下载状态。
+            // On entering the page, refresh the download state per the current model's actual local cache.
             viewModel.refreshLocalModelState()
         }
     }
@@ -78,8 +78,8 @@ struct STTSettingsView: View {
         return formatter
     }()
 
-    /// 本地模型「下载状态」行：未下载 / 下载中（进度 + 速度 + 取消）/ 已下载（重新下载）/ 失败（重试）。
-    /// 观察 ``SettingsViewModel/localModelState``（其源为 `@Observable` 的 `ModelManager.state`）。
+    /// The local model "download state" row: not downloaded / downloading (progress + speed + cancel) / downloaded (re-download) / failed (retry).
+    /// Observes ``SettingsViewModel/localModelState`` (whose source is the `@Observable` `ModelManager.state`).
     @ViewBuilder
     private var modelStatusRow: some View {
         switch viewModel.localModelState {
@@ -139,7 +139,7 @@ struct STTSettingsView: View {
                 }
                 .help(reason)
             }
-            // 直接展示真实失败原因（不止 tooltip），便于用户/支持定位（网络、解析、文件不齐等）。
+            // Directly show the real failure reason (not just a tooltip), to help the user/support pinpoint it (network, parsing, incomplete files, etc.).
             Text(reason)
                 .font(.footnote)
                 .foregroundStyle(.red)

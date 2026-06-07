@@ -3,71 +3,71 @@ import os
 import SwiftUI
 import SayItCore
 
-/// 设置界面的视图模型：把已有 ``AppConfig``（UserDefaults 持久化）与 ``KeychainStore``（密钥）
-/// 桥接成 SwiftUI 可绑定的属性，并负责权限状态查询、ChatGPT OAuth 登录编排。
+/// The view model for the settings interface: bridges the existing ``AppConfig`` (UserDefaults persistence) and ``KeychainStore`` (secrets)
+/// into SwiftUI-bindable properties, and handles permission state queries and ChatGPT OAuth login orchestration.
 ///
-/// 设计要点：
-/// - **不重复声明任何配置类型**：触发键 / 交互模式 / STT 模式 / 润色风格 / Provider 均复用
-///   `SayItCore` 的单一真相源枚举。本类型只做读写桥接与 UI 编排。
-/// - **非密钥项**经 `AppConfig` 落 UserDefaults；**API Key / OAuth token** 经 `KeychainStore` 落钥匙串。
-/// - **只读写设置/凭据**，不做端到端听写编排（那属于 T13）。
+/// Design points:
+/// - **Does not redeclare any config type**: trigger key / interaction mode / STT mode / polish style / Provider all reuse
+///   `SayItCore`'s single-source-of-truth enums. This type only does read/write bridging and UI orchestration.
+/// - **Non-secret items** go to UserDefaults via `AppConfig`; **API Key / OAuth token** go to the keychain via `KeychainStore`.
+/// - **Only reads/writes settings/credentials**, without end-to-end dictation orchestration (which belongs to T13).
 @MainActor
 @Observable
 final class SettingsViewModel {
-    /// 共享配置（生产用 `AppConfig.shared`）。非 observable：每个属性 get/set 直接转发到它。
+    /// The shared config (production uses `AppConfig.shared`). Not observable: each property's get/set forwards directly to it.
     @ObservationIgnored private let config: AppConfig
 
-    /// 本地模型下载/状态管理器。其 `state` 为 `@Observable`，UI 可直接观察其属性驱动刷新。
+    /// The local model download/state manager. Its `state` is `@Observable`, the UI can observe its properties directly to drive refreshes.
     let modelManager: ModelManager
 
-    /// 下载/STT 相关日志（与 `SayItCore` 同 subsystem，category 区分为 settings）。
+    /// Download/STT-related logging (same subsystem as `SayItCore`, with the category distinguished as settings).
     @ObservationIgnored private let log = Logger(subsystem: "com.liuwentong.SayIt", category: "settings")
 
     /// - Parameters:
-    ///   - config: 注入的配置；默认 `.shared`，单测/预览可传独立实例。
-    ///   - modelManager: 注入的本地模型管理器；默认按当前 `localModel` 新建。
+    ///   - config: the injected config; defaults to `.shared`, unit tests/previews can pass an isolated instance.
+    ///   - modelManager: the injected local model manager; defaults to creating a new one per the current `localModel`.
     init(config: AppConfig = .shared, modelManager: ModelManager? = nil) {
         self.config = config
         self.modelManager = modelManager ?? ModelManager(model: config.localModel)
-        // 把可观察存储镜像初始化为持久化当前值（之后 write-through 到 config）。
+        // Initialize the observable storage mirror to the current persisted values (write-through to config afterwards).
         self.sttMode = config.sttMode
-        // 初次进入面板时同步一次密钥与权限状态。
+        // Sync the secrets and permission state once on first entering the panel.
         reloadCredentials()
         refreshPermissions()
     }
 
-    // MARK: 通用
+    // MARK: General
 
-    /// 触发听写的修饰键。
+    /// The modifier key that triggers dictation.
     var triggerKey: TriggerKey {
         get { config.triggerKey }
         set { config.triggerKey = newValue }
     }
 
-    /// 触发交互方式（按住 / 单击切换）。
+    /// The trigger interaction style (hold / tap to toggle).
     var interactionMode: InteractionMode {
         get { config.interactionMode }
         set { config.interactionMode = newValue }
     }
 
-    /// 界面显示语言（English / 简体中文）。切换后立即写盘并发通知，根场景据此重定位 UI。
-    /// 语音识别**不再**由此（或旧 `language`）字段驱动，恒自动检测（见 ``DictationCoordinator``）。
+    /// The UI display language (English / Simplified Chinese). On switch, immediately writes to disk and posts a notification, the root scene relocalizes the UI accordingly.
+    /// Speech recognition is **no longer** driven by this (or the old `language`) field, and is always auto-detected (see ``DictationCoordinator``).
     var uiLanguage: UILanguage {
         get { config.uiLanguage }
         set { config.uiLanguage = newValue }
     }
 
-    /// 界面语言可选项（仅英文与简体中文）；展示名为该语言自称，不本地化。
+    /// The UI language options (only English and Simplified Chinese); the display name is that language's endonym, not localized.
     let uiLanguageOptions: [UILanguage] = UILanguage.allCases
 
     // MARK: STT
 
-    /// 语音转写运行位置（本地 / 云端）。
+    /// Where speech transcription runs (local / cloud).
     ///
-    /// 这是一个 `@Observable` 追踪的**存储**属性（write-through 到 `config`），而非纯计算转发。
-    /// 关键正确性点：`STTSettingsView` 把分段控件的 `selection` 与下方条件分区都绑到此**同一**
-    /// 可观察源；若仅做计算转发（读写 `config.sttMode`，而 `AppConfig` 非 `@Observable`），
-    /// 切换分段控件不会触发 Observation 失效、下方分区不会即时重渲染。存储于此即可即时切换。
+    /// This is an `@Observable`-tracked **stored** property (write-through to `config`), not a pure computed forward.
+    /// Key correctness point: `STTSettingsView` binds the segmented control's `selection` and the conditional section below to this **same**
+    /// observable source; if it were only a computed forward (reading/writing `config.sttMode`, while `AppConfig` is not `@Observable`),
+    /// switching the segmented control would not invalidate Observation and the section below would not re-render instantly. Storing it here enables instant switching.
     var sttMode: STTMode {
         didSet {
             guard sttMode != oldValue else { return }
@@ -75,7 +75,7 @@ final class SettingsViewModel {
         }
     }
 
-    /// 本地 STT 模型标识。写入时同步让 ``modelManager`` 切到该模型并按本地缓存刷新状态。
+    /// The local STT model identifier. On write, also makes ``modelManager`` switch to that model and refresh state per the local cache.
     var localModel: String {
         get { config.localModel }
         set {
@@ -84,19 +84,19 @@ final class SettingsViewModel {
         }
     }
 
-    // MARK: 本地模型下载
+    // MARK: Local model download
 
-    /// 当前本地模型的下载/缓存状态（由 ``ModelManager`` 实时维护，供 UI 观察）。
+    /// The download/cache state of the current local model (maintained in real time by ``ModelManager``, for the UI to observe).
     var localModelState: ModelManager.State { modelManager.state }
 
-    /// 进入设置页时按当前模型的本地缓存实况刷新下载状态（不联网、不下载）。
+    /// On entering the settings page, refresh the download state per the current model's actual local cache (no network, no download).
     func refreshLocalModelState() {
         modelManager.setModel(config.localModel)
         modelManager.refreshState()
     }
 
-    /// 触发下载当前本地模型。下载结束后若失败，把可读原因记到 os.Logger（.error）。
-    /// - Parameter force: 为 `true` 时即便已缓存也重新下载（「重新下载/重试」用）。
+    /// Triggers downloading the current local model. After the download finishes, if it failed, log the human-readable reason to os.Logger (.error).
+    /// - Parameter force: when `true`, re-download even if already cached (for "re-download/retry").
     func downloadLocalModel(force: Bool = false) async {
         await modelManager.download(force: force)
         if case .failed(let reason) = modelManager.state {
@@ -104,25 +104,25 @@ final class SettingsViewModel {
         }
     }
 
-    /// 当前下载失败时的可读原因（供 UI 直接展示）；非失败态为 nil。
+    /// The human-readable reason for the current download failure (for the UI to display directly); nil when not in a failed state.
     var localModelFailureReason: String? {
         if case .failed(let reason) = modelManager.state { return reason }
         return nil
     }
 
-    /// 取消进行中的本地模型下载。
+    /// Cancels the in-progress local model download.
     func cancelLocalModelDownload() {
         modelManager.cancelDownload()
     }
 
-    /// 云端 STT 模型标识。
+    /// The cloud STT model identifier.
     var cloudSTTModel: String {
         get { config.cloudSTTModel }
         set { config.cloudSTTModel = newValue }
     }
 
-    /// 本地模型候选：(id, 展示名)。WhisperKit 常见量化模型，默认 large-v3-turbo。
-    /// 计算属性：展示名里的描述词随当前界面语言本地化（每次取用时构建，切语言即时生效）。
+    /// Local model candidates: (id, display name). Common WhisperKit quantized models, defaulting to large-v3-turbo.
+    /// A computed property: the descriptor words in the display name are localized per the current UI language (built on each access, taking effect instantly on language switch).
     var localModelOptions: [(id: String, label: String)] {
         [
             ("large-v3-turbo", String(localized: "model.large-v3-turbo", defaultValue: "large-v3-turbo (recommended)")),
@@ -133,69 +133,69 @@ final class SettingsViewModel {
         ]
     }
 
-    /// 云端转写模型候选：(id, 展示名)。当前以 OpenAI transcribe 系列为主。
+    /// Cloud transcription model candidates: (id, display name). Currently mainly the OpenAI transcribe series.
     let cloudSTTModelOptions: [(id: String, label: String)] = [
         ("gpt-4o-mini-transcribe", "GPT-4o mini transcribe"),
         ("gpt-4o-transcribe", "GPT-4o transcribe"),
         ("whisper-1", "Whisper v1"),
     ]
 
-    // MARK: 润色
+    // MARK: Polish
 
-    /// 是否对转写结果做 LLM 润色。
+    /// Whether to apply LLM polish to the transcription result.
     var polishEnabled: Bool {
         get { config.polishEnabled }
         set { config.polishEnabled = newValue }
     }
 
-    /// 润色风格。
+    /// The polish style.
     var polishStyle: PolishStyle {
         get { config.polishStyle }
         set { config.polishStyle = newValue }
     }
 
-    /// 润色所用 Provider。切换 Provider 后把模型夹回该 Provider 默认模型，避免发错 model id。
+    /// The Provider used for polish. After switching the Provider, clamps the model back to that Provider's default model, to avoid sending the wrong model id.
     var providerKind: ProviderKind {
         get { config.providerKind }
         set {
             config.providerKind = newValue
-            // `AppConfig.model` 读时会夹回当前 Provider 默认模型；写一次默认值确保 UI 即时一致。
+            // `AppConfig.model` clamps back to the current Provider's default model on read; writing the default value once ensures the UI is instantly consistent.
             config.model = newValue.defaultModel
         }
     }
 
-    /// 润色所用模型 id。
+    /// The model id used for polish.
     var model: String {
         get { config.model }
         set { config.model = newValue }
     }
 
-    // MARK: 凭据（Keychain）
+    // MARK: Credentials (Keychain)
 
-    /// 云端 STT（OpenAI transcribe）所用 API Key 的录入缓冲。失焦/保存时写 Keychain。
+    /// The entry buffer for the API Key used by cloud STT (OpenAI transcribe). Written to the Keychain on blur/save.
     var cloudSTTAPIKey: String = ""
 
-    /// 当前选中润色 Provider 的 API Key 录入缓冲。
+    /// The API Key entry buffer for the currently selected polish Provider.
     var polishAPIKey: String = ""
 
-    /// 是否已通过 ChatGPT OAuth 登录（钥匙串里有 token）。
+    /// Whether logged in via ChatGPT OAuth (a token exists in the keychain).
     private(set) var isChatGPTLoggedIn: Bool = false
 
-    /// OAuth 登录进行中（按钮置灰、显示进度）。
+    /// OAuth login in progress (the button is greyed out, showing progress).
     private(set) var isLoggingIn: Bool = false
 
-    /// STT 凭据操作（云端转写密钥保存）的提示文案，仅在 STT 分页展示，与润色分页互不串。
+    /// The hint copy for STT credential operations (saving the cloud transcription key), shown only on the STT page, not crossing with the polish page.
     private(set) var sttStatusMessage: String?
 
-    /// 润色凭据操作（各 Provider 密钥保存、ChatGPT 登录/登出）的提示文案，仅在润色分页展示。
+    /// The hint copy for polish credential operations (saving each Provider's key, ChatGPT login/logout), shown only on the polish page.
     private(set) var polishStatusMessage: String?
 
-    /// 当前润色 Provider 对应的 API Key Keychain account；ChatGPT 走 OAuth 无 account。
+    /// The API Key Keychain account corresponding to the current polish Provider; ChatGPT goes through OAuth with no account.
     private var polishKeychainAccount: String? {
         Self.apiKeyAccount(for: providerKind)
     }
 
-    /// Provider → API Key Keychain account 的映射（App 层私有；ChatGPT 用 OAuth，返回 nil）。
+    /// The mapping of Provider -> API Key Keychain account (App-layer private; ChatGPT uses OAuth, returns nil).
     static func apiKeyAccount(for kind: ProviderKind) -> String? {
         switch kind {
         case .openAI:    return KeychainStore.Account.openAIAPIKey
@@ -205,10 +205,10 @@ final class SettingsViewModel {
         }
     }
 
-    /// 当前 Provider 是否用 ChatGPT OAuth（而非 API Key）。
+    /// Whether the current Provider uses ChatGPT OAuth (rather than an API Key).
     var providerUsesOAuth: Bool { providerKind == .chatGPT }
 
-    /// 从钥匙串重新加载各录入缓冲与登录状态。进入面板或切换 Provider 后调用。
+    /// Reloads each entry buffer and the login state from the keychain. Called on entering the panel or switching the Provider.
     func reloadCredentials() {
         cloudSTTAPIKey = KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? ""
         if let account = polishKeychainAccount {
@@ -219,7 +219,7 @@ final class SettingsViewModel {
         isChatGPTLoggedIn = KeychainStore.loadChatGPTTokens() != nil
     }
 
-    /// 切换润色 Provider 后：重载该 Provider 的 API Key 缓冲（清掉上一个 Provider 残留）。
+    /// After switching the polish Provider: reload that Provider's API Key buffer (clearing the previous Provider's leftover).
     func providerDidChange() {
         if let account = polishKeychainAccount {
             polishAPIKey = KeychainStore.get(account: account) ?? ""
@@ -228,7 +228,7 @@ final class SettingsViewModel {
         }
     }
 
-    /// 保存云端 STT 的 API Key（写 OpenAI 的 account；空字符串视为不变更，避免误清空）。
+    /// Saves the cloud STT API Key (writes OpenAI's account; an empty string is treated as no change, to avoid accidental clearing).
     func saveCloudSTTAPIKey() {
         let trimmed = cloudSTTAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -238,7 +238,7 @@ final class SettingsViewModel {
             : String(localized: "stt.keySaveFailed", defaultValue: "Failed to save cloud transcription key")
     }
 
-    /// 保存当前润色 Provider 的 API Key。ChatGPT（OAuth）无 API Key，直接忽略。
+    /// Saves the current polish Provider's API Key. ChatGPT (OAuth) has no API Key, ignored directly.
     func savePolishAPIKey() {
         guard let account = polishKeychainAccount else { return }
         let trimmed = polishAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -252,7 +252,7 @@ final class SettingsViewModel {
 
     // MARK: ChatGPT OAuth
 
-    /// 触发 ChatGPT 登录（复用 App 层 ``CodexLoginService``）。
+    /// Triggers ChatGPT login (reuses the App-layer ``CodexLoginService``).
     func loginWithChatGPT() {
         guard !isLoggingIn else { return }
         isLoggingIn = true
@@ -273,7 +273,7 @@ final class SettingsViewModel {
         }
     }
 
-    /// 退出 ChatGPT 登录（清钥匙串里的 token）。
+    /// Logs out of ChatGPT login (clears the token in the keychain).
     func logoutChatGPT() {
         let ok = KeychainStore.clearChatGPTTokens()
         isChatGPTLoggedIn = KeychainStore.loadChatGPTTokens() != nil
@@ -282,22 +282,22 @@ final class SettingsViewModel {
             : String(localized: "polish.logoutFailed", defaultValue: "Sign-out failed")
     }
 
-    // MARK: 权限
+    // MARK: Permissions
 
-    /// 麦克风授权状态。
+    /// The microphone authorization status.
     private(set) var microphoneStatus: MicrophoneAuthorization = .notDetermined
 
-    /// 辅助功能（Accessibility）是否已信任（全局热键与文本注入的前置条件）。
+    /// Whether Accessibility is trusted (a prerequisite for global hotkeys and text injection).
     private(set) var accessibilityTrusted: Bool = false
 
-    /// 刷新两项权限状态（不弹窗）。进入「权限」分页或从系统设置返回时调用。
+    /// Refreshes the two permission states (no prompt). Called on entering the "Permissions" page or returning from System Settings.
     func refreshPermissions() {
         microphoneStatus = MicrophonePermission.current
-        // 复用 SayItCore 已有的辅助功能信任查询（HotkeyManager / AXTextInserter 同源）。
+        // Reuse SayItCore's existing accessibility trust query (same source as HotkeyManager / AXTextInserter).
         accessibilityTrusted = HotkeyManager.isProcessTrusted
     }
 
-    /// 请求麦克风权限：未决时弹系统对话框，否则只刷新状态。
+    /// Requests microphone permission: pops the system dialog when undetermined, otherwise just refreshes the state.
     func requestMicrophone() async {
         if microphoneStatus == .notDetermined {
             microphoneStatus = await MicrophonePermission.requestStatus()
@@ -306,12 +306,12 @@ final class SettingsViewModel {
         }
     }
 
-    /// 打开「系统设置 › 隐私与安全性 › 麦克风」。
+    /// Opens System Settings > Privacy & Security > Microphone.
     func openMicrophoneSettings() {
         open(urlString: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
     }
 
-    /// 打开「系统设置 › 隐私与安全性 › 辅助功能」。
+    /// Opens System Settings > Privacy & Security > Accessibility.
     func openAccessibilitySettings() {
         open(urlString: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
     }

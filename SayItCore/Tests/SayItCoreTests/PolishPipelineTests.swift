@@ -5,20 +5,20 @@ final class PolishPipelineTests: XCTestCase {
 
     // MARK: - Fake LLMProvider
 
-    /// 可控的假 Provider：用于断言 PolishPipeline 的成功/回退/空响应/抛错路径。
-    /// 同时记录最近一次收到的 messages，便于验证管线确实把 PromptBuilder 的输出透传进来。
+    /// A controllable fake Provider: used to assert PolishPipeline's success/fallback/empty-response/throw paths.
+    /// Also records the most recently received messages, to verify the pipeline really passes through PromptBuilder's output.
     private final class FakeLLMProvider: LLMProvider, @unchecked Sendable {
         enum Behavior {
-            /// 返回固定文本。
+            /// Returns fixed text.
             case returns(String)
-            /// 抛出指定错误。
+            /// Throws the specified error.
             case throwsError(Error)
         }
 
         let behavior: Behavior
-        /// 最近一次 complete 收到的消息（用于断言透传）。
+        /// The messages received by the most recent complete (used to assert pass-through).
         private(set) var receivedMessages: [LLMMessage] = []
-        /// complete 被调用的次数。
+        /// The number of times complete was called.
         private(set) var callCount = 0
 
         init(_ behavior: Behavior) {
@@ -37,7 +37,7 @@ final class PolishPipelineTests: XCTestCase {
         }
     }
 
-    // MARK: - 成功路径
+    // MARK: - Success path
 
     func testSuccessReturnsProviderOutputPolished() async {
         let provider = FakeLLMProvider(.returns("今天天气不错。"))
@@ -83,12 +83,12 @@ final class PolishPipelineTests: XCTestCase {
         let context = PolishContext(appName: "Xcode", bundleId: "com.apple.dt.Xcode")
         _ = await pipeline.polish(raw, context: context, style: .smart, provider: provider)
 
-        // 管线必须用已有 PolishPromptBuilder 组装消息，原样透传给 provider。
+        // The pipeline must assemble messages with the existing PolishPromptBuilder and pass them through to the provider as-is.
         let expected = PolishPromptBuilder.build(rawText: raw, context: context, style: .smart)
         XCTAssertEqual(provider.receivedMessages, expected)
     }
 
-    // MARK: - 抛错回退原文
+    // MARK: - Throw falls back to the original
 
     func testProviderErrorFallsBackToRawText() async {
         let provider = FakeLLMProvider(.throwsError(ProviderError.network("boom")))
@@ -102,11 +102,11 @@ final class PolishPipelineTests: XCTestCase {
             provider: provider
         )
 
-        // 绝不丢用户的话：回退返回原始文本。
+        // Never lose the user's words: the fallback returns the original text.
         XCTAssertEqual(outcome.text, raw)
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
-        // 抛错应判定为「失败回退」并携带可读原因。
+        // A throw should be judged as a "failure fallback" and carry a human-readable reason.
         if case .failedFallback = outcome.resolution {
             XCTAssertNotNil(outcome.failureReason)
         } else {
@@ -115,7 +115,7 @@ final class PolishPipelineTests: XCTestCase {
     }
 
     func testProviderErrorInvokesFailureLogger() async {
-        // 失败回退应触发注入的 logger 回调（可观测）。
+        // A failure fallback should trigger the injected logger callback (observable).
         final class Box: @unchecked Sendable { var reasons: [String] = [] }
         let box = Box()
         let provider = FakeLLMProvider(.throwsError(ProviderError.network("boom")))
@@ -127,7 +127,7 @@ final class PolishPipelineTests: XCTestCase {
     }
 
     func testSkippedAndPolishedDoNotInvokeFailureLogger() async {
-        // 跳过（关闭）与成功路径都不应触发失败 logger。
+        // Both skip (off) and the success path should not trigger the failure logger.
         final class Box: @unchecked Sendable { var count = 0 }
         let box = Box()
         let pipeline = PolishPipeline(logFailure: { _ in box.count += 1 })
@@ -159,7 +159,7 @@ final class PolishPipelineTests: XCTestCase {
         }
     }
 
-    // MARK: - 空响应回退
+    // MARK: - Empty response falls back
 
     func testEmptyResponseFallsBackToRawText() async {
         let provider = FakeLLMProvider(.returns("   \n  "))
@@ -176,13 +176,13 @@ final class PolishPipelineTests: XCTestCase {
         XCTAssertEqual(outcome.text, raw)
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
-        // 空响应属于「失败回退」（调用了模型但没拿到可用结果）。
+        // An empty response is a "failure fallback" (the model was called but no usable result was obtained).
         if case .failedFallback = outcome.resolution {} else {
             XCTFail("空响应应为 .failedFallback，实际: \(outcome.resolution)")
         }
     }
 
-    // MARK: - 空输入
+    // MARK: - Empty input
 
     func testEmptyInputReturnsImmediatelyWithoutCallingProvider() async {
         let provider = FakeLLMProvider(.returns("不应被使用"))
@@ -242,7 +242,7 @@ final class PolishPipelineTests: XCTestCase {
         XCTAssertEqual(provider.callCount, 0, "关闭润色时不应调用 provider")
     }
 
-    // MARK: - PolishOutcome 构造
+    // MARK: - PolishOutcome construction
 
     func testPolishOutcomeIsEquatable() {
         let a = PolishOutcome(text: "x", resolution: .polished)

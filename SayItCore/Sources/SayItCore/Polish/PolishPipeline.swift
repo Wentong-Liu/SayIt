@@ -1,47 +1,47 @@
 import Foundation
 
-/// 一次润色的「裁决」：区分润色成功、按配置跳过、以及失败回退（携可观测原因）。
+/// The "verdict" of one polish: distinguishes polish success, skip-per-config, and failure fallback (carrying an observable reason).
 ///
-/// 设计目的：把过去单一的 `usedFallback` 布尔展开成可区分的语义，便于调用方与日志
-/// 分辨「跳过（用户主动关闭/无内容）」与「失败回退（出了问题）」，从而可选地给出反馈。
-/// 无论哪种分支，``PolishOutcome/text`` 始终是可直接注入的文本——**绝不丢用户的话**。
+/// Design purpose: expands the formerly single `usedFallback` boolean into distinguishable semantics, so callers and logs
+/// can tell "skip (user actively disabled / no content)" from "failure fallback (something went wrong)", to optionally give feedback.
+/// Whichever branch, ``PolishOutcome/text`` is always directly injectable text -- **never losing the user's words**.
 public enum PolishResolution: Equatable, Sendable {
-    /// 真正经过模型润色并采用了模型输出。
+    /// Truly went through model polish and adopted the model output.
     case polished
-    /// 按配置/输入跳过润色，原样使用原文（未触网）。
+    /// Skipped polish per config/input, using the original as-is (no network touched).
     case skipped(SkipReason)
-    /// 调用了模型但失败，回退原文。携带可读的失败原因（便于日志/反馈）。
+    /// The model was called but failed, falling back to the original. Carries a human-readable failure reason (for logging/feedback).
     case failedFallback(reason: String)
 
-    /// 跳过润色的具体原因（均不触网）。
+    /// The specific reason for skipping polish (none touch the network).
     public enum SkipReason: Equatable, Sendable {
-        /// 调用方关闭了润色（`polishEnabled == false`）。
+        /// The caller disabled polish (`polishEnabled == false`).
         case disabled
-        /// 输入为空 / 仅空白，没东西可润色。
+        /// The input is empty / whitespace-only, with nothing to polish.
         case emptyInput
     }
 }
 
-/// 一次润色的结果。
+/// The result of one polish.
 ///
-/// `text` 永远是「可直接注入」的最终文本——成功时是模型整理稿，失败/跳过时是原始口述（trim 后）。
-/// 设计立场：**绝不丢用户的话**，任何异常都回退到原文，并通过 ``resolution`` 标明发生了什么。
+/// `text` is always the "directly injectable" final text -- the model's cleaned-up draft on success, the original dictation (trimmed) on failure/skip.
+/// Design stance: **never lose the user's words**, any exception falls back to the original, with ``resolution`` indicating what happened.
 ///
-/// 兼容性：保留 `polished` / `usedFallback` 两个派生布尔（由 ``resolution`` 推导），
-/// 既有调用方与单测无需改动；新代码应优先读 ``resolution`` 以区分跳过与失败回退。
+/// Compatibility: retains the two derived booleans `polished` / `usedFallback` (derived from ``resolution``),
+/// so existing callers and unit tests need no changes; new code should prefer reading ``resolution`` to distinguish skip from failure fallback.
 public struct PolishOutcome: Equatable, Sendable {
-    /// 最终可用文本（已 trim）。成功为模型输出，回退为原始 rawText。
+    /// The final usable text (already trimmed). The model output on success, the original rawText on fallback.
     public let text: String
-    /// 本次润色的裁决（成功 / 跳过 / 失败回退）。
+    /// This polish's verdict (success / skip / failure fallback).
     public let resolution: PolishResolution
 
-    /// 是否真正经过模型润色（仅 `.polished` 为 true）。
+    /// Whether it truly went through model polish (only `.polished` is true).
     public var polished: Bool { resolution == .polished }
 
-    /// 是否走了回退（原文）路径：跳过或失败回退皆为 true，仅 `.polished` 为 false。
+    /// Whether it took the fallback (original) path: skip or failure fallback are both true, only `.polished` is false.
     public var usedFallback: Bool { resolution != .polished }
 
-    /// 失败回退时的可读原因；其余分支为 nil（便于调用方/日志观测）。
+    /// The human-readable reason on failure fallback; nil for other branches (for the caller/log to observe).
     public var failureReason: String? {
         if case let .failedFallback(reason) = resolution { return reason }
         return nil
@@ -52,9 +52,9 @@ public struct PolishOutcome: Equatable, Sendable {
         self.resolution = resolution
     }
 
-    /// 兼容旧调用点的便捷构造：由 `polished` / `usedFallback` 反推 ``resolution``。
+    /// Convenience constructor compatible with old call sites: infers ``resolution`` from `polished` / `usedFallback`.
     /// - `polished == true` → `.polished`
-    /// - 否则 → `.skipped(.disabled)`（无具体原因时的通用回退归类）。
+    /// - Otherwise -> `.skipped(.disabled)` (the generic fallback classification when there is no specific reason).
     @available(*, deprecated, message: "改用 init(text:resolution:) 以携带明确的裁决/原因")
     public init(text: String, polished: Bool, usedFallback: Bool) {
         self.text = text
@@ -62,38 +62,38 @@ public struct PolishOutcome: Equatable, Sendable {
     }
 }
 
-/// 把 STT 原始转写文本润色为成稿的管线。
+/// The pipeline that polishes raw STT transcription text into a finished draft.
 ///
-/// 流程：用已有 ``PolishPromptBuilder`` 组装 `[LLMMessage]` → 调用调用方注入的
-/// ``LLMProvider/complete(messages:)`` → 返回整理后文本（trim）。
+/// Flow: assemble `[LLMMessage]` with the existing ``PolishPromptBuilder`` -> call the caller-injected
+/// ``LLMProvider/complete(messages:)`` -> return the cleaned-up text (trimmed).
 ///
-/// 依赖倒置：本类型**不构造任何具体 Provider**，由调用方注入 ``LLMProvider``，
-/// 与 App 层的 ProviderFactory 解耦，便于在 Core 内用 Fake 做 TDD。
+/// Dependency inversion: this type **constructs no concrete Provider**, the caller injects the ``LLMProvider``,
+/// decoupled from the App-layer ProviderFactory, convenient for TDD inside Core with a Fake.
 ///
-/// 健壮性约定（绝不丢用户的话）：
-/// - provider 抛错 / 超时 → 回退原文，`polished=false`、`usedFallback=true`；
-/// - provider 返回空 / 仅空白 → 回退原文（同上）；
-/// - `polishEnabled == false` → 直接返回原文，不调用 provider；
-/// - 输入为空 / 仅空白 → 直接返回 trim 后的输入，不调用 provider。
+/// Robustness contract (never lose the user's words):
+/// - provider throws / times out -> fall back to the original, `polished=false`, `usedFallback=true`;
+/// - provider returns empty / whitespace-only -> fall back to the original (same as above);
+/// - `polishEnabled == false` -> return the original directly, not calling the provider;
+/// - input is empty / whitespace-only -> return the trimmed input directly, not calling the provider.
 public struct PolishPipeline: Sendable {
 
-    /// 可选的失败日志回调：仅在「失败回退」时调用，携可读原因。
-    /// 默认 nil（不记录）；App 层可注入打印/上报以便排查。`@Sendable` 以满足并发安全。
+    /// An optional failure-log callback: called only on a "failure fallback", carrying a human-readable reason.
+    /// Defaults to nil (no logging); the App layer can inject printing/reporting for debugging. `@Sendable` to satisfy concurrency safety.
     private let logFailure: (@Sendable (String) -> Void)?
 
-    /// - Parameter logFailure: 失败回退时的日志回调（可选）。
+    /// - Parameter logFailure: the log callback on failure fallback (optional).
     public init(logFailure: (@Sendable (String) -> Void)? = nil) {
         self.logFailure = logFailure
     }
 
-    /// 润色一段原始口述文本。
+    /// Polishes a segment of raw dictation text.
     /// - Parameters:
-    ///   - rawText: STT 原始转写文本。
-    ///   - context: 目标 App 上下文（用于判断语域），见 ``PolishContext``。
-    ///   - style: 润色风格，见 ``PolishStyle``。
-    ///   - provider: 由调用方注入的大模型 Provider，见 ``LLMProvider``。
-    ///   - polishEnabled: 是否启用润色；为 `false` 时直接返回原文（默认 `true`）。
-    /// - Returns: 见 ``PolishOutcome``——`text` 永远是可直接使用的文本，``PolishOutcome/resolution`` 标明分支。
+    ///   - rawText: the raw STT transcription text.
+    ///   - context: the target App context (used to judge register), see ``PolishContext``.
+    ///   - style: the polish style, see ``PolishStyle``.
+    ///   - provider: the large-model Provider injected by the caller, see ``LLMProvider``.
+    ///   - polishEnabled: whether to enable polish; when `false` returns the original directly (defaults to `true`).
+    /// - Returns: see ``PolishOutcome`` -- `text` is always directly usable text, ``PolishOutcome/resolution`` indicates the branch.
     public func polish(_ rawText: String,
                        context: PolishContext,
                        style: PolishStyle,
@@ -101,12 +101,12 @@ public struct PolishPipeline: Sendable {
                        polishEnabled: Bool = true) async -> PolishOutcome {
         let trimmedRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // 空输入：没东西可润色，直接走原文（trim 后）。
+        // Empty input: nothing to polish, take the original directly (trimmed).
         guard !trimmedRaw.isEmpty else {
             return PolishOutcome(text: trimmedRaw, resolution: .skipped(.emptyInput))
         }
 
-        // 关闭润色：原样返回原文，不触网。
+        // Polish off: return the original as-is, no network touched.
         guard polishEnabled else {
             return PolishOutcome(text: trimmedRaw, resolution: .skipped(.disabled))
         }
@@ -117,25 +117,25 @@ public struct PolishPipeline: Sendable {
             let raw = try await provider.complete(messages: messages)
             let polishedText = raw.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            // 空响应：模型没给出可用文本 → 回退原文，绝不返回空。
+            // Empty response: the model gave no usable text -> fall back to the original, never returning empty.
             guard !polishedText.isEmpty else {
                 return fallback(trimmedRaw, reason: "模型返回空响应")
             }
 
             return PolishOutcome(text: polishedText, resolution: .polished)
         } catch {
-            // 抛错 / 超时（CancellationError 等）→ 回退原文。
+            // Throws / times out (CancellationError, etc.) -> fall back to the original.
             return fallback(trimmedRaw, reason: Self.describe(error))
         }
     }
 
-    /// 失败回退：记录原因（若注入了 logger）并返回携原文的 `.failedFallback` 结果。
+    /// Failure fallback: log the reason (if a logger was injected) and return the `.failedFallback` result carrying the original.
     private func fallback(_ rawText: String, reason: String) -> PolishOutcome {
         logFailure?(reason)
         return PolishOutcome(text: rawText, resolution: .failedFallback(reason: reason))
     }
 
-    /// 把任意错误压成简短可读串，供日志/反馈使用。
+    /// Compresses any error into a short human-readable string, for logging/feedback.
     private static func describe(_ error: Error) -> String {
         if error is CancellationError { return "润色超时或被取消" }
         if let providerError = error as? ProviderError { return String(describing: providerError) }

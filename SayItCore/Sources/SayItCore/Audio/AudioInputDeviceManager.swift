@@ -1,15 +1,15 @@
 import CoreAudio
 import Foundation
 
-/// 一个可用的音频输入设备的轻量描述。
+/// A lightweight description of an available audio input device.
 ///
-/// `uid` 是 CoreAudio 给设备分配的稳定字符串标识（`kAudioDevicePropertyDeviceUID`），
-/// 跨重启/重新插拔通常保持不变，适合持久化到 ``AppConfig/inputDeviceUID``。
-/// `name` 仅用于 UI 展示。
+/// `uid` is the stable string identifier CoreAudio assigns to a device (`kAudioDevicePropertyDeviceUID`),
+/// which usually stays unchanged across restarts/replugs, making it suitable to persist into ``AppConfig/inputDeviceUID``.
+/// `name` is only used for UI display.
 public struct AudioInputDevice: Sendable, Equatable, Identifiable {
-    /// 设备稳定标识（持久化与解析回 `AudioDeviceID` 都用它）。
+    /// Stable device identifier (used for persistence and for resolving back to an `AudioDeviceID`).
     public let uid: String
-    /// 设备展示名（如 “MacBook Pro 麦克风”）。
+    /// Device display name (e.g. "MacBook Pro Microphone").
     public let name: String
 
     public var id: String { uid }
@@ -20,16 +20,16 @@ public struct AudioInputDevice: Sendable, Equatable, Identifiable {
     }
 }
 
-/// 枚举系统音频输入设备、解析 UID ↔ `AudioDeviceID`、查询系统默认输入设备。
+/// Enumerates system audio input devices, resolves UID <-> `AudioDeviceID`, and queries the system default input device.
 ///
-/// 全部基于 CoreAudio 的 `AudioObjectGetPropertyData`。这些查询是只读的、无副作用，
-/// 既用于「麦克风」设置区的设备下拉，也用于 ``AudioRecorder`` 启动前把输入 AudioUnit
-/// 绑定到选定设备。方法均为 `static`——无内部状态，调用即查当下系统状态。
+/// All built on CoreAudio's `AudioObjectGetPropertyData`. These queries are read-only and side-effect-free,
+/// used both for the device dropdown in the "Microphone" settings section and to bind the input AudioUnit
+/// to the chosen device before ``AudioRecorder`` starts. All methods are `static` -- no internal state, each call queries the current system state.
 public enum AudioInputDeviceManager {
-    /// 列出当前所有「具备输入能力」的音频设备（按系统枚举顺序）。
+    /// Lists all current "input-capable" audio devices (in system enumeration order).
     ///
-    /// 过滤规则：只保留输入声道数 > 0 的设备（排除纯输出设备如扬声器）。
-    /// 拿不到 UID 或名称的设备会被跳过（无法稳定标识/展示，无意义）。
+    /// Filter rule: keep only devices with input channel count > 0 (exclude pure output devices such as speakers).
+    /// Devices whose UID or name cannot be obtained are skipped (cannot be stably identified/displayed, so meaningless).
     public static func availableInputDevices() -> [AudioInputDevice] {
         deviceIDs().compactMap { deviceID in
             guard hasInputChannels(deviceID),
@@ -42,16 +42,16 @@ public enum AudioInputDeviceManager {
         }
     }
 
-    /// 系统当前默认输入设备的 UID；无默认设备（如无任何麦克风）时为 nil。
+    /// UID of the system's current default input device; nil when there is no default device (e.g. no microphone at all).
     public static func defaultInputDeviceUID() -> String? {
         guard let deviceID = defaultInputDeviceID() else { return nil }
         return stringProperty(deviceID, selector: kAudioDevicePropertyDeviceUID)
     }
 
-    /// 把设备 UID 解析为 `AudioDeviceID`。解析不到（设备已拔出/UID 失效）返回 nil。
+    /// Resolves a device UID to an `AudioDeviceID`. Returns nil if it cannot be resolved (device unplugged/UID invalid).
     ///
-    /// 用 `kAudioHardwarePropertyTranslateUIDToDevice`：把传入的 UID 字符串翻译成设备 ID，
-    /// 比逐个枚举设备再比对 UID 更直接，也是 Apple 推荐方式。
+    /// Uses `kAudioHardwarePropertyTranslateUIDToDevice`: translates the passed UID string into a device ID,
+    /// which is more direct than enumerating devices one by one and comparing UIDs, and is also Apple's recommended approach.
     public static func deviceID(forUID uid: String) -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
@@ -60,7 +60,7 @@ public enum AudioInputDeviceManager {
         )
         var deviceID = AudioDeviceID(0)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        // CFString 的翻译需要把 UID 作为 qualifier 传入。
+        // The CFString translation requires passing the UID as a qualifier.
         var cfUID = uid as CFString
         let status = withUnsafeMutablePointer(to: &cfUID) { uidPtr -> OSStatus in
             AudioObjectGetPropertyData(
@@ -73,14 +73,14 @@ public enum AudioInputDeviceManager {
             )
         }
         guard status == noErr, deviceID != kAudioObjectUnknown, deviceID != 0 else { return nil }
-        // 二次校验：翻译出的设备需确实有输入声道（防止翻译到纯输出设备）。
+        // Second check: the translated device must actually have input channels (preventing translation to a pure output device).
         guard hasInputChannels(deviceID) else { return nil }
         return deviceID
     }
 
-    // MARK: - CoreAudio 私有查询
+    // MARK: - CoreAudio private queries
 
-    /// 系统默认输入设备的 `AudioDeviceID`；无则 nil。
+    /// The `AudioDeviceID` of the system default input device; nil if none.
     static func defaultInputDeviceID() -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
@@ -101,7 +101,7 @@ public enum AudioInputDeviceManager {
         return deviceID
     }
 
-    /// 系统所有音频设备的 `AudioDeviceID`（不区分输入/输出）。
+    /// `AudioDeviceID`s of all system audio devices (regardless of input/output).
     private static func deviceIDs() -> [AudioDeviceID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -132,7 +132,7 @@ public enum AudioInputDeviceManager {
         return ids
     }
 
-    /// 该设备在输入 scope 下是否有 > 0 的声道（用以区分输入设备/纯输出设备）。
+    /// Whether the device has > 0 channels in the input scope (used to distinguish input devices from pure output devices).
     private static func hasInputChannels(_ deviceID: AudioDeviceID) -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
@@ -160,7 +160,7 @@ public enum AudioInputDeviceManager {
         return channels > 0
     }
 
-    /// 读取设备的一个 CFString 属性（如 UID / 名称）。失败返回 nil。
+    /// Reads a CFString property of the device (e.g. UID / name). Returns nil on failure.
     private static func stringProperty(_ deviceID: AudioDeviceID, selector: AudioObjectPropertySelector) -> String? {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,

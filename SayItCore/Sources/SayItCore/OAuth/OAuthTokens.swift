@@ -16,11 +16,11 @@ public struct OAuthTokens: Codable, Equatable, Sendable {
         self.expiresAt = expiresAt
     }
 
-    /// 过期判定的提前量（秒）：在真正过期前这么多秒就视为已过期，避免边界请求 401。
-    /// 注意须远小于 ChatGPTOAuth.defaultExpiresIn，否则缺省有效期的 token 会立即被判过期。
+    /// The lead time (seconds) for the expiry decision: treated as expired this many seconds before the real expiry, to avoid 401s on boundary requests.
+    /// Note it must be far smaller than ChatGPTOAuth.defaultExpiresIn, otherwise a token with the default validity would be immediately judged expired.
     public static let expiryLeeway: TimeInterval = 60
 
-    /// 提前 expiryLeeway 秒视为过期，避免边界请求 401。
+    /// Treated as expired expiryLeeway seconds early, to avoid 401s on boundary requests.
     public func isExpired(now: Date = Date()) -> Bool {
         now >= expiresAt.addingTimeInterval(-Self.expiryLeeway)
     }

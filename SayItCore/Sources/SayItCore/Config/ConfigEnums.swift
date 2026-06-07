@@ -1,25 +1,25 @@
 import Foundation
 
-// NOTE: `TriggerKey` 的单一真相源在 ``Hotkey/TriggerKey.swift``（含 keyCode /
-// modifierFlag / label 等热键运行期所需成员，以及 leftControl、fnGlobe 完整用例）。
-// 此处不再重复声明，仅保留其余配置枚举。配置面板展示名见该类型的 `displayName`。
+// NOTE: The single source of truth for `TriggerKey` is in ``Hotkey/TriggerKey.swift`` (containing keyCode /
+// modifierFlag / label and other hotkey-runtime members, plus the complete leftControl, fnGlobe cases).
+// It is no longer redeclared here; only the remaining config enums are kept. For the settings-panel display name, see that type's `displayName`.
 
-/// 触发交互方式：单击切换 / 按住说话。
+/// Trigger interaction style: tap to toggle / hold to talk.
 ///
-/// `rawValue` 为落盘字符串，不可随意更名。
+/// `rawValue` is the persisted string and must not be renamed arbitrarily.
 public enum InteractionMode: String, CaseIterable, Identifiable, Sendable {
-    /// 孤立单击修饰键开始录音，再次单击结束（默认，类似 Typeless / 闪电说）。
+    /// An isolated tap of the modifier key starts recording, another tap ends it (default, similar to Typeless / Shandianshuo).
     case singleTap
-    /// 按住触发键录音，松开结束（push-to-talk）。
+    /// Hold the trigger key to record, release to end (push-to-talk).
     case hold
 
     public var id: String { rawValue }
 
-    /// 默认交互方式：单击切换（孤立轻点）。
+    /// Default interaction style: tap to toggle (isolated tap).
     public static let `default`: InteractionMode = .singleTap
 
-    /// 自定义 `RawRepresentable` 初始化：已废弃的旧值（如曾落盘的 `"toggle"` 双击切换）
-    /// 安全回落到默认（单击切换），不返回 `nil`，避免读旧配置时报错或丢交互方式。
+    /// Custom `RawRepresentable` initialization: a deprecated old value (e.g. the previously persisted `"toggle"` double-tap toggle)
+    /// safely falls back to the default (tap to toggle) without returning `nil`, to avoid errors or losing the interaction style when reading old config.
     public init(rawValue: String) {
         switch rawValue {
         case "singleTap": self = .singleTap
@@ -35,8 +35,8 @@ public enum InteractionMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 设置面板 Picker 展示用的本地化键（落在 App 端 `Localizable.xcstrings`）。
-    /// 视图用 `Text(LocalizedStringKey(localizationKey))` 渲染，随 `uiLocale`（环境 locale）即时切换语言。
+    /// The localization key for the settings-panel Picker display (stored in the App-side `Localizable.xcstrings`).
+    /// The view renders with `Text(LocalizedStringKey(localizationKey))`, switching language instantly with `uiLocale` (the environment locale).
     public var localizationKey: String {
         switch self {
         case .singleTap: return "interaction.singleTap"
@@ -45,29 +45,29 @@ public enum InteractionMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// 界面显示语言。仅支持英文与简体中文两项（T24 需求）。
+/// The UI display language. Supports only English and Simplified Chinese (T24 requirement).
 ///
-/// `rawValue` 为落盘的 BCP-47 标识，同时用作 `Locale(identifier:)`，**不可随意更名**。
-/// 展示名固定为该语言的自称（`English` / `简体中文`），不参与本地化——这是语言选择器的惯例，
-/// 让用户无论当前界面语言为何都能认出目标语言。
+/// `rawValue` is the persisted BCP-47 identifier, also used as `Locale(identifier:)`, and **must not be renamed arbitrarily**.
+/// The display name is fixed to that language's endonym (`English` / Simplified Chinese), not localized -- this is the convention for a language picker,
+/// letting users recognize the target language regardless of the current UI language.
 public enum UILanguage: String, CaseIterable, Identifiable, Sendable {
-    /// 英文。
+    /// English.
     case english = "en"
-    /// 简体中文。
+    /// Simplified Chinese.
     case simplifiedChinese = "zh-Hans"
 
     public var id: String { rawValue }
 
-    /// 默认界面语言：跟随系统首选语言映射到二者之一（中文系→简体中文，其余→英文）。
+    /// Default UI language: follows the system preferred language mapped to one of the two (Chinese systems -> Simplified Chinese, others -> English).
     public static let `default`: UILanguage = .english
 
-    /// 按系统首选语言映射到受支持的两项之一：首选语言以 `zh` 开头视为简体中文，否则英文。
+    /// Maps the system preferred language to one of the two supported options: a preferred language starting with `zh` is treated as Simplified Chinese, otherwise English.
     public static var systemDefault: UILanguage {
         let preferred = Locale.preferredLanguages.first ?? "en"
         return preferred.lowercased().hasPrefix("zh") ? .simplifiedChinese : .english
     }
 
-    /// 展示名：该语言的自称（不本地化）。
+    /// Display name: that language's endonym (not localized).
     public var displayName: String {
         switch self {
         case .english:           return "English"
@@ -75,22 +75,22 @@ public enum UILanguage: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 对应的 `Locale`，用于 `environment(\.locale:)` 即时重定位 SwiftUI 文案。
+    /// The corresponding `Locale`, used for `environment(\.locale:)` to instantly relocalize SwiftUI copy.
     public var locale: Locale { Locale(identifier: rawValue) }
 }
 
-/// 语音转文字（STT）的运行位置：本地模型 vs 云端 API。
+/// Where speech-to-text (STT) runs: local model vs cloud API.
 ///
-/// `rawValue` 为落盘字符串，不可随意更名。
+/// `rawValue` is the persisted string and must not be renamed arbitrarily.
 public enum STTMode: String, CaseIterable, Identifiable, Sendable {
-    /// 本地模型（如 WhisperKit），离线、隐私优先。
+    /// Local model (e.g. WhisperKit), offline, privacy-first.
     case local
-    /// 云端转写 API（如 OpenAI transcribe），需联网与凭证。
+    /// Cloud transcription API (e.g. OpenAI transcribe), requires network and credentials.
     case cloud
 
     public var id: String { rawValue }
 
-    /// 默认 STT：本地，隐私优先。
+    /// Default STT: local, privacy-first.
     public static let `default`: STTMode = .local
 
     public var displayName: String {
@@ -100,8 +100,8 @@ public enum STTMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 设置面板 Picker 展示用的本地化键（落在 App 端 `Localizable.xcstrings`）。
-    /// 视图用 `Text(LocalizedStringKey(localizationKey))` 渲染，随 `uiLocale` 即时切换语言。
+    /// The localization key for the settings-panel Picker display (stored in the App-side `Localizable.xcstrings`).
+    /// The view renders with `Text(LocalizedStringKey(localizationKey))`, switching language instantly with `uiLocale`.
     public var localizationKey: String {
         switch self {
         case .local: return "stt.mode.local"
@@ -110,25 +110,25 @@ public enum STTMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// 润色风格：决定送给 LLM 的润色指令倾向（见设计 Spec 第 6.2 节）。
+/// Polish style: determines the leaning of the polish instructions sent to the LLM (see design Spec Section 6.2).
 ///
-/// 风格只影响 system 提示词中「语域 / 整理力度」那一段的措辞，
-/// 不改变第 6.1 节的硬约束（只整理不回答、去语气词、保真等）。
+/// The style only affects the wording of the "register / cleanup intensity" segment of the system prompt,
+/// without changing the hard constraints in Section 6.1 (only cleanup not answering, removing filler words, fidelity, etc.).
 ///
-/// `rawValue` 为落盘字符串，不可随意更名。
+/// `rawValue` is the persisted string and must not be renamed arbitrarily.
 public enum PolishStyle: String, CaseIterable, Identifiable, Codable, Sendable {
-    /// 智能（默认）：全套整理——去口水词、补标点、改口纠正、必要时分点、按 App 名调语域，保留口语自然度。
+    /// Smart (default): the full cleanup -- remove filler words, add punctuation, fix self-corrections, bullet-point when necessary, adjust register by App name, preserving spoken naturalness.
     case smart
-    /// 仅标点：只补标点与大小写、去最明显口水词；不重组句子、不分点、不改措辞（最保真）。
+    /// Punctuation only: only add punctuation and capitalization, remove the most obvious filler words; do not restructure sentences, bullet-point, or change wording (most faithful).
     case punctuationOnly
-    /// 正式书面：在「智能」基础上转为书面 / 正式语域（去口语化、完整句）。
+    /// Formal written: on top of "smart", switch to a written / formal register (de-colloquialized, complete sentences).
     case formal
-    /// 轻松随意：在「智能」基础上保留自然口语节奏（适合发消息 / 聊天），轻整理。
+    /// Casual: on top of "smart", keep a natural spoken rhythm (suitable for messaging / chatting), with light cleanup.
     case casual
 
     public var id: String { rawValue }
 
-    /// 默认润色风格：智能润色。
+    /// Default polish style: smart polish.
     public static let `default`: PolishStyle = .smart
 
     public var displayName: String {
@@ -140,8 +140,8 @@ public enum PolishStyle: String, CaseIterable, Identifiable, Codable, Sendable {
         }
     }
 
-    /// 设置面板 Picker 展示用的本地化键（落在 App 端 `Localizable.xcstrings`）。
-    /// 视图用 `Text(LocalizedStringKey(localizationKey))` 渲染，随 `uiLocale` 即时切换语言。
+    /// The localization key for the settings-panel Picker display (stored in the App-side `Localizable.xcstrings`).
+    /// The view renders with `Text(LocalizedStringKey(localizationKey))`, switching language instantly with `uiLocale`.
     public var localizationKey: String {
         switch self {
         case .smart:           return "polish.style.smart"
@@ -152,10 +152,10 @@ public enum PolishStyle: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 }
 
-/// 润色所用大模型 Provider 种类。
+/// The kind of large-model Provider used for polish.
 ///
-/// 仅覆盖 sayit 当前支持的 Provider；`rawValue` 为落盘字符串（同时用作展示名），
-/// **改了会读不到旧配置**，须与历史保持一致。模型清单与默认模型集中于此，作单一真相源。
+/// Covers only the Providers sayit currently supports; `rawValue` is the persisted string (also used as the display name),
+/// **changing it makes old config unreadable**, so it must stay consistent with history. The model list and default models are centralized here as a single source of truth.
 public enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
     case openAI = "OpenAI"
     case deepSeek = "DeepSeek"
@@ -164,14 +164,14 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
 
     public var id: String { rawValue }
 
-    /// 默认 Provider：OpenAI。
+    /// Default Provider: OpenAI.
     public static let `default`: ProviderKind = .openAI
 
-    /// 插值用展示名：品牌名逐字返回（两种语言一致），ChatGPT 去掉 `rawValue` 里落盘用的「登录」后缀。
+    /// Display name for interpolation: brand names are returned verbatim (identical across both languages), ChatGPT drops the login suffix persisted in `rawValue`.
     ///
-    /// 仅供 `polish.apiKeyField`/`polish.keySaved` 等 `%@` 插值；这些消息只对带 API Key 的
-    /// 品牌 Provider（OpenAI / DeepSeek / Anthropic）出现，ChatGPT 走 OAuth 不会取到。
-    /// Picker 标签改走 ``localizationKey``（随 `uiLocale` 本地化），不再用此值。
+    /// Used only for `%@` interpolation in `polish.apiKeyField`/`polish.keySaved`, etc.; these messages only appear for brand Providers with an API Key
+    /// (OpenAI / DeepSeek / Anthropic), ChatGPT goes through OAuth and is never fetched here.
+    /// The Picker label switches to ``localizationKey`` (localized per `uiLocale`) and no longer uses this value.
     public var displayName: String {
         switch self {
         case .openAI:    return "OpenAI"
@@ -181,9 +181,9 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 设置面板 Picker 展示用的本地化键（落在 App 端 `Localizable.xcstrings`）。
-    /// 品牌名在两种语言下一致；仅 ChatGPT 登录项随 `uiLocale` 本地化（"ChatGPT login" / "ChatGPT 登录"）。
-    /// 视图用 `Text(LocalizedStringKey(localizationKey))` 渲染。
+    /// The localization key for the settings-panel Picker display (stored in the App-side `Localizable.xcstrings`).
+    /// Brand names are identical across both languages; only the ChatGPT login item is localized per `uiLocale` (English "ChatGPT login" / the Chinese login label).
+    /// The view renders with `Text(LocalizedStringKey(localizationKey))`.
     public var localizationKey: String {
         switch self {
         case .openAI:    return "provider.openAI"
@@ -193,7 +193,7 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 该 Provider 可选模型：(id 发给 API, label 展示)。润色文本任务，默认偏向轻量/便宜模型。
+    /// Selectable models for this Provider: (id sent to the API, label displayed). For the polish text task, defaults lean toward lightweight/cheap models.
     public var modelOptions: [(id: String, label: String)] {
         switch self {
         case .openAI:
@@ -218,6 +218,6 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// 该 Provider 的默认模型（取 `modelOptions` 首项）。
+    /// The default model for this Provider (takes the first item of `modelOptions`).
     public var defaultModel: String { modelOptions.first?.id ?? "" }
 }

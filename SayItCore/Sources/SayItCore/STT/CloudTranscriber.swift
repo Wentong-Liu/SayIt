@@ -1,40 +1,40 @@
 import Foundation
 
-/// 云端语音转写：调用 OpenAI 兼容的音频转写 API（`POST {baseURL}/v1/audio/transcriptions`）。
+/// Cloud speech transcription: calls the OpenAI-compatible audio transcription API (`POST {baseURL}/v1/audio/transcriptions`).
 ///
-/// 请求体为 `multipart/form-data`，含字段：
-/// - `file`：把入参 `[Float]`（16kHz 单声道 PCM）经 ``WAVEncoder`` 编码的 16-bit PCM WAV。
-/// - `model`：转写模型（如 `gpt-4o-mini-transcribe` / `whisper-1`），来自配置。
-/// - `language`：可选 ISO 语言代码；传 `nil` 时不发该字段，让服务端自动检测。
+/// The request body is `multipart/form-data`, containing the fields:
+/// - `file`: the input `[Float]` (16kHz mono PCM) encoded by ``WAVEncoder`` into 16-bit PCM WAV.
+/// - `model`: the transcription model (e.g. `gpt-4o-mini-transcribe` / `whisper-1`), from config.
+/// - `language`: optional ISO language code; when `nil` the field is omitted, letting the server auto-detect.
 ///
-/// 鉴权走 `Authorization: Bearer <apiKey>`；`baseURL` 默认 `https://api.openai.com`，
-/// 可配置以支持兼容服务商。``URLSession`` 可注入以便测试（用 URLProtocol 桩，不打真实网络）。
+/// Auth goes through `Authorization: Bearer <apiKey>`; `baseURL` defaults to `https://api.openai.com`,
+/// and is configurable to support compatible providers. ``URLSession`` is injectable for testing (URLProtocol stub, no real network).
 ///
-/// conform 已有 ``Transcriber`` 协议，复用 ``TranscriptionResult`` / ``STTError`` /
-/// ``HTTPResponseValidator``，不重复声明任何已有类型。
+/// Conforms to the existing ``Transcriber`` protocol and reuses ``TranscriptionResult`` / ``STTError`` /
+/// ``HTTPResponseValidator``, without redeclaring any existing type.
 public struct CloudTranscriber: Transcriber {
-    /// API 基地址（不含路径后缀），如 `https://api.openai.com`。尾部 `/` 会被规范化掉。
+    /// API base address (without path suffix), e.g. `https://api.openai.com`. A trailing `/` is normalized away.
     private let baseURL: String
-    /// 鉴权用 API Key；为空视作未配置 → 抛 ``STTError/notReady``。
+    /// API Key for auth; empty is treated as unconfigured -> throws ``STTError/notReady``.
     private let apiKey: String
-    /// 转写模型标识。
+    /// Transcription model identifier.
     private let model: String
     private let session: URLSession
 
-    /// 默认 API 基地址（OpenAI 官方）。
+    /// Default API base address (OpenAI official).
     public static let defaultBaseURL = "https://api.openai.com"
 
-    /// 转写端点后缀（拼在规范化后的 baseURL 之后）。
+    /// Transcription endpoint suffix (appended after the normalized baseURL).
     private static let transcriptionsPath = "/v1/audio/transcriptions"
 
-    /// 单次请求超时（秒）。复用 LLM 的整体上限即可。
+    /// Timeout (seconds) for a single request. Reusing the LLM's overall ceiling is fine.
     private static let requestTimeout = LLMDefaults.requestTimeout
 
     /// - Parameters:
-    ///   - baseURL: API 基地址；默认官方 `https://api.openai.com`，可改以支持兼容服务商。
-    ///   - apiKey: Bearer Token。生产侧由调用方从 ``KeychainStore`` 取出后传入（本类型不读 Keychain，保持可测）。
-    ///   - model: 转写模型标识（如 `gpt-4o-mini-transcribe`）。
-    ///   - session: 注入的 ``URLSession``；默认 `.shared`，测试传 URLProtocol 桩。
+    ///   - baseURL: API base address; defaults to the official `https://api.openai.com`, changeable to support compatible providers.
+    ///   - apiKey: Bearer Token. On the production side the caller retrieves it from ``KeychainStore`` and passes it in (this type never reads the Keychain, staying testable).
+    ///   - model: transcription model identifier (e.g. `gpt-4o-mini-transcribe`).
+    ///   - session: injected ``URLSession``; defaults to `.shared`, tests pass a URLProtocol stub.
     public init(baseURL: String = CloudTranscriber.defaultBaseURL,
                 apiKey: String,
                 model: String,
@@ -52,7 +52,7 @@ public struct CloudTranscriber: Transcriber {
             throw STTError.transcriptionFailed(reason: "invalid baseURL: \(baseURL)")
         }
 
-        // 非法/越界采样率会抛 STTError.unsupportedFormat（避免 UInt32(sampleRate) 陷阱崩溃）。
+        // An invalid/out-of-range sample rate throws STTError.unsupportedFormat (avoiding the UInt32(sampleRate) trap crash).
         let wav = try WAVEncoder.encode(samples: audio, sampleRate: sampleRate)
         let boundary = "Boundary-\(UUID().uuidString)"
         let body = makeMultipartBody(wav: wav, boundary: boundary, language: language)
@@ -73,7 +73,7 @@ public struct CloudTranscriber: Transcriber {
             throw STTError.transcriptionFailed(reason: "network: \(error.localizedDescription)")
         }
 
-        // 复用 provider 共享的 HTTP 校验：非 HTTP 响应 / 非 2xx 都抛 ProviderError，统一转成 STTError。
+        // Reuse the provider-shared HTTP validation: non-HTTP responses / non-2xx both throw ProviderError, uniformly converted to STTError.
         do {
             let http = try HTTPResponseValidator.httpResponse(from: response)
             try HTTPResponseValidator.throwIfHTTPError(http, body: String(data: data, encoding: .utf8) ?? "")
@@ -84,9 +84,9 @@ public struct CloudTranscriber: Transcriber {
         return try parse(data)
     }
 
-    // MARK: - 端点
+    // MARK: - Endpoint
 
-    /// 把 baseURL 规范化（去尾部 `/`）后拼上转写端点后缀。
+    /// Normalizes baseURL (drops trailing `/`) then appends the transcription endpoint suffix.
     private func endpointURL() -> URL? {
         var base = baseURL
         while base.hasSuffix("/") { base.removeLast() }
@@ -95,7 +95,7 @@ public struct CloudTranscriber: Transcriber {
 
     // MARK: - multipart body
 
-    /// 构造 `multipart/form-data` 请求体：model 字段、可选 language 字段、file（WAV）字段，最后 closing boundary。
+    /// Builds the `multipart/form-data` request body: model field, optional language field, file (WAV) field, then the closing boundary.
     private func makeMultipartBody(wav: Data, boundary: String, language: String?) -> Data {
         var body = Data()
 
@@ -110,14 +110,14 @@ public struct CloudTranscriber: Transcriber {
         return body
     }
 
-    // MARK: - 响应解析
+    // MARK: - Response parsing
 
-    /// 转写响应体：只取 `text` 字段（其余如 task/language/duration 忽略）。
+    /// Transcription response body: takes only the `text` field (others like task/language/duration are ignored).
     private struct ResponseBody: Decodable {
         let text: String
     }
 
-    /// 解析响应 JSON 的 `text` 字段为 ``TranscriptionResult``；缺字段 / 非 JSON → ``STTError/transcriptionFailed``。
+    /// Parses the response JSON's `text` field into ``TranscriptionResult``; missing field / non-JSON -> ``STTError/transcriptionFailed``.
     private func parse(_ data: Data) throws -> TranscriptionResult {
         guard let parsed = try? JSONDecoder().decode(ResponseBody.self, from: data) else {
             let snippet = String((String(data: data, encoding: .utf8) ?? "").prefix(200))
@@ -128,19 +128,19 @@ public struct CloudTranscriber: Transcriber {
 }
 
 private extension Data {
-    /// 追加 UTF-8 字符串。
+    /// Appends a UTF-8 string.
     mutating func append(string: String) {
         append(contentsOf: Array(string.utf8))
     }
 
-    /// 追加一个普通文本表单字段（含前导 boundary 与 Content-Disposition）。
+    /// Appends a plain text form field (including the leading boundary and Content-Disposition).
     mutating func appendFormField(name: String, value: String, boundary: String) {
         append(string: "--\(boundary)\r\n")
         append(string: "Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
         append(string: "\(value)\r\n")
     }
 
-    /// 追加一个文件表单字段（含前导 boundary、文件名、Content-Type 与二进制数据）。
+    /// Appends a file form field (including the leading boundary, file name, Content-Type and binary data).
     mutating func appendFileField(name: String, filename: String, contentType: String,
                                   fileData: Data, boundary: String) {
         append(string: "--\(boundary)\r\n")

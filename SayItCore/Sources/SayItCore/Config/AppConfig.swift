@@ -1,37 +1,37 @@
 import Foundation
 
-/// 全局共享应用配置（非密钥项走 UserDefaults；API Key / OAuth token 仍在 Keychain）。
+/// Globally shared application config (non-secret items go through UserDefaults; API Key / OAuth token still live in the Keychain).
 ///
-/// 参考 ZhiYu 的 `AppConfig` 模式，但字段换成 sayit 的：触发键、交互方式、STT 模式、
-/// 本地/云端模型、润色开关与风格、润色用 Provider+模型、语言。
+/// Refers to ZhiYu's `AppConfig` pattern, but with sayit's fields instead: trigger key, interaction style, STT mode,
+/// local/cloud model, polish toggle and style, polish Provider+model, language.
 ///
-/// 设计要点：
-/// - **类型安全读写 + 默认值**：每个属性以强类型暴露，缺省/损坏值静默回落到该类型的 `default`。
-/// - **可观察**：任一属性写入且值确有变化时，发 ``AppConfig/didChangeNotification``（object 为本实例）。
-///   监听方在通知里重新读取所需属性即可，无需关心改了哪一项。
-/// - **可注入 `UserDefaults`**：默认用 `.standard`；单测传入独立 suite，避免污染。
+/// Design points:
+/// - **Type-safe read/write + default value**: each property is exposed with a strong type, missing/corrupt values silently fall back to that type's `default`.
+/// - **Observable**: when any property is written and the value actually changes, posts ``AppConfig/didChangeNotification`` (object is this instance).
+///   Listeners just re-read the needed properties in the notification, without caring which one changed.
+/// - **Injectable `UserDefaults`**: defaults to `.standard`; unit tests pass an isolated suite to avoid contamination.
 @MainActor
 public final class AppConfig {
-    /// 进程内共享实例（生产用 `UserDefaults.standard`）。
+    /// In-process shared instance (production uses `UserDefaults.standard`).
     public static let shared = AppConfig()
 
-    /// 配置发生变化时投递的通知；`object` 为发生变化的 `AppConfig` 实例。
-    /// 监听方应在收到后重新读取关心的属性（通知不携带 diff）。
+    /// The notification posted when config changes; `object` is the changed `AppConfig` instance.
+    /// Listeners should re-read the properties they care about after receiving it (the notification carries no diff).
     public static let didChangeNotification = Notification.Name("com.liuwentong.SayIt.AppConfigDidChange")
 
     private let defaults: UserDefaults
     private let notificationCenter: NotificationCenter
 
     /// - Parameters:
-    ///   - defaults: 后端存储；默认 `.standard`，单测传独立 suite。
-    ///   - notificationCenter: 变更通知中心；默认 `.default`。
+    ///   - defaults: the backing store; defaults to `.standard`, unit tests pass an isolated suite.
+    ///   - notificationCenter: the change-notification center; defaults to `.default`.
     public init(defaults: UserDefaults = .standard,
                 notificationCenter: NotificationCenter = .default) {
         self.defaults = defaults
         self.notificationCenter = notificationCenter
     }
 
-    /// 持久化键名。字符串值是落盘键名，**改了会丢已有配置**，不可变。
+    /// Persistence key names. The string values are the persisted key names, **changing them loses existing config**, immutable.
     private enum Key {
         static let triggerKey = "trigger.key"
         static let interactionMode = "interaction.mode"
@@ -47,15 +47,15 @@ public final class AppConfig {
         static let inputDeviceUID = "audio.inputDeviceUID"
     }
 
-    // MARK: 触发 / 交互
+    // MARK: Trigger / interaction
 
-    /// 触发听写的修饰键。缺省右⌘；监听处实时读它，改了立即生效。
+    /// The modifier key that triggers dictation. Defaults to the right Command; the listener reads it live, changes take effect immediately.
     public var triggerKey: TriggerKey {
         get { enumValue(Key.triggerKey, default: .default) }
         set { setEnum(newValue, forKey: Key.triggerKey) }
     }
 
-    /// 触发交互方式（单击切换 / 按住说话）。缺省单击切换。
+    /// The trigger interaction style (tap to toggle / hold to talk). Defaults to tap to toggle.
     public var interactionMode: InteractionMode {
         get { enumValue(Key.interactionMode, default: .default) }
         set { setEnum(newValue, forKey: Key.interactionMode) }
@@ -63,49 +63,49 @@ public final class AppConfig {
 
     // MARK: STT
 
-    /// 语音转写运行位置（本地 / 云端）。缺省本地。
+    /// Where speech transcription runs (local / cloud). Defaults to local.
     public var sttMode: STTMode {
         get { enumValue(Key.sttMode, default: .default) }
         set { setEnum(newValue, forKey: Key.sttMode) }
     }
 
-    /// 本地 STT 模型标识（如 WhisperKit 模型名）。缺省 "large-v3-turbo"。
+    /// The local STT model identifier (e.g. the WhisperKit model name). Defaults to "large-v3-turbo".
     public var localModel: String {
         get { stringValue(Key.localModel, default: Self.defaultLocalModel) }
         set { setString(newValue, forKey: Key.localModel) }
     }
 
-    /// 云端 STT 模型标识。缺省 "gpt-4o-mini-transcribe"。
+    /// The cloud STT model identifier. Defaults to "gpt-4o-mini-transcribe".
     public var cloudSTTModel: String {
         get { stringValue(Key.cloudSTTModel, default: Self.defaultCloudSTTModel) }
         set { setString(newValue, forKey: Key.cloudSTTModel) }
     }
 
-    // MARK: 润色
+    // MARK: Polish
 
-    /// 是否对转写结果做 LLM 润色。缺省开。
+    /// Whether to apply LLM polish to the transcription result. Defaults to on.
     public var polishEnabled: Bool {
         get { boolValue(Key.polishEnabled, default: Self.defaultPolishEnabled) }
         set { setBool(newValue, forKey: Key.polishEnabled) }
     }
 
-    /// 润色风格。缺省智能润色。
+    /// The polish style. Defaults to smart polish.
     public var polishStyle: PolishStyle {
         get { enumValue(Key.polishStyle, default: .default) }
         set { setEnum(newValue, forKey: Key.polishStyle) }
     }
 
-    // MARK: 润色用 Provider / 模型
+    // MARK: Polish Provider / model
 
-    /// 润色所用 Provider。缺省 OpenAI。落盘 `rawValue`，未知值静默回落。
+    /// The Provider used for polish. Defaults to OpenAI. Persists `rawValue`, unknown values silently fall back.
     public var providerKind: ProviderKind {
         get { enumValue(Key.providerKind, default: .default) }
         set { setEnum(newValue, forKey: Key.providerKind) }
     }
 
-    /// 润色所用模型 id。读时夹回到当前 `providerKind` 的可选模型：
-    /// 落盘的 model 若不属于当前 Provider（例如换过 Provider 没点过模型下拉），
-    /// 回落到该 Provider 默认模型，避免把不属于该 Provider 的 model id 发给 API。
+    /// The model id used for polish. On read it is clamped back to the current `providerKind`'s selectable models:
+    /// if the persisted model does not belong to the current Provider (e.g. the Provider was switched without touching the model dropdown),
+    /// it falls back to that Provider's default model, avoiding sending a model id that does not belong to that Provider to the API.
     public var model: String {
         get {
             let stored = defaults.string(forKey: Key.model)
@@ -116,48 +116,48 @@ public final class AppConfig {
         set { setString(newValue, forKey: Key.model) }
     }
 
-    // MARK: 语言
+    // MARK: Language
 
-    /// 听写/润色目标语言；"auto" 表示自动跟随转写语言。缺省 "auto"。
+    /// The dictation/polish target language; "auto" means automatically follow the transcription language. Defaults to "auto".
     ///
-    /// - Note: 自 T24 起语音识别**恒自动检测**（``DictationCoordinator`` 传 `language=nil`），
-    ///   此字段不再驱动转写，仅为向后兼容保留（旧版本写入的值不会报错）。
+    /// - Note: since T24, speech recognition is **always auto-detected** (``DictationCoordinator`` passes `language=nil`),
+    ///   this field no longer drives transcription and is kept only for backward compatibility (values written by old versions do not cause errors).
     public var language: String {
         get { stringValue(Key.language, default: Self.defaultLanguage) }
         set { setString(newValue, forKey: Key.language) }
     }
 
-    /// 界面显示语言；取值仅限 ``UILanguage`` 的两项（英文 / 简体中文）。
+    /// The UI display language; values are limited to ``UILanguage``'s two options (English / Simplified Chinese).
     ///
-    /// 落盘 BCP-47 标识（`"en"` / `"zh-Hans"`）。缺省按系统首选语言映射到二者之一
-    /// （中文系 → 简体中文，其余 → 英文），见 ``UILanguage/systemDefault``。
-    /// 监听方收到变更通知后重读，并把 `Locale(identifier:)` 应用到根场景以即时重定位 UI。
+    /// Persists the BCP-47 identifier (`"en"` / `"zh-Hans"`). Defaults by mapping the system preferred language to one of the two
+    /// (Chinese systems -> Simplified Chinese, others -> English), see ``UILanguage/systemDefault``.
+    /// Listeners re-read after receiving the change notification and apply `Locale(identifier:)` to the root scene to instantly relocalize the UI.
     public var uiLanguage: UILanguage {
         get { enumValue(Key.uiLanguage, default: UILanguage.systemDefault) }
         set { setEnum(newValue, forKey: Key.uiLanguage) }
     }
 
-    // MARK: 音频输入设备
+    // MARK: Audio input device
 
-    /// 选定的麦克风输入设备 UID；`nil` 表示跟随系统默认输入设备。
+    /// The selected microphone input device UID; `nil` means follow the system default input device.
     ///
-    /// 存盘的是 CoreAudio 的设备 UID（``AudioInputDevice/uid``）。设备被拔出后 UID
-    /// 解析不到时，``AudioRecorder`` 会自动回落到系统默认设备，故此处无需校验有效性。
+    /// Persists the CoreAudio device UID (``AudioInputDevice/uid``). After the device is unplugged and the UID
+    /// cannot be resolved, ``AudioRecorder`` automatically falls back to the system default device, so no validity check is needed here.
     public var inputDeviceUID: String? {
         get { defaults.string(forKey: Key.inputDeviceUID) }
         set { setOptionalString(newValue, forKey: Key.inputDeviceUID) }
     }
 
-    // MARK: 默认常量（单一真相源）
+    // MARK: Default constants (single source of truth)
 
     static let defaultLocalModel = "large-v3-turbo"
     static let defaultCloudSTTModel = "gpt-4o-mini-transcribe"
     static let defaultPolishEnabled = true
     static let defaultLanguage = "auto"
 
-    // MARK: 通用读写 + 变更通知
+    // MARK: Generic read/write + change notification
 
-    /// 读枚举：缺省/损坏值静默回落到 `fallback`。
+    /// Read an enum: missing/corrupt values silently fall back to `fallback`.
     private func enumValue<E: RawRepresentable>(_ key: String, default fallback: E) -> E
     where E.RawValue == String {
         guard let raw = defaults.string(forKey: key), let value = E(rawValue: raw) else {
@@ -174,7 +174,7 @@ public final class AppConfig {
         postChange()
     }
 
-    /// 读字符串：未设置时回落到 `fallback`。
+    /// Read a string: falls back to `fallback` when not set.
     private func stringValue(_ key: String, default fallback: String) -> String {
         defaults.string(forKey: key) ?? fallback
     }
@@ -185,7 +185,7 @@ public final class AppConfig {
         postChange()
     }
 
-    /// 写可空字符串：`nil` 时移除键（表达「未设置/跟随默认」），值未变则不发通知。
+    /// Write a nullable string: `nil` removes the key (expressing "not set/follow default"), no notification is posted if the value is unchanged.
     private func setOptionalString(_ newValue: String?, forKey key: String) {
         let old = defaults.string(forKey: key)
         guard old != newValue else { return }
@@ -197,7 +197,7 @@ public final class AppConfig {
         postChange()
     }
 
-    /// 读布尔：未设置时回落到 `fallback`（区分「未设置」与「显式 false」）。
+    /// Read a bool: falls back to `fallback` when not set (distinguishing "not set" from "explicit false").
     private func boolValue(_ key: String, default fallback: Bool) -> Bool {
         defaults.object(forKey: key) == nil ? fallback : defaults.bool(forKey: key)
     }

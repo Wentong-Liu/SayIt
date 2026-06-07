@@ -1,8 +1,8 @@
 import XCTest
 @testable import SayItCore
 
-/// AppConfig 单测：全部用独立 UserDefaults(suiteName) 隔离，避免污染 standard。
-/// 每个用例自带 suiteName + tearDown 清理，互不串台。
+/// AppConfig unit test: all isolated with a separate UserDefaults(suiteName) to avoid polluting standard.
+/// Each case carries its own suiteName + tearDown cleanup, not crossing with each other.
 @MainActor
 final class AppConfigTests: XCTestCase {
     private var suiteName: String!
@@ -24,7 +24,7 @@ final class AppConfigTests: XCTestCase {
         super.tearDown()
     }
 
-    // MARK: 默认值
+    // MARK: Default values
 
     func testDefaultsOnFreshStore() {
         XCTAssertEqual(config.triggerKey, .rightCommand)
@@ -39,13 +39,13 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(config.language, "auto")
     }
 
-    // MARK: 读写往返（枚举）
+    // MARK: Read/write round-trip (enums)
 
     func testTriggerKeyRoundTrip() {
         for key in TriggerKey.allCases {
             config.triggerKey = key
             XCTAssertEqual(config.triggerKey, key)
-            // 跨实例持久化：新建 AppConfig 读同一 store 仍是该值。
+            // Cross-instance persistence: a new AppConfig reading the same store is still that value.
             XCTAssertEqual(AppConfig(defaults: defaults).triggerKey, key)
         }
     }
@@ -72,7 +72,7 @@ final class AppConfigTests: XCTestCase {
         }
     }
 
-    // MARK: 读写往返（标量/字符串）
+    // MARK: Read/write round-trip (scalar/string)
 
     func testPolishEnabledRoundTrip() {
         config.polishEnabled = false
@@ -100,10 +100,10 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(AppConfig(defaults: defaults).language, "zh")
     }
 
-    // MARK: UI 语言
+    // MARK: UI language
 
     func testUILanguageDefaultsToSystemMapping() {
-        // 全新 store：缺省回落到按系统首选语言映射的 UILanguage.systemDefault。
+        // A brand-new store: the default falls back to UILanguage.systemDefault mapped per the system preferred language.
         XCTAssertEqual(config.uiLanguage, UILanguage.systemDefault)
     }
 
@@ -127,7 +127,7 @@ final class AppConfigTests: XCTestCase {
         wait(for: [exp], timeout: 1.0)
     }
 
-    // MARK: 输入设备 UID（可空）
+    // MARK: Input device UID (nullable)
 
     func testInputDeviceUIDDefaultsToNil() {
         XCTAssertNil(config.inputDeviceUID)
@@ -161,7 +161,7 @@ final class AppConfigTests: XCTestCase {
         wait(for: [exp], timeout: 0.3)
     }
 
-    // MARK: providerKind / model 的耦合行为
+    // MARK: providerKind / model coupling behavior
 
     func testProviderKindRoundTrip() {
         config.providerKind = .anthropic
@@ -170,7 +170,7 @@ final class AppConfigTests: XCTestCase {
     }
 
     func testModelRoundTripWithinProvider() {
-        // 选一个属于 openAI 的合法模型。
+        // Pick a legal model belonging to openAI.
         let valid = ProviderKind.openAI.modelOptions.map(\.id)
         let pick = valid.last!
         config.providerKind = .openAI
@@ -180,14 +180,14 @@ final class AppConfigTests: XCTestCase {
     }
 
     func testModelClampsBackToDefaultWhenNotInProvider() {
-        // 存入一个不属于 anthropic 的模型（borrow openAI 的），切到 anthropic 后应回落其默认模型。
+        // Store a model not belonging to anthropic (borrowing openAI's); after switching to anthropic it should fall back to its default model.
         config.providerKind = .openAI
         config.model = ProviderKind.openAI.defaultModel
         config.providerKind = .anthropic
         XCTAssertEqual(config.model, ProviderKind.anthropic.defaultModel)
     }
 
-    // MARK: 损坏/未知值的静默回落
+    // MARK: Silent fallback for corrupt/unknown values
 
     func testUnknownRawValueFallsBackToDefault() {
         defaults.set("nope-not-a-key", forKey: "trigger.key")
@@ -203,7 +203,7 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(fresh.providerKind, .openAI)
     }
 
-    // MARK: 变更通知
+    // MARK: Change notification
 
     func testChangeNotificationPosts() {
         let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config)
@@ -219,7 +219,7 @@ final class AppConfigTests: XCTestCase {
         wait(for: [exp], timeout: 0.3)
     }
 
-    // MARK: 不污染 standard
+    // MARK: Does not pollute standard
 
     func testDoesNotTouchStandardDefaults() {
         let standard = UserDefaults.standard

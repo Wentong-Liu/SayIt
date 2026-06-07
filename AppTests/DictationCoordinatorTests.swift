@@ -2,15 +2,15 @@ import XCTest
 @testable import SayIt
 @testable import SayItCore
 
-/// `DictationCoordinator` 的编排逻辑单测：用 Fake 录音器/注入器/转写器走通主要分支。
+/// Unit test for `DictationCoordinator`'s orchestration logic: exercises the main branches with a Fake recorder/injector/transcriber.
 ///
-/// 协调器经热键事件流驱动，真实事件依赖 NSEvent 全局监听，故这里用其 `_test_*` 入口
-/// 直接驱动同一套私有 handler 并等待内部任务，保证确定性。HUD 用真实 `RecordingPanelController`
-/// 的独立实例（不触前台焦点、无副作用）。
+/// The coordinator is driven by the hotkey event stream, and real events depend on NSEvent global monitoring, so here its `_test_*` entry points
+/// directly drive the same private handlers and await the internal tasks, guaranteeing determinism. The HUD uses a separate instance of the real `RecordingPanelController`
+/// (no frontmost focus touched, no side effects).
 @MainActor
 final class DictationCoordinatorTests: XCTestCase {
 
-    /// 造一份隔离的 AppConfig（独立 UserDefaults suite，避免污染 .standard）。
+    /// Builds an isolated AppConfig (separate UserDefaults suite, avoiding polluting .standard).
     private func makeConfig(polishEnabled: Bool = false) -> AppConfig {
         let suite = "test.coordinator.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -19,9 +19,9 @@ final class DictationCoordinatorTests: XCTestCase {
         return config
     }
 
-    /// 组装一个全 Fake 的协调器。accessibilityGate 恒 true 以绕开真实授权环境。
-    /// modelReadiness 默认恒 true：多数测试用注入的 Fake 转写器，应直接走转写而不触发本地模型门禁。
-    /// transcribeTimeout 默认很短，避免任何分支真的等满 90s。
+    /// Assembles an all-Fake coordinator. accessibilityGate is always true to bypass the real authorization environment.
+    /// modelReadiness defaults to always true: most tests use the injected Fake transcriber and should go straight to transcription without triggering the local model gate.
+    /// transcribeTimeout defaults very short, to avoid any branch truly waiting out the full 90s.
     private func makeCoordinator(
         config: AppConfig,
         recorder: FakeAudioRecorder,
@@ -43,7 +43,7 @@ final class DictationCoordinatorTests: XCTestCase {
         )
     }
 
-    // MARK: - 正常闭环：start → stop → inject
+    // MARK: - Normal loop: start -> stop -> inject
 
     func testHappyPathInjectsTranscribedText() async {
         let config = makeConfig()
@@ -66,11 +66,11 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(stopCount, 1)
     }
 
-    // MARK: - 空音频：不转写、不注入
+    // MARK: - Empty audio: no transcription, no injection
 
     func testEmptyAudioDoesNotInject() async {
         let config = makeConfig()
-        let recorder = FakeAudioRecorder(samples: [])  // 没说话
+        let recorder = FakeAudioRecorder(samples: [])  // nothing said
         let injector = FakeTextInjector()
         var transcriberMade = false
         let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
@@ -85,14 +85,14 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertFalse(transcriberMade, "空音频不应构造转写器")
     }
 
-    // MARK: - 空转写：不注入
+    // MARK: - Empty transcription: no injection
 
     func testEmptyTranscriptDoesNotInject() async {
         let config = makeConfig()
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector()
         let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
-            FakeTranscriber(text: "   \n  ")  // 静音/听不清 → trim 后为空
+            FakeTranscriber(text: "   \n  ")  // silence/unintelligible -> empty after trim
         }
 
         await coordinator._test_start()
@@ -101,7 +101,7 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertTrue(injector.injectedTexts.isEmpty, "空转写不应注入")
     }
 
-    // MARK: - 转写失败：不注入
+    // MARK: - Transcription failure: no injection
 
     func testTranscriptionFailureDoesNotInject() async {
         let config = makeConfig()
@@ -118,7 +118,7 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator._test_isRecording)
     }
 
-    // MARK: - 注入失败：文本仍被尝试注入（留剪贴板），不崩
+    // MARK: - Injection failure: the text is still attempted to be injected (left in the clipboard), no crash
 
     func testInjectionFailureStillAttemptsInjection() async {
         let config = makeConfig()
@@ -131,11 +131,11 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        // 绝不丢字：即便注入失败，文本也被送进注入器（其内部会留剪贴板）。
+        // Never lose characters: even if injection fails, the text is sent into the injector (which internally leaves it in the clipboard).
         XCTAssertEqual(injector.injectedTexts, ["要保住的话"])
     }
 
-    // MARK: - 录音启动失败（麦克风被拒）：不注入
+    // MARK: - Recording start failure (microphone denied): no injection
 
     func testRecordingStartFailureDoesNotInject() async {
         let config = makeConfig()
@@ -152,7 +152,7 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertTrue(injector.injectedTexts.isEmpty, "录音没起来不应注入")
     }
 
-    // MARK: - 极短按竞态：start 紧跟 stop，stop 不早于 start，不抛 .notRecording
+    // MARK: - Extremely-short-press race: start closely followed by stop, stop not before start, no .notRecording thrown
 
     func testRapidStartStopAwaitsStartBeforeStop() async {
         let config = makeConfig()
@@ -162,11 +162,11 @@ final class DictationCoordinatorTests: XCTestCase {
             FakeTranscriber(text: "极短按")
         }
 
-        // 用底层 handler 模拟极短按：start 与 stop 在同一同步段先后触发（start 的录音 Task 尚未完成）。
+        // Use the low-level handlers to simulate an extremely short press: start and stop are triggered one after another in the same synchronous block (start's recording Task has not finished yet).
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        // stop 必须在 start 之后执行：录音器恰好被 start 一次、stop 一次，文本正常注入。
+        // stop must execute after start: the recorder is started exactly once, stopped once, the text injected normally.
         let startCount = await recorder.startCount
         let stopCount = await recorder.stopCount
         XCTAssertEqual(startCount, 1)
@@ -174,10 +174,10 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["极短按"])
     }
 
-    // MARK: - 润色失败回退原文仍注入（polishEnabled 但无可用 Provider）
+    // MARK: - Polish failure falls back to the original and still injects (polishEnabled but no usable Provider)
 
     func testPolishFallbackStillInjectsRawTranscript() async {
-        // 打开润色但不配置任何凭据：makePolishProvider 会抛错 → 回退原文，仍注入。
+        // Polish on but no credentials configured: makePolishProvider throws -> falls back to the original, still injects.
         let config = makeConfig(polishEnabled: true)
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
@@ -188,14 +188,14 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        // 绝不丢字：润色 Provider 构造失败时回退原文注入。
+        // Never lose characters: when polish Provider construction fails, fall back to injecting the original.
         XCTAssertEqual(injector.injectedTexts, ["润色失败也要注入的原文"])
     }
 
-    // MARK: - 暖转写器复用：配置不变时跨多次听写复用同一实例（不每次重建 → 不每次重载模型）
+    // MARK: - Warm transcriber reuse: with config unchanged, reuse the same instance across multiple dictations (not rebuilding each time -> not reloading the model each time)
 
-    /// 回归守卫：模型重载性能 bug。配置不变时，多次听写必须复用同一个转写器实例，
-    /// 工厂只被调用一次——否则每次都会 `WhisperKitTranscriber(model:)` 新实例并惰性重载 ~1GB 模型（~10s）。
+    /// Regression guard: the model-reload performance bug. With config unchanged, multiple dictations must reuse the same transcriber instance,
+    /// and the factory is called only once -- otherwise each time would create a new `WhisperKitTranscriber(model:)` instance and lazily reload the ~1GB model (~10s).
     func testTranscriberReusedAcrossDictationsWhenConfigUnchanged() async {
         let config = makeConfig()
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
@@ -217,7 +217,7 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["复用", "复用", "复用"], "三次听写都应正常注入")
     }
 
-    /// 相关 STT 配置变更（如本地模型切换）后应重建转写器，使新模型生效。
+    /// After a relevant STT config change (such as switching the local model), the transcriber should be rebuilt so the new model takes effect.
     func testTranscriberRebuiltWhenLocalModelChanges() async {
         let config = makeConfig()
         config.sttMode = .local
@@ -234,14 +234,14 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
         XCTAssertEqual(factoryCallCount, 1)
 
-        // 切换本地模型 → 签名变化 → 下次听写应重建。
+        // Switch the local model -> signature changes -> the next dictation should rebuild.
         config.localModel = "small"
         await coordinator._test_start()
         await coordinator._test_stop()
         XCTAssertEqual(factoryCallCount, 2, "本地模型变更后应重建转写器")
     }
 
-    // MARK: - item 2：配置同值回写不动状态机（hold 中不被复位）
+    // MARK: - item 2: writing back the same config value does not touch the state machine (not reset during a hold)
 
     func testApplyHotkeyConfigSkipsRewriteWhenUnchanged() async {
         let config = makeConfig()
@@ -254,21 +254,21 @@ final class DictationCoordinatorTests: XCTestCase {
         }
 
         let manager = coordinator._test_hotkeyManager
-        // 同步初始值。
+        // Sync the initial value.
         coordinator._test_applyHotkeyConfig()
         let keyBefore = manager.triggerKey
         let modeBefore = manager.mode
 
-        // 再次以同值调用：不应改变（值判等短路）。
+        // Call again with the same value: should not change (value-equality short-circuit).
         coordinator._test_applyHotkeyConfig()
         XCTAssertEqual(manager.triggerKey, keyBefore)
         XCTAssertEqual(manager.mode, modeBefore)
     }
 
-    // MARK: - 本地模型未就绪：不转写、不注入，且不卡在「识别中」
+    // MARK: - Local model not ready: no transcription, no injection, and not stuck "transcribing"
 
-    /// 回归守卫：本地模式且模型未下载时，绝不调用转写（否则底层会触发下载、HUD 永久卡在
-    /// 「识别中」）。应直接收敛，不构造转写器、不注入、不再标记录音中。
+    /// Regression guard: in local mode with the model not downloaded, never call transcription (otherwise the underlying layer triggers a download, and the HUD stays permanently stuck
+    /// "transcribing"). It should converge directly, not construct a transcriber, not inject, and no longer mark itself recording.
     func testLocalModelNotReadyDoesNotTranscribeOrHang() async {
         let config = makeConfig()
         config.sttMode = .local
@@ -279,7 +279,7 @@ final class DictationCoordinatorTests: XCTestCase {
             config: config,
             recorder: recorder,
             injector: injector,
-            modelReadiness: { _ in false }  // 模型未下载
+            modelReadiness: { _ in false }  // model not downloaded
         ) {
             transcriberMade = true
             return FakeTranscriber(text: "不应被转写")
@@ -291,13 +291,13 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertFalse(transcriberMade, "模型未就绪不应构造/调用转写器（避免触发下载与卡死）")
         XCTAssertTrue(injector.injectedTexts.isEmpty, "模型未就绪不应注入")
         XCTAssertFalse(coordinator._test_isRecording, "应收敛到非录音中")
-        // 录音被停掉以释放设备。
+        // Recording is stopped to release the device.
         let stopCount = await recorder.stopCount
         XCTAssertEqual(stopCount, 1)
     }
 
-    /// 云端模式不受本地模型就绪门禁影响：即便 modelReadiness 恒 false（本地模型没下），
-    /// 云端转写仍正常进行并注入。
+    /// Cloud mode is not affected by the local model readiness gate: even with modelReadiness always false (the local model not downloaded),
+    /// cloud transcription still proceeds normally and injects.
     func testCloudModeIgnoresLocalModelReadinessGate() async {
         let config = makeConfig()
         config.sttMode = .cloud
@@ -307,7 +307,7 @@ final class DictationCoordinatorTests: XCTestCase {
             config: config,
             recorder: recorder,
             injector: injector,
-            modelReadiness: { _ in false }  // 本地模型未下载，但云端不该被它挡住
+            modelReadiness: { _ in false }  // local model not downloaded, but cloud should not be blocked by it
         ) {
             FakeTranscriber(text: "云端转写结果")
         }
@@ -318,11 +318,11 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["云端转写结果"], "云端模式应正常转写并注入")
     }
 
-    // MARK: - 输入设备实时生效：端到端听写用持久化的 inputDeviceUID
+    // MARK: - Input device takes effect in real time: end-to-end dictation uses the persisted inputDeviceUID
 
-    /// 回归守卫：设置页选定的麦克风必须对**下一次**听写立即生效（无需重启 App）。
-    /// handleStart 现读 config.inputDeviceUID 并传给 recorder.start(deviceUID:)；
-    /// 旧 bug 是调用无参 start()，永远录系统默认设备，持久化的选择从不应用到运行中的流水线。
+    /// Regression guard: the microphone selected in the settings page must take effect immediately for the **next** dictation (no App restart needed).
+    /// handleStart now reads config.inputDeviceUID and passes it to recorder.start(deviceUID:);
+    /// the old bug called the no-arg start(), always recording the system default device, with the persisted choice never applied to the running pipeline.
     func testStartUsesPersistedInputDevice() async {
         let config = makeConfig()
         config.inputDeviceUID = "DeviceXYZ"
@@ -338,9 +338,9 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(usedUID, "DeviceXYZ", "端到端听写应使用持久化选定的输入设备")
     }
 
-    /// 未选设备（nil）时，端到端听写以系统默认设备开始（deviceUID 传 nil）。
+    /// When no device is selected (nil), end-to-end dictation starts with the system default device (deviceUID passed nil).
     func testStartUsesSystemDefaultWhenNoDeviceSelected() async {
-        let config = makeConfig()  // inputDeviceUID 默认为 nil
+        let config = makeConfig()  // inputDeviceUID defaults to nil
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
         let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
@@ -353,8 +353,8 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertNil(usedUID, "未选设备时应传 nil（跟随系统默认）")
     }
 
-    /// 设备选择实时切换：两次听写之间改 config.inputDeviceUID，第二次须用新设备
-    /// （证明运行中的协调器每次按下都现读，无需重启）。
+    /// Real-time device-selection switching: change config.inputDeviceUID between two dictations, the second must use the new device
+    /// (proving the running coordinator reads fresh on each press, no restart needed).
     func testStartPicksUpDeviceChangeBetweenDictations() async {
         let config = makeConfig()
         config.inputDeviceUID = "DeviceA"
@@ -369,31 +369,31 @@ final class DictationCoordinatorTests: XCTestCase {
         let firstUID = await recorder.lastStartDeviceUID
         XCTAssertEqual(firstUID, "DeviceA")
 
-        // 设置页改选另一台设备 → 下一次听写应立即用新设备。
+        // The settings page selects another device -> the next dictation should use the new device immediately.
         config.inputDeviceUID = "DeviceB"
         await coordinator._test_start()
         let secondUID = await recorder.lastStartDeviceUID
         XCTAssertEqual(secondUID, "DeviceB", "运行中的协调器应在下次听写现读最新设备选择")
     }
 
-    // MARK: - 转写硬超时：绝不永久卡在「识别中」
+    // MARK: - Transcription hard timeout: never permanently stuck "transcribing"
 
-    /// 回归守卫：转写迟迟不返回（模拟底层卡在加载/下载）时，硬超时介入、收敛到 idle，不注入、不卡死。
+    /// Regression guard: when transcription does not return in time (simulating the underlying layer stuck loading/downloading), the hard timeout intervenes, converges to idle, does not inject, does not hang.
     func testTranscribeTimeoutDoesNotHang() async {
         let config = makeConfig()
-        config.sttMode = .cloud  // 绕过本地就绪门禁，确保进入会被超时拦截的转写路径
+        config.sttMode = .cloud  // bypass the local readiness gate, ensuring entry into the transcription path that gets intercepted by the timeout
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector()
         let coordinator = makeCoordinator(
             config: config,
             recorder: recorder,
             injector: injector,
-            transcribeTimeout: .milliseconds(50)  // 极短超时
+            transcribeTimeout: .milliseconds(50)  // extremely short timeout
         ) {
-            HangingTranscriber()  // 永不返回
+            HangingTranscriber()  // never returns
         }
 
-        // 若无超时保护，下面这步会永久挂起（测试超时失败）。
+        // Without timeout protection, the step below would hang forever (test timeout failure).
         await coordinator._test_start()
         await coordinator._test_stop()
 
@@ -401,11 +401,11 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator._test_isRecording, "超时后应收敛到非录音中")
     }
 
-    // MARK: - 电平转发：每会话订阅当前会话的电平流，转发到 HUD 波形
+    // MARK: - Level forwarding: each session subscribes to the current session's level stream, forwarding to the HUD waveform
 
-    /// 回归守卫：编排层必须在 `recorder.start()` **成功之后** 订阅本会话的电平流，
-    /// 否则（旧 bug：启动时一次性捕获初始流）会话重建后流早已 finish，转发循环空转、
-    /// HUD `level` 恒为 0、聆听态圆点僵死。本测试模拟 tap 投递一个电平，断言它被转发到 HUD。
+    /// Regression guard: the orchestration layer must subscribe to this session's level stream **after** `recorder.start()` succeeds,
+    /// otherwise (the old bug: capturing the initial stream once at startup) the stream has long finished after the session is rebuilt, the forwarding loop spins idle,
+    /// the HUD `level` stays at 0, and the listening-state dots go dead. This test simulates a tap delivering one level, asserting it is forwarded to the HUD.
     func testLevelForwardedToPanelAfterStart() async {
         let config = makeConfig()
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
@@ -420,15 +420,15 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         XCTAssertTrue(coordinator._test_isRecording, "start 后应在录音中")
 
-        // 模拟真实 tap 在本会话的流上投递一个归一化电平（emitLevel 为 nonisolated，同步调用）。
+        // Simulate a real tap delivering one normalized level on this session's stream (emitLevel is nonisolated, called synchronously).
         recorder.emitLevel(0.7)
 
-        // 转发任务异步消费电平并切回主线程刷新 HUD；轮询等待其抵达（避免依赖固定睡眠）。
+        // The forwarding task asynchronously consumes the level and switches back to the main thread to refresh the HUD; poll-wait for it to arrive (avoiding dependence on a fixed sleep).
         let forwarded = await waitForLevel(panel, atLeast: 0.69)
         XCTAssertTrue(forwarded, "start 后投递的会话电平应被转发到 HUD（level≈0.7），而非恒为 0")
     }
 
-    /// 轮询等待 HUD 的 `currentLevel` 达到阈值（转发任务异步，需让出主线程多次）。
+    /// Poll-wait for the HUD's `currentLevel` to reach a threshold (the forwarding task is async, the main thread must be yielded multiple times).
     private func waitForLevel(_ panel: RecordingPanelController, atLeast threshold: Double) async -> Bool {
         for _ in 0..<200 {
             if panel.currentLevel >= threshold { return true }
@@ -439,10 +439,10 @@ final class DictationCoordinatorTests: XCTestCase {
     }
 }
 
-/// 永不返回的转写器：用于验证硬超时保护（其 transcribe 会一直睡到被取消）。
+/// A never-returning transcriber: used to verify the hard timeout protection (its transcribe sleeps until cancelled).
 private actor HangingTranscriber: Transcriber {
     func transcribe(_ audio: [Float], sampleRate: Double, language: String?) async throws -> TranscriptionResult {
-        // 睡足够久（远超测试注入的超时）；超时分支会取消本任务，CancellationError 由超时逻辑吞掉。
+        // Sleep long enough (far beyond the test-injected timeout); the timeout branch cancels this task, and the CancellationError is swallowed by the timeout logic.
         try await Task.sleep(for: .seconds(3600))
         return TranscriptionResult(text: "never")
     }

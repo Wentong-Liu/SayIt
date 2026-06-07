@@ -2,10 +2,10 @@ import WhisperKit
 import XCTest
 @testable import SayItCore
 
-/// 不依赖模型下载/加载的轻量单测：覆盖初始化、输入守卫、纯映射逻辑。
-/// 真实转写（需联网拉模型 + Core ML 推理）留到集成阶段在真机验证。
+/// A lightweight unit test not depending on model download/load: covers initialization, input guards, pure mapping logic.
+/// Real transcription (requiring fetching the model online + Core ML inference) is left to the integration stage for on-device verification.
 final class WhisperKitTranscriberTests: XCTestCase {
-    // MARK: - 初始化
+    // MARK: - Initialization
 
     func testDefaultModelIsLargeV3Turbo() {
         let stt = WhisperKitTranscriber()
@@ -27,7 +27,7 @@ final class WhisperKitTranscriberTests: XCTestCase {
         XCTAssertFalse(ready)
     }
 
-    // MARK: - 输入守卫（在加载模型之前即返回，不触发任何下载）
+    // MARK: - Input guards (return before loading the model, triggering no download)
 
     func testEmptyAudioThrowsEmptyAudioError() async {
         let stt = WhisperKitTranscriber()
@@ -53,7 +53,7 @@ final class WhisperKitTranscriberTests: XCTestCase {
         }
     }
 
-    // MARK: - 纯映射逻辑 mapResult
+    // MARK: - Pure mapping logic mapResult
 
     func testMapResultTrimsAndJoins() {
         let result = WhisperKitTranscriber.mapResult(
@@ -89,7 +89,7 @@ final class WhisperKitTranscriberTests: XCTestCase {
     }
 
     func testMapResultCollapsesInternalDoubleSpaces() {
-        // 分块拼接（各段自带首尾空格、以 " " 连接）会产出双空格；mapResult 应折叠为单空格。
+        // Chunked concatenation (each segment carrying its own leading/trailing spaces, joined with " ") produces double spaces; mapResult should collapse them to a single space.
         let result = WhisperKitTranscriber.mapResult(
             joinedText: "hello   world  again",
             segments: []
@@ -109,11 +109,11 @@ final class WhisperKitTranscriberTests: XCTestCase {
         XCTAssertEqual(WhisperKitTranscriber.collapseWhitespace("a b c"), "a b c")
     }
 
-    // MARK: - DecodingOptions 构造（语言自动检测回归保护）
+    // MARK: - DecodingOptions construction (language auto-detection regression protection)
 
-    // 回归：用户说中文却被转写/翻译成英文。根因是 language==nil 且 detectLanguage 关闭时，
-    // WhisperKit 在 TranscribeTask 里跳过语言检测，回落到 Constants.defaultLanguageCode（"en"），
-    // 于是按英文解码。下面的用例锁定「nil 语言 => 自动检测」与「task 永远是 transcribe（绝不 translate）」。
+    // Regression: the user spoke Chinese but it was transcribed/translated into English. The root cause is that with language==nil and detectLanguage off,
+    // WhisperKit skips language detection in TranscribeTask and falls back to Constants.defaultLanguageCode ("en"),
+    // thus decoding as English. The cases below lock down "nil language => auto-detect" and "task is always transcribe (never translate)".
 
     func testDecodingOptionsAutoDetectsLanguageWhenNil() {
         let options = WhisperKitTranscriber.makeDecodingOptions(language: nil)
@@ -137,7 +137,7 @@ final class WhisperKitTranscriberTests: XCTestCase {
         XCTAssertFalse(options.detectLanguage, "已显式指定语言时无需再自动检测")
     }
 
-    // MARK: - 协议一致性
+    // MARK: - Protocol conformance
 
     func testUsableThroughTranscriberExistential() {
         let _: any Transcriber = WhisperKitTranscriber()

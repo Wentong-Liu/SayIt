@@ -1,18 +1,18 @@
 import Foundation
 
-/// 语音转写后端的抽象接口。
+/// Abstract interface for a speech transcription backend.
 ///
-/// 具体实现可以是本地模型（如 WhisperKit）或云端服务；本协议保持后端无关，
-/// 上层只依赖此接口，便于替换实现与在测试中注入 ``FakeTranscriber``。
+/// Concrete implementations may be a local model (e.g. WhisperKit) or a cloud service; this protocol stays backend-agnostic,
+/// upper layers depend only on this interface, making it easy to swap implementations and to inject ``FakeTranscriber`` in tests.
 public protocol Transcriber: Sendable {
-    /// 将 PCM 浮点音频转写为文本。
+    /// Transcribes PCM float audio into text.
     ///
     /// - Parameters:
-    ///   - audio: 单声道 PCM 样本，取值范围约 `[-1, 1]`。
-    ///   - sampleRate: 音频采样率（Hz），例如 `16_000`。
-    ///   - language: 可选的 BCP-47 / ISO 语言代码（如 `"en"`、`"zh"`）；
-    ///     传 `nil` 表示让后端自动检测。
-    /// - Returns: 转写结果 ``TranscriptionResult``。
-    /// - Throws: 转写失败时抛出 ``STTError``。
+    ///   - audio: mono PCM samples, value range roughly `[-1, 1]`.
+    ///   - sampleRate: audio sample rate (Hz), e.g. `16_000`.
+    ///   - language: optional BCP-47 / ISO language code (e.g. `"en"`, `"zh"`);
+    ///     passing `nil` lets the backend auto-detect.
+    /// - Returns: the transcription result ``TranscriptionResult``.
+    /// - Throws: ``STTError`` on transcription failure.
     func transcribe(_ audio: [Float], sampleRate: Double, language: String?) async throws -> TranscriptionResult
 }
