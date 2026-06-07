@@ -91,6 +91,11 @@ final class DictationCoordinator {
     /// This task is cancelled when recording stops, and the HUD waveform settles with the 0 produced by `stop()`.
     private var levelTask: Task<Void, Never>?
 
+    /// The in-flight delayed-hide task for the current transient HUD message (error / info). Stored so only the LATEST
+    /// transient owns ``RecordingPanelController/hide()``: ``showTransient(_:)`` cancels+replaces it, and ``cancel()`` /
+    /// ``stop()`` cancel it so a stale ~1.6s sleeper can never hide a freshly-started session's HUD or run after teardown.
+    private var transientTask: Task<Void, Never>?
+
     /// Whether monitoring has started (idempotency protection).
     private var isStarted = false
 
@@ -111,6 +116,17 @@ final class DictationCoordinator {
     /// The in-progress background prewarm task (avoiding prewarming the same instance repeatedly).
     private var preloadTask: Task<Void, Never>?
 
+    /// Cached cloud-key signature component, paired with the cheap (mode/model) components it was read for. Avoids a
+    /// synchronous ``KeychainStore`` read on the @MainActor dictation hot path on EVERY dictation (a UI/HUD hitch under
+    /// Keychain contention): ``currentSignature()`` reuses this cached key while the cheap components are unchanged, and
+    /// only re-reads the Keychain when the cheap components actually differ (a mode/model switch — exactly when a
+    /// transcriber rebuild is already required, so the read is rare). The prewarm path refreshes it OFF the main actor.
+    private var cachedCloudKey: String?
+
+    /// The cheap (mode/model) signature the ``cachedCloudKey`` was read against. When the current cheap signature matches
+    /// this, the cached key is reused with no Keychain read; otherwise the key is re-read and this is updated.
+    private var cachedCloudKeySignature: CheapSignature?
+
     /// A snapshot of the relevant STT config that decides whether the transcriber needs rebuilding. Contains only fields that change the transcriber's identity/behavior:
     /// `sttMode` (local/cloud), `localModel` (local model), `cloudModel` and `cloudKey` (cloud model and credentials).
     /// The language is always auto-detected and not part of the signature.
@@ -119,6 +135,14 @@ final class DictationCoordinator {
         let localModel: String
         let cloudModel: String
         let cloudKey: String
+    }
+
+    /// The cheap, main-actor-readable part of the STT signature (everything except the cloud key, which lives in the
+    /// Keychain). Used to decide whether the cached cloud key is still valid without touching the Keychain per dictation.
+    private struct CheapSignature: Equatable {
+        let mode: STTMode
+        let localModel: String
+        let cloudModel: String
     }
 
     // MARK: Initialization
@@ -141,6 +165,11 @@ final class DictationCoordinator {
     /// Defaults to 90s -- enough for local inference to complete on a loaded model, but guaranteeing "never permanently stuck transcribing". Tests can inject an extremely short value.
     private let transcribeTimeout: Duration
 
+    /// Reads the trimmed cloud STT API key (the ``KeychainStore`` `openAIAPIKey` account by default). Injectable so tests
+    /// can drive the cloud-key signature component without the real Keychain AND assert the read is not done on the
+    /// per-dictation hot path (see ``cachedCloudKey``). `@Sendable` so it can be called from the off-main-actor prewarm path.
+    private let cloudKeyReader: @Sendable () -> String
+
     /// - Parameters:
     ///   - config: the application config; defaults to `.shared`.
     ///   - hotkeyManager: the hotkey manager; defaults to constructing per the current config.
@@ -153,6 +182,7 @@ final class DictationCoordinator {
     ///   - modelReadiness: local model readiness detection; defaults to read-only reuse of ``ModelManager/isDownloaded(model:)``.
     ///   - transcribeTimeout: the transcription hard timeout; defaults to 90s.
     ///   - soundCues: the start/stop chime player; defaults to the real ``SoundCuePlayer``. Tests can inject a no-op double.
+    ///   - cloudKeyReader: reads the trimmed cloud STT API key; defaults to the ``KeychainStore`` `openAIAPIKey` account. Tests can inject it to drive the cloud-key signature and assert it is not read per dictation.
     init(config: AppConfig = .shared,
          hotkeyManager: HotkeyManager? = nil,
          recorder: AudioRecording = AudioRecorder(),
@@ -163,7 +193,8 @@ final class DictationCoordinator {
          accessibilityGate: (() -> Bool)? = nil,
          modelReadiness: ((String) -> Bool)? = nil,
          transcribeTimeout: Duration = .seconds(90),
-         soundCues: SoundCuePlaying = SoundCuePlayer()) {
+         soundCues: SoundCuePlaying = SoundCuePlayer(),
+         cloudKeyReader: (@Sendable () -> String)? = nil) {
         self.config = config
         self.recorder = recorder
         self.panel = panel
@@ -180,6 +211,11 @@ final class DictationCoordinator {
         // The default readiness detection read-only reuses ModelManager.isDownloaded (no network, no download, no modification of ModelManager).
         self.modelReadiness = modelReadiness ?? { ModelManager.isDownloaded(model: $0) }
         self.transcribeTimeout = transcribeTimeout
+        // The default reader trims the openAIAPIKey from the Keychain (matching makeConfiguredTranscriber / the old currentSignature).
+        self.cloudKeyReader = cloudKeyReader ?? {
+            (KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
     }
 
     // MARK: Lifecycle
@@ -199,6 +235,9 @@ final class DictationCoordinator {
             MainActor.assumeIsolated {
                 self?.applyHotkeyConfig()
                 self?.preloadLocalIfReady()
+                // Refresh the cached cloud key off the main actor so a mode/model change (the observable cloud-config
+                // change) keeps the warm path's key current without a per-dictation synchronous Keychain read.
+                self?.refreshCloudKeyInBackground()
             }
         }
 
@@ -212,6 +251,8 @@ final class DictationCoordinator {
 
         // Start opportunistic prewarming: in local mode with the model already downloaded, load ahead of time so the first dictation is not slow either (not blocking the main thread).
         preloadLocalIfReady()
+        // Warm the cached cloud key off the main actor at launch so the first cloud dictation does not block on a synchronous Keychain read.
+        refreshCloudKeyInBackground()
     }
 
     /// Stops monitoring and cleans up (usually called before App exit; not required).
@@ -231,6 +272,9 @@ final class DictationCoordinator {
         pendingStopTask = nil
         preloadTask?.cancel()
         preloadTask = nil
+        // Teardown cancels an in-flight ~1.6s transient sleeper so it cannot run panel.hide() after stop().
+        transientTask?.cancel()
+        transientTask = nil
         if let configObserver {
             NotificationCenter.default.removeObserver(configObserver)
             self.configObserver = nil
@@ -388,6 +432,9 @@ final class DictationCoordinator {
         // Cancel a still-pending recording start (extremely-short-press race), so its completion cannot resurrect the session.
         startTask?.cancel()
         startTask = nil
+        // Cancel any in-flight transient delayed-hide so a stale ~1.6s sleeper cannot hide this freshly-started session's HUD.
+        transientTask?.cancel()
+        transientTask = nil
         // Stop level forwarding and best-effort stop the recorder to release the device (same pattern as failToIdle).
         isRecording = false
         stopLevelForwarding()
@@ -471,16 +518,21 @@ final class DictationCoordinator {
 
         // 2) Transcribe (wrapped with a hard timeout: transcribe must return within transcribeTimeout, otherwise treated as stalled and converged to an error,
         //    guaranteeing the HUD "never permanently stuck transcribing" -- even if a race/corner case occurs between the readiness check above and the real load).
+        // ONE consistent dictionary snapshot per utterance: read the store a single time here and thread the SAME
+        // `entries` through transcribe biasing (Layer 1), polish glossary (Layer 2), and deterministic rewriting
+        // (Layer 3). This guarantees all three layers see the same dictionary even if the user edits it mid-pipeline,
+        // and collapses three actor reads into one. An empty dictionary -> [] everywhere (byte-identical no-op).
+        let entries = await dictionaryStore.all()
+
         let transcript: String
         do {
             let transcriber = try currentTranscriber()
-            // User-dictionary Layer 1 biasing: collect the enabled entries' canonical terms and pass them as biasing
-            // options so STT is steered toward the user's dictionary words (best-effort recall boost). An empty dictionary
-            // -> empty terms -> no prompt is built anywhere (byte-identical to before this feature). This is the
-            // transcribe-call prep, distinct from the polish-call prep below.
-            let biasTerms = await dictionaryStore.all()
-                .filter { $0.enabled }
-                .map(\.canonical)
+            // User-dictionary Layer 1 biasing: order the enabled entries' canonical terms by usageCount ascending
+            // (most-used LAST, see GlossaryPrompt) and pass them as biasing options so STT is steered toward the user's
+            // dictionary words (best-effort recall boost). Ordering happens HERE, at the single source, so the documented
+            // usageCount ordering actually reaches the transcriber and the token-cap suffix keeps the highest-usage terms.
+            // An empty dictionary -> empty terms -> no prompt is built anywhere (byte-identical to before this feature).
+            let biasTerms = GlossaryPrompt.orderedCanonicals(from: entries)
             // Speech recognition always auto-detects the language (T24): always passes nil to let the backend judge by the speech, no longer reading AppConfig.language.
             let result = try await withTranscribeTimeout {
                 try await transcriber.transcribe(
@@ -526,7 +578,8 @@ final class DictationCoordinator {
         }
 
         // 3) Polish (on -> go through the LLM, auto-falls back to the original on failure/off, built into PolishPipeline).
-        let polished = await polishIfEnabled(transcript)
+        //    Threads the same per-utterance `entries` snapshot so the polish glossary (Layer 2) sees the same dictionary.
+        let polished = await polishIfEnabled(transcript, entries: entries)
 
         // ESC cancel during polish: discard the polished result and inject nothing.
         guard !Task.isCancelled else { return }
@@ -537,21 +590,14 @@ final class DictationCoordinator {
         }
 
         // 3.5) User-dictionary Layer 3: deterministic rewriting (exact case / spacing) after polish, before injection.
-        //      An empty dictionary is identity (zero behavior change), adding only one extremely light actor read.
-        let finalText = await applyDictionary(to: polished.text)
+        //      Reuses the same per-utterance `entries` snapshot (no extra actor read). An empty dictionary is identity (zero behavior change).
+        let finalText = DictionaryRewriter.apply(to: polished.text, using: entries)
 
         // Load-bearing cancel guard: even if transcribe + polish + dictionary all completed, an ESC cancel before this line means injectFinalText is never reached — no text is injected.
         guard !Task.isCancelled else { return }
 
         // 4) Inject at the target App's cursor (with a light hint on polish failure, but never losing characters).
         injectFinalText(finalText, polishFailed: polished.failed)
-    }
-
-    /// User-dictionary Layer 3 deterministic rewriting: reads all entries from ``DictionaryStore`` and rewrites via ``DictionaryRewriter``.
-    /// Returns the input unchanged (identity) for an empty dictionary / no match. Scope filtering etc. is left to a later PR; applying all enabled entries here is safe.
-    private func applyDictionary(to text: String) async -> String {
-        let entries = await dictionaryStore.all()
-        return DictionaryRewriter.apply(to: text, using: entries)
     }
 
     // MARK: Polish
@@ -564,7 +610,8 @@ final class DictationCoordinator {
     }
 
     /// Polishes per the config; both Provider construction failure / polish failure fall back to the original (never losing characters).
-    private func polishIfEnabled(_ transcript: String) async -> PolishStep {
+    /// - Parameter entries: the per-utterance dictionary snapshot (shared with Layer 1/3), used to build the Layer 2 glossary.
+    private func polishIfEnabled(_ transcript: String, entries: [DictionaryEntry]) async -> PolishStep {
         guard config.polishEnabled else { return PolishStep(text: transcript, failed: false) }
 
         let provider: any LLMProvider
@@ -578,12 +625,9 @@ final class DictationCoordinator {
 
         // User-dictionary Layer 2: feed a relevant subset of dictionary terms into the polish system prompt so the
         // model spells canonical forms in context. An empty dictionary / no candidates yields an empty subset, which
-        // keeps the prompt byte-identical to today (zero behavior change). This is the polish-call prep only; the
-        // transcribe-call prep (Layer 1 biasing) is a separate call site.
-        let glossary = DictionaryGlossary.relevantSubset(
-            for: transcript,
-            entries: await dictionaryStore.all()
-        )
+        // keeps the prompt byte-identical to today (zero behavior change). Uses the same per-utterance `entries`
+        // snapshot threaded in from runPipeline (no extra actor read; consistent with Layer 1/3).
+        let glossary = DictionaryGlossary.relevantSubset(for: transcript, entries: entries)
 
         let outcome = await polishPipeline.polish(
             transcript,
@@ -682,15 +726,39 @@ final class DictationCoordinator {
     }
 
     /// The signature of the current relevant STT config. The cloud key is taken from the Keychain (missing recorded as an empty string), and a change triggers a rebuild.
+    ///
+    /// To keep the per-dictation @MainActor path free of a synchronous ``KeychainStore`` read (a UI/HUD hitch under
+    /// Keychain contention), the cloud key is cached against the cheap (mode/model) components and re-read ONLY when those
+    /// change — i.e. exactly when a transcriber rebuild is already required, so a Keychain switch is rare. The prewarm
+    /// path refreshes the cached key OFF the main actor (see ``refreshCloudKeyInBackground()``) so the warm path stays current.
+    ///
+    /// Residual nuance (documented, behavior-preserving): `SettingsViewModel.saveCloudSTTAPIKey()` does NOT post
+    /// `AppConfig.didChangeNotification`, so a key-only re-save with the SAME model is not observed until the next config
+    /// change / prewarm / app cycle. The clean long-term fix is to post a change on key save (out of this PR's scope).
     private func currentSignature() -> TranscriberSignature {
-        let cloudKey = (KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return TranscriberSignature(
+        let cheap = CheapSignature(
             mode: config.sttMode,
             localModel: config.localModel,
-            cloudModel: config.cloudSTTModel,
-            cloudKey: cloudKey
+            cloudModel: config.cloudSTTModel
         )
+        return TranscriberSignature(
+            mode: cheap.mode,
+            localModel: cheap.localModel,
+            cloudModel: cheap.cloudModel,
+            cloudKey: cloudKey(for: cheap)
+        )
+    }
+
+    /// Returns the cloud key for the given cheap signature, reusing the cached value when the cheap components are
+    /// unchanged (no Keychain read on the hot path) and re-reading via ``cloudKeyReader`` only when they differ.
+    private func cloudKey(for cheap: CheapSignature) -> String {
+        if let cachedCloudKey, cachedCloudKeySignature == cheap {
+            return cachedCloudKey
+        }
+        let key = cloudKeyReader()
+        cachedCloudKey = key
+        cachedCloudKeySignature = cheap
+        return key
     }
 
     /// Background prewarm the transcriber: only meaningful for the local ``WhisperKitTranscriber`` (loading the CoreML engine).
@@ -714,6 +782,26 @@ final class DictationCoordinator {
         guard ModelManager.isDownloaded(model: config.localModel) else { return }
         // Reuse currentTranscriber's cache + prewarm path, avoiding a duplicate instance.
         _ = try? currentTranscriber()
+    }
+
+    /// Refreshes the cached cloud key OFF the main actor (Task.detached), so the per-dictation hot path never blocks on a
+    /// synchronous Keychain read while still picking up a freshly-saved key. Called from the launch/config-change prewarm
+    /// path. The cheap signature this key belongs to is captured on the main actor before the detached read.
+    private func refreshCloudKeyInBackground() {
+        let cheap = CheapSignature(
+            mode: config.sttMode,
+            localModel: config.localModel,
+            cloudModel: config.cloudSTTModel
+        )
+        let reader = cloudKeyReader
+        Task.detached(priority: .utility) {
+            let key = reader()
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.cachedCloudKey = key
+                self.cachedCloudKeySignature = cheap
+            }
+        }
     }
 
     /// Chooses the transcriber per ``STTMode``. Local uses ``WhisperKitTranscriber``, cloud uses ``CloudTranscriber``.
@@ -804,11 +892,18 @@ final class DictationCoordinator {
 
     /// Failure convergence: the HUD briefly reports an error then returns to idle, and best-effort stops any still-running recording.
     private func failToIdle(message: String) {
-        // Recording may still be in progress (e.g. a corner case of erroring immediately after start), best-effort stop it to release the device.
+        // Capture whether the recorder may still be live BEFORE clearing the flag. Most failToIdle paths fire AFTER
+        // runPipeline already ran a successful recorder.stop() (transcribe timeout/failure, empty transcript), so the
+        // recorder is already `.notRecording`: a second beginPendingStop() there is a swallowed no-op that also leaves a
+        // misleading pendingStopTask the next handleStart needlessly awaits. Only stop the recorder when it might still
+        // be running (the "error immediately after start" corner, where isRecording is still true).
+        let wasRecording = isRecording
         isRecording = false
         stopLevelForwarding()
-        // Track this best-effort stop (same reasoning as cancel()): a restart immediately after a failure must await the teardown before recorder.start().
-        beginPendingStop()
+        if wasRecording {
+            // Track this best-effort stop (same reasoning as cancel()): a restart immediately after a failure must await the teardown before recorder.start().
+            beginPendingStop()
+        }
         showTransientError(message)
     }
 
@@ -826,8 +921,12 @@ final class DictationCoordinator {
     private func showTransient(_ state: RecordingState) {
         phase = .idle
         panel.update(state: state)
-        Task { [weak self] in
+        // Cancel+replace any prior in-flight delayed-hide so only the LATEST transient owns panel.hide().
+        transientTask?.cancel()
+        transientTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.6))
+            // Cancelled (superseded by a newer transient, or torn down by cancel()/stop()): do not touch the HUD.
+            if Task.isCancelled { return }
             guard let self else { return }
             // If a new round has begun during this period (the HUD is in listening/transcribing), do not interrupt it.
             guard self.processingTask == nil, self.phase == .idle else { return }
@@ -912,4 +1011,22 @@ final class DictationCoordinator {
 
     /// Exposes the hotkey manager (for tests to observe triggerKey/mode).
     var _test_hotkeyManager: HotkeyManager { hotkeyManager }
+
+    /// Directly shows a transient error HUD message (starts the delayed-hide ``transientTask``). For tests asserting transient-task cancellation.
+    func _test_showTransientError(_ message: String) { showTransientError(message) }
+
+    /// Whether a transient delayed-hide task currently exists and is cancelled. Lets a test assert that ``cancel()`` /
+    /// ``stop()`` cancelled the in-flight ~1.6s sleeper (so a stale transient can never hide a fresh session / run after teardown).
+    var _test_transientTaskCancelled: Bool { transientTask?.isCancelled ?? false }
+
+    /// Whether a transient delayed-hide task currently exists (cancelled or not). For tests to assert showTransient started one.
+    var _test_hasTransientTask: Bool { transientTask != nil }
+
+    /// Exposes the current transient delayed-hide task handle, so a test can capture it BEFORE ``cancel()`` / ``stop()``
+    /// nils it out and then assert the captured handle was cancelled (teardown cancelled the in-flight sleeper).
+    var _test_transientTask: Task<Void, Never>? { transientTask }
+
+    /// Whether a recorder stop is currently pending (``beginPendingStop()`` ran and has not yet self-cleared). Lets a test
+    /// assert the failToIdle guard did NOT leave a misleading pendingStop on the already-stopped path.
+    var _test_hasPendingStop: Bool { pendingStopTask != nil }
 }

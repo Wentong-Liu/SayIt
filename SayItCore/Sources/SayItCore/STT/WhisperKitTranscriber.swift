@@ -161,11 +161,17 @@ public actor WhisperKitTranscriber: Transcriber {
     ///
     /// Encodes the shared compact glossary string (see ``GlossaryPrompt``, most-relevant term LAST) with the model's
     /// tokenizer, drops any special tokens (`id >= specialTokenBegin`, so only real word-piece ids remain), then keeps
-    /// the LAST `maxTokens` (the suffix) so the highest-priority tail survives the cap. WhisperKit's hard limit is 224;
-    /// the default cap of 200 stays safely under it. Empty terms / all-blank -> `[]` (no prompt).
+    /// the LAST `maxTokens` (the suffix) so the highest-priority tail survives the cap. Empty terms / all-blank -> `[]`
+    /// (no prompt).
+    ///
+    /// The default cap is `111`, the real effective limit. WhisperKit internally trims `promptTokens` to
+    /// `maxPromptLen = (maxTokenContext / 2) - 1 = (224 / 2) - 1 = 111` before decoding, and it keeps that trim's own
+    /// tail. So any cap above 111 here is silently re-truncated by WhisperKit using ITS suffix, defeating the app's
+    /// `usageCount`-ascending ordering. Capping at 111 in this builder lets the app's own most-used-LAST suffix decide
+    /// which tokens survive, end to end.
     ///
     /// Pure (given a tokenizer) -> unit-testable with a stub `WhisperTokenizer`. Triggers no model download/load itself.
-    static func promptTokens(from terms: [String], tokenizer: WhisperTokenizer, maxTokens: Int = 200) -> [Int] {
+    static func promptTokens(from terms: [String], tokenizer: WhisperTokenizer, maxTokens: Int = 111) -> [Int] {
         let glossary = GlossaryPrompt.compactList(from: terms.map { GlossaryPrompt.Term(canonical: $0) })
         guard !glossary.isEmpty else { return [] }
         let begin = tokenizer.specialTokens.specialTokenBegin

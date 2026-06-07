@@ -194,6 +194,23 @@ final class WhisperKitTranscriberTests: XCTestCase {
         XCTAssertEqual(tokens, [1, 2, 3], "未超过上限时应保留全部 token")
     }
 
+    func testPromptTokensDefaultCapIs111() {
+        // The default cap is now 111 (WhisperKit's real effective maxPromptLen = (maxTokenContext/2)-1 = 111).
+        // Calling WITHOUT maxTokens and feeding >111 tokens must keep the LAST 111 (the highest-usage suffix).
+        let tokenizer = StubTokenizer(specialTokenBegin: 100_000, encoder: { _ in Array(0..<300) })
+        let tokens = WhisperKitTranscriber.promptTokens(from: ["anything"], tokenizer: tokenizer)
+        XCTAssertEqual(tokens.count, 111, "默认上限应为 111（WhisperKit 真实有效上限）")
+        XCTAssertEqual(tokens.first, 189, "超过上限时应保留后缀，首元素应是被裁掉前 189 个后的第 189 个 (300-111)")
+        XCTAssertEqual(tokens.last, 299, "最后一个 token（最相关的尾部）应被保留")
+    }
+
+    func testPromptTokensDefaultCapKeepsAllUnder111() {
+        let tokenizer = StubTokenizer(specialTokenBegin: 100_000, encoder: { _ in Array(0..<111) })
+        let tokens = WhisperKitTranscriber.promptTokens(from: ["term"], tokenizer: tokenizer)
+        XCTAssertEqual(tokens.count, 111, "恰好 111 个 token 时全部保留（未超上限）")
+        XCTAssertEqual(tokens, Array(0..<111))
+    }
+
     // MARK: - Protocol conformance
 
     func testUsableThroughTranscriberExistential() {

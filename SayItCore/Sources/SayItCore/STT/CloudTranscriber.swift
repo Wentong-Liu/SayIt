@@ -29,6 +29,12 @@ public struct CloudTranscriber: Transcriber {
     /// Transcription endpoint suffix (appended after the normalized baseURL).
     private static let transcriptionsPath = "/v1/audio/transcriptions"
 
+    /// Character budget for the verbatim cloud `prompt` glossary, for symmetry with the local 111-token cap so the cloud
+    /// prompt cannot balloon unboundedly. Generous (a few hundred tokens), so it is a no-op for normal dictionaries.
+    /// When the joined glossary exceeds it, the SUFFIX is kept (the glossary is ordered most-used LAST — see
+    /// ``GlossaryPrompt`` — mirroring the local suffix-keep so both paths preserve the highest-usage tail).
+    private static let promptCharBudget = 896
+
     /// Timeout (seconds) for a single request. Reusing the LLM's overall ceiling is fine.
     private static let requestTimeout = LLMDefaults.requestTimeout
 
@@ -58,7 +64,10 @@ public struct CloudTranscriber: Transcriber {
         let wav = try WAVEncoder.encode(samples: audio, sampleRate: sampleRate)
         let boundary = "Boundary-\(UUID().uuidString)"
         // User-dictionary Layer 1: build the same compact glossary string the local path tokenizes. Empty terms -> "" -> field omitted.
-        let prompt = GlossaryPrompt.compactList(from: options.biasTerms.map { GlossaryPrompt.Term(canonical: $0) })
+        // Cap the verbatim glossary to a generous char budget (keeping the SUFFIX — most-used terms sit LAST) for symmetry
+        // with the local 111-token cap, so the cloud prompt cannot balloon unboundedly.
+        let prompt = Self.cappedPrompt(
+            GlossaryPrompt.compactList(from: options.biasTerms.map { GlossaryPrompt.Term(canonical: $0) }))
         let body = makeMultipartBody(wav: wav, boundary: boundary, language: language, prompt: prompt)
 
         var req = URLRequest(url: url)
@@ -86,6 +95,16 @@ public struct CloudTranscriber: Transcriber {
         }
 
         return try parse(data)
+    }
+
+    // MARK: - Prompt budget
+
+    /// Caps the verbatim glossary `prompt` to ``promptCharBudget`` characters, keeping the SUFFIX so the highest-usage
+    /// terms (ordered LAST by ``GlossaryPrompt``) survive — mirroring the local token cap's suffix-keep. A no-op for the
+    /// common case (normal dictionaries stay well under the budget) and for the empty prompt.
+    private static func cappedPrompt(_ prompt: String) -> String {
+        guard prompt.count > promptCharBudget else { return prompt }
+        return String(prompt.suffix(promptCharBudget))
     }
 
     // MARK: - Endpoint
@@ -143,10 +162,25 @@ private extension Data {
     }
 
     /// Appends a plain text form field (including the leading boundary and Content-Disposition).
+    ///
+    /// The value's interior CR/LF are collapsed to spaces before writing: a bare `\r` / `\n` inside a field value would
+    /// inject extra header/boundary-looking lines into the multipart body (malformed multipart / header smuggling).
+    /// `model` / `language` never contain newlines today, so this is byte-identical for them; it defensively protects the
+    /// user-controlled `prompt` glossary (a canonical dictionary term could carry an embedded newline).
     mutating func appendFormField(name: String, value: String, boundary: String) {
         append(string: "--\(boundary)\r\n")
         append(string: "Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
-        append(string: "\(value)\r\n")
+        append(string: "\(Self.sanitizedFieldValue(value))\r\n")
+    }
+
+    /// Collapses interior CR/LF (`\r\n`, `\r`, `\n`) in a multipart field value to single spaces, keeping the body
+    /// header-safe. A value with no CR/LF is returned unchanged (byte-identical).
+    private static func sanitizedFieldValue(_ value: String) -> String {
+        guard value.contains(where: { $0 == "\r" || $0 == "\n" }) else { return value }
+        return value
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
     }
 
     /// Appends a file form field (including the leading boundary, file name, Content-Type and binary data).

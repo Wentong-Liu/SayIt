@@ -199,6 +199,69 @@ final class CloudTranscriberTests: XCTestCase {
                      "全空白偏置词应被裁掉，glossary 为空 -> 省略 prompt 字段")
     }
 
+    /// A bias term carrying an interior CR/LF must be sanitized (collapsed to a space) before it is written into the
+    /// multipart body, otherwise a bare `\r`/`\n` would inject extra header/boundary-looking lines (header smuggling).
+    /// The term text is still present; only the embedded newline is gone.
+    func testPromptWithInteriorNewlineIsSanitized() async throws {
+        let captured = Captured()
+        StubURLProtocol.responder = { req in
+            captured.store(req)
+            let body = #"{"text":"x"}"#.data(using: .utf8)!
+            return (Self.ok(body), body)
+        }
+        let transcriber = makeTranscriber()
+        // A single bias term with an embedded newline (the only way interior CR/LF can reach the joined glossary).
+        _ = try await transcriber.transcribe([0.1], sampleRate: 16_000, language: nil,
+                                             options: TranscribeOptions(biasTerms: ["foo\nbar", "baz\r\nqux"]))
+
+        XCTAssertNotNil(captured.bodyString.range(of: "name=\"prompt\""), "提供偏置词时应附带 prompt 字段")
+        // Isolate the prompt field's value: between the prompt Content-Disposition header (terminated by \r\n\r\n) and its trailing \r\n.
+        let body = captured.bodyString
+        guard let headerRange = body.range(of: "name=\"prompt\"\r\n\r\n") else {
+            return XCTFail("prompt field header not found in body")
+        }
+        let afterHeader = body[headerRange.upperBound...]
+        guard let valueEnd = afterHeader.range(of: "\r\n") else {
+            return XCTFail("prompt field value terminator not found")
+        }
+        let promptValue = String(afterHeader[afterHeader.startIndex..<valueEnd.lowerBound])
+        XCTAssertFalse(promptValue.contains("\n"), "prompt 值内部不应残留裸 \\n（否则会注入伪造的 header/boundary 行）")
+        XCTAssertFalse(promptValue.contains("\r"), "prompt 值内部不应残留裸 \\r")
+        // The term text survives (only the embedded newline collapsed to a space).
+        XCTAssertTrue(promptValue.contains("foo bar"), "嵌入换行应折叠为空格，术语文本保留: \(promptValue)")
+        XCTAssertTrue(promptValue.contains("baz qux"), "嵌入 CRLF 应折叠为空格，术语文本保留: \(promptValue)")
+    }
+
+    /// The verbatim cloud `prompt` is capped to a generous char budget for symmetry with the local token cap, keeping the
+    /// SUFFIX (most-used terms sit LAST). A normal small dictionary stays well under the budget (no-op); an oversized one
+    /// is truncated to the budget while still ending with the highest-usage tail.
+    func testPromptIsCappedToCharBudgetKeepingSuffix() async throws {
+        let captured = Captured()
+        StubURLProtocol.responder = { req in
+            captured.store(req)
+            let body = #"{"text":"x"}"#.data(using: .utf8)!
+            return (Self.ok(body), body)
+        }
+        let transcriber = makeTranscriber()
+        // Build a glossary far exceeding the 896-char budget; the LAST term (the suffix) must survive truncation.
+        var terms = (0..<400).map { "term\($0)veryLongPaddingToken" }
+        terms.append("MOSTRELEVANTTAIL")
+        _ = try await transcriber.transcribe([0.1], sampleRate: 16_000, language: nil,
+                                             options: TranscribeOptions(biasTerms: terms))
+
+        let body = captured.bodyString
+        guard let headerRange = body.range(of: "name=\"prompt\"\r\n\r\n") else {
+            return XCTFail("prompt field header not found in body")
+        }
+        let afterHeader = body[headerRange.upperBound...]
+        guard let valueEnd = afterHeader.range(of: "\r\n") else {
+            return XCTFail("prompt field value terminator not found")
+        }
+        let promptValue = String(afterHeader[afterHeader.startIndex..<valueEnd.lowerBound])
+        XCTAssertLessThanOrEqual(promptValue.count, 896, "prompt 应被裁剪到字符预算内")
+        XCTAssertTrue(promptValue.hasSuffix("MOSTRELEVANTTAIL"), "应保留后缀（最相关的尾部术语），与本地 token 上限语义一致")
+    }
+
     // MARK: - WAV header correctness
 
     func testEncodedWAVHeaderIsValid() throws {
