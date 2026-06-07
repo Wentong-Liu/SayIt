@@ -514,8 +514,9 @@ final class DictationCoordinator {
     /// ``InteractionMode`` → ``HotkeyMode``。
     private static func hotkeyMode(for mode: InteractionMode) -> HotkeyMode {
         switch mode {
-        case .hold:   return .holdToTalk
-        case .toggle: return .toggle
+        case .singleTap: return .singleTapToggle
+        case .hold:      return .holdToTalk
+        case .toggle:    return .toggle
         }
     }
 
