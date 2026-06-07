@@ -100,9 +100,8 @@ public final class ModelManager {
                 .appending(component: "SayIt")
                 .appending(component: "models")
         } else {
-            // In the extreme case Application Support cannot be obtained: fall back to the cache directory, still avoiding the TCC-protected Documents.
-            let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            base = caches
+            // In the extreme case Application Support cannot be obtained: fall back to the always-available, always-writable temporary directory, still avoiding the TCC-protected Documents.
+            base = FileManager.default.temporaryDirectory
                 .appending(component: "SayIt")
                 .appending(component: "models")
         }
