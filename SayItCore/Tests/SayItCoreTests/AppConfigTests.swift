@@ -51,11 +51,11 @@ final class AppConfigTests: XCTestCase {
     }
 
     func testInteractionModeRoundTrip() {
-        config.interactionMode = .toggle
-        XCTAssertEqual(config.interactionMode, .toggle)
-        XCTAssertEqual(AppConfig(defaults: defaults).interactionMode, .toggle)
         config.interactionMode = .hold
         XCTAssertEqual(config.interactionMode, .hold)
+        XCTAssertEqual(AppConfig(defaults: defaults).interactionMode, .hold)
+        config.interactionMode = .singleTap
+        XCTAssertEqual(config.interactionMode, .singleTap)
     }
 
     func testSTTModeRoundTrip() {

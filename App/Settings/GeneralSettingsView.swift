@@ -99,9 +99,6 @@ struct GeneralSettingsView: View {
         case .hold:
             return String(localized: "general.interactionHint.hold",
                           defaultValue: "Hold the trigger key to record, release to stop.")
-        case .toggle:
-            return String(localized: "general.interactionHint.toggle",
-                          defaultValue: "Double-tap the trigger key to start, double-tap again to stop.")
         }
     }
 }
