@@ -37,12 +37,34 @@ targets:
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
 
+  SayItTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: AppTests
+    dependencies:
+      - target: SayIt
+      - package: SayItCore
+    settings:
+      base:
+        PRODUCT_NAME: SayItTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.liuwentong.SayItTests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+
 schemes:
   SayIt:
     build:
       targets:
         SayIt: all
+        SayItTests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - SayItTests
     archive:
       config: Release
