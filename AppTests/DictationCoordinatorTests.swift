@@ -191,6 +191,55 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["润色失败也要注入的原文"])
     }
 
+    // MARK: - 暖转写器复用：配置不变时跨多次听写复用同一实例（不每次重建 → 不每次重载模型）
+
+    /// 回归守卫：模型重载性能 bug。配置不变时，多次听写必须复用同一个转写器实例，
+    /// 工厂只被调用一次——否则每次都会 `WhisperKitTranscriber(model:)` 新实例并惰性重载 ~1GB 模型（~10s）。
+    func testTranscriberReusedAcrossDictationsWhenConfigUnchanged() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        var factoryCallCount = 0
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            factoryCallCount += 1
+            return FakeTranscriber(text: "复用")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertEqual(factoryCallCount, 1, "配置不变时转写器应复用，工厂只构造一次（模型保持暖态）")
+        XCTAssertEqual(injector.injectedTexts, ["复用", "复用", "复用"], "三次听写都应正常注入")
+    }
+
+    /// 相关 STT 配置变更（如本地模型切换）后应重建转写器，使新模型生效。
+    func testTranscriberRebuiltWhenLocalModelChanges() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        config.localModel = "base"
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        var factoryCallCount = 0
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            factoryCallCount += 1
+            return FakeTranscriber(text: "model")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertEqual(factoryCallCount, 1)
+
+        // 切换本地模型 → 签名变化 → 下次听写应重建。
+        config.localModel = "small"
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertEqual(factoryCallCount, 2, "本地模型变更后应重建转写器")
+    }
+
     // MARK: - item 2：配置同值回写不动状态机（hold 中不被复位）
 
     func testApplyHotkeyConfigSkipsRewriteWhenUnchanged() async {
