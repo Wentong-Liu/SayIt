@@ -132,3 +132,26 @@ final class AudioRecorderStateTests: XCTestCase {
         XCTAssertFalse(recording)
     }
 }
+
+final class AudioLevelTests: XCTestCase {
+    func testSilenceIsZero() {
+        XCTAssertEqual(AudioRecorder.normalizedLevel([Float](repeating: 0, count: 256)), 0, accuracy: 1e-9)
+    }
+
+    func testEmptyIsZero() {
+        XCTAssertEqual(AudioRecorder.normalizedLevel([]), 0, accuracy: 1e-9)
+    }
+
+    func testFullScaleIsOne() {
+        // RMS = 1（满量程）→ 0 dBFS → 归一化为 1。
+        XCTAssertEqual(AudioRecorder.normalizedLevel([Float](repeating: 1, count: 128)), 1, accuracy: 1e-6)
+    }
+
+    func testLevelIsInUnitRangeAndMonotonic() {
+        let quiet = AudioRecorder.normalizedLevel([Float](repeating: 0.01, count: 128))
+        let loud = AudioRecorder.normalizedLevel([Float](repeating: 0.5, count: 128))
+        XCTAssertGreaterThanOrEqual(quiet, 0)
+        XCTAssertLessThanOrEqual(loud, 1)
+        XCTAssertGreaterThan(loud, quiet, "更大幅度应得到更高电平")
+    }
+}

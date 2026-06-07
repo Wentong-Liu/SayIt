@@ -63,6 +63,7 @@ final class RecordingStateTests: XCTestCase {
         XCTAssertEqual(RecordingState.listening.displayText, "聆听中…")
         XCTAssertEqual(RecordingState.transcribing.displayText, "识别中…")
         XCTAssertEqual(RecordingState.error("网络异常").displayText, "网络异常")
+        XCTAssertEqual(RecordingState.info("已粘贴到当前窗口").displayText, "已粘贴到当前窗口")
         XCTAssertEqual(RecordingState.idle.displayText, "准备就绪")
     }
 
@@ -72,10 +73,16 @@ final class RecordingStateTests: XCTestCase {
         XCTAssertEqual(RecordingState.error("").displayText, "出错了")
     }
 
+    func testInfoTextTrimsAndFallsBack() {
+        XCTAssertEqual(RecordingState.info("  已粘贴  ").displayText, "已粘贴")
+        XCTAssertEqual(RecordingState.info("   ").displayText, "完成")
+    }
+
     func testVisibility() {
         XCTAssertFalse(RecordingState.idle.isVisible)
         XCTAssertTrue(RecordingState.listening.isVisible)
         XCTAssertTrue(RecordingState.transcribing.isVisible)
+        XCTAssertTrue(RecordingState.info("x").isVisible)
         XCTAssertTrue(RecordingState.error("x").isVisible)
     }
 
