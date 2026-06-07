@@ -31,6 +31,9 @@ final class DictationCoordinator {
     private let recorder: AudioRecording
     private let panel: RecordingPanelController
     private let injector: TextInjecting
+    /// User-dictionary store (Layer 3): its entries drive deterministic rewriting (exact case / spacing) after polish, before injection.
+    /// Reuses the ``DictionaryStore`` actor from PR-1; injectable so tests can pass an empty dictionary backed by a temp directory to verify "zero behavior change".
+    private let dictionaryStore: DictionaryStore
     /// The polish pipeline: injects a failure-log callback for debugging (never loses characters, only observes).
     private let polishPipeline = PolishPipeline(logFailure: { reason in
         NSLog("[SayIt] 润色失败回退原文: %@", reason)
@@ -131,6 +134,7 @@ final class DictationCoordinator {
     ///   - recorder: the recorder; defaults to ``AudioRecorder``.
     ///   - panel: the HUD controller; defaults to the shared instance.
     ///   - injector: the text injector; defaults to ``TextInjector``.
+    ///   - dictionaryStore: the user-dictionary store (for Layer 3 rewriting); defaults to ``DictionaryStore``, tests can pass an empty dictionary backed by a temp directory.
     ///   - transcriberFactory: the transcriber factory; defaults to choosing local/cloud per the config (see ``makeConfiguredTranscriber(_:)``).
     ///   - accessibilityGate: the accessibility gate; defaults to guiding authorization on demand (see ``ensureAccessibilityOrGuide()``).
     ///   - modelReadiness: local model readiness detection; defaults to read-only reuse of ``ModelManager/isDownloaded(model:)``.
@@ -140,6 +144,7 @@ final class DictationCoordinator {
          recorder: AudioRecording = AudioRecorder(),
          panel: RecordingPanelController = .shared,
          injector: TextInjecting = TextInjector(),
+         dictionaryStore: DictionaryStore = DictionaryStore(),
          transcriberFactory: (() throws -> any Transcriber)? = nil,
          accessibilityGate: (() -> Bool)? = nil,
          modelReadiness: ((String) -> Bool)? = nil,
@@ -148,6 +153,7 @@ final class DictationCoordinator {
         self.recorder = recorder
         self.panel = panel
         self.injector = injector
+        self.dictionaryStore = dictionaryStore
         self.hotkeyManager = hotkeyManager
             ?? HotkeyManager(triggerKey: config.triggerKey,
                              mode: Self.hotkeyMode(for: config.interactionMode))
@@ -425,8 +431,19 @@ final class DictationCoordinator {
             updateProcessing(1.0, .polishing)
         }
 
+        // 3.5) User-dictionary Layer 3: deterministic rewriting (exact case / spacing) after polish, before injection.
+        //      An empty dictionary is identity (zero behavior change), adding only one extremely light actor read.
+        let finalText = await applyDictionary(to: polished.text)
+
         // 4) Inject at the target App's cursor (with a light hint on polish failure, but never losing characters).
-        injectFinalText(polished.text, polishFailed: polished.failed)
+        injectFinalText(finalText, polishFailed: polished.failed)
+    }
+
+    /// User-dictionary Layer 3 deterministic rewriting: reads all entries from ``DictionaryStore`` and rewrites via ``DictionaryRewriter``.
+    /// Returns the input unchanged (identity) for an empty dictionary / no match. Scope filtering etc. is left to a later PR; applying all enabled entries here is safe.
+    private func applyDictionary(to text: String) async -> String {
+        let entries = await dictionaryStore.all()
+        return DictionaryRewriter.apply(to: text, using: entries)
     }
 
     // MARK: Polish
