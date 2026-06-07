@@ -1,4 +1,5 @@
 #if canImport(SwiftUI)
+import Foundation
 import SwiftUI
 
 /// 听写 HUD 的视图模型：控制器写入状态/音量，视图观察后刷新。
@@ -95,29 +96,53 @@ public struct RecordingPanelView: View {
         }
     }
 
-    /// 音量波形：每条高度由归一化电平加上相位偏移驱动，呈现起伏的听感。
+    /// 音量波形：5 条圆点随实时麦克风电平起伏（声控，像 Typeless），静默时退化为轻柔的呼吸式波动而非僵死。
+    ///
+    /// 用 `TimelineView(.animation)` 每帧重渲染，驱动一个连续的「待机呼吸」相位（低幅度、按条错峰），
+    /// 再叠加由 `model.level` 决定的「声控幅度」项——说话时声控项主导、圆点明显弹跳，静默时仅剩呼吸波。
+    /// `model.level` 的瞬时变化仍用 `.easeOut` 平滑，让圆点对说话响应灵敏不抖动。
     private var waveform: some View {
-        HStack(alignment: .center, spacing: 3) {
-            ForEach(0..<Self.barCount, id: \.self) { i in
-                Capsule()
-                    .fill(Color.white.opacity(0.9))
-                    .frame(width: 3, height: barHeight(index: i))
-                    .animation(.easeOut(duration: 0.12), value: model.level)
+        TimelineView(.animation) { timeline in
+            // 连续相位（秒）：驱动待机呼吸；TimelineView 逐帧推进，无需 @State 计时器。
+            let phase = timeline.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .center, spacing: 3) {
+                ForEach(0..<Self.barCount, id: \.self) { i in
+                    Capsule()
+                        .fill(Color.white.opacity(0.9))
+                        .frame(width: 3, height: barHeight(index: i, phase: phase))
+                        .animation(.easeOut(duration: 0.12), value: model.level)
+                }
             }
         }
         .frame(width: 24, height: 18)
     }
 
-    /// 第 i 条波形的高度：基线 + 电平 * 幅度，并按索引做对称凸起（中间高、两侧低）。
-    private func barHeight(index i: Int) -> CGFloat {
+    /// 第 i 条波形的高度 = 基线 + 声控幅度项 + 待机呼吸项，最终夹紧在 `baseline ... baseline + span`。
+    ///
+    /// - 声控幅度项：`span * level * weight`，按索引做对称凸起（中间高、两侧低），随说话幅度弹跳。
+    /// - 待机呼吸项：低幅度正弦波，每条带各自的相位偏移（错峰），即便 `level ≈ 0` 圆点也在轻轻起伏；
+    ///   其权重随 `level` 升高而衰减，确保说话时声控项主导、不被呼吸波稀释。
+    private func barHeight(index i: Int, phase: Double) -> CGFloat {
         let baseline: CGFloat = 4
         let span: CGFloat = 14
         // 中间条权重最高，向两侧递减，形成对称波形外观。
         let mid = Double(Self.barCount - 1) / 2
         let distance = abs(Double(i) - mid)
         let weight = 1.0 - distance / (mid + 1)
-        let clamped = min(max(model.level, 0), 1)
-        return baseline + span * CGFloat(clamped * weight)
+        let level = min(max(model.level, 0), 1)
+
+        // 声控幅度项：随说话电平起伏。
+        let amplitude = level * weight
+
+        // 待机呼吸项：连续正弦波，按条错峰；静默时是主要的「活着」信号，说话时随电平衰减让位。
+        let idleSpeed = 2.4            // 呼吸频率（rad/s 系数）
+        let idlePhaseStep = 0.9        // 相邻条的相位差，形成行进感的波
+        let idleMaxFraction = 0.16     // 待机起伏占 span 的最大比例（低幅度，仅轻柔呼吸）
+        let wave = (Foundation.sin(phase * idleSpeed + Double(i) * idlePhaseStep) + 1) / 2  // 0...1
+        let idle = idleMaxFraction * wave * (1 - level)
+
+        let fraction = min(max(amplitude + idle, 0), 1)
+        return baseline + span * CGFloat(fraction)
     }
 
     /// 识别态旋转进度环。

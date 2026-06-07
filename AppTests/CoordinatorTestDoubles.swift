@@ -13,16 +13,17 @@ actor FakeAudioRecorder: AudioRecording {
     private(set) var stopCount = 0
     private var recording = false
 
-    /// 电平流（测试里不投递值，仅满足协议；coordinator 的转发任务会静默等待）。
-    nonisolated let levels: AsyncStream<Double>
-    private nonisolated let levelContinuation: AsyncStream<Double>.Continuation
+    /// 每会话重建的电平流持有器（镜像真实 `AudioRecorder`：每次 `start()` 换一对全新的
+    /// single-consumer 流）。这样测试才能复现真实生命周期——编排层若仍在启动前一次性捕获旧流，
+    /// 本会话 `start()` 重建后 `emitLevel` 的值就到不了消费者，断言失败。
+    private nonisolated let levelStream = FakeLevelStreamHolder()
+
+    /// 实时电平流：读取当前会话的流（须在 `start()` 之后读取才拿到本会话的新流）。
+    nonisolated var levels: AsyncStream<Double> { levelStream.currentStream }
 
     init(samples: [Float] = [0.1, 0.2, 0.3], startBehavior: StartBehavior = .succeeds) {
         self.samples = samples
         self.startBehavior = startBehavior
-        var cont: AsyncStream<Double>.Continuation!
-        self.levels = AsyncStream { cont = $0 }
-        self.levelContinuation = cont
     }
 
     func start() async throws {
@@ -36,9 +37,16 @@ actor FakeAudioRecorder: AudioRecording {
         switch startBehavior {
         case .succeeds:
             recording = true
+            // 镜像真实录音器：每次 start 重建本会话的电平流。
+            levelStream.beginSession()
         case .throwsDenied:
             throw AudioRecordingError.microphonePermissionDenied
         }
+    }
+
+    /// 测试用：把一个归一化电平投递进当前会话的流（模拟真实 tap 的 yield）。
+    nonisolated func emitLevel(_ level: Double) {
+        levelStream.currentContinuation.yield(level)
     }
 
     @discardableResult
@@ -46,10 +54,53 @@ actor FakeAudioRecorder: AudioRecording {
         stopCount += 1
         guard recording else { throw AudioRecordingError.notRecording }
         recording = false
+        levelStream.endSession()
         return samples
     }
 
     var isRecording: Bool { recording }
+}
+
+/// `FakeAudioRecorder` 的「每会话可重建」电平流持有器（镜像 `AudioRecorder.LevelStreamHolder`）。
+/// 用锁守护一对 `AsyncStream` + `Continuation`，供 `nonisolated` 上下文安全读写。
+private final class FakeLevelStreamHolder: @unchecked Sendable {
+    private struct Pair {
+        var stream: AsyncStream<Double>
+        var continuation: AsyncStream<Double>.Continuation
+    }
+
+    private let lock = NSLock()
+    private var pair: Pair
+
+    init() { pair = Self.makePair() }
+
+    private static func makePair() -> Pair {
+        var continuation: AsyncStream<Double>.Continuation!
+        let stream = AsyncStream<Double>(bufferingPolicy: .bufferingNewest(1)) { continuation = $0 }
+        return Pair(stream: stream, continuation: continuation)
+    }
+
+    var currentStream: AsyncStream<Double> {
+        lock.lock(); defer { lock.unlock() }; return pair.stream
+    }
+
+    var currentContinuation: AsyncStream<Double>.Continuation {
+        lock.lock(); defer { lock.unlock() }; return pair.continuation
+    }
+
+    /// 开始新会话：结束旧流并换上一对全新的流。
+    func beginSession() {
+        lock.lock(); defer { lock.unlock() }
+        pair.continuation.finish()
+        pair = Self.makePair()
+    }
+
+    /// 结束当前会话：归零后结束流。
+    func endSession() {
+        lock.lock(); defer { lock.unlock() }
+        pair.continuation.yield(0)
+        pair.continuation.finish()
+    }
 }
 
 /// 可控的假注入器：记录被注入的文本，并按预设返回成功/失败。

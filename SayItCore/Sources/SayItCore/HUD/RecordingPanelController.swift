@@ -76,6 +76,9 @@ public final class RecordingPanelController {
         model.level = min(max(level, 0), 1)
     }
 
+    /// 当前归一化输入电平（0...1）。供编排层测试断言「每会话电平已转发到 HUD」。
+    public var currentLevel: Double { model.level }
+
     /// 隐藏并销毁面板。
     public func hide() {
         model.state = .idle

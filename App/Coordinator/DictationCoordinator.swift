@@ -68,7 +68,11 @@ final class DictationCoordinator {
     /// 录音是否已成功启动（由启动 Task 在 `recorder.start()` 成功后置位）。
     private var isRecording = false
 
-    /// 转发录音电平到 HUD 的长生命周期任务（每轮录音期间消费 `recorder.levels`）。
+    /// 转发录音电平到 HUD 的任务：**每轮录音会话**消费当前会话的 `recorder.levels`。
+    /// 关键：必须在 `recorder.start()` 成功后才读取 `recorder.levels`，因为 `AudioRecorder`
+    /// 每次 `start()` 都重建一对全新的 single-consumer 流（见 `LevelStreamHolder`）；在启动前
+    /// 一次性捕获的流会被 `beginSession()` finish 掉，导致转发循环空转、HUD 波形恒为 0、圆点僵死。
+    /// 录音停止时取消本任务，HUD 波形随 `stop()` 产出的 0 平复。
     private var levelTask: Task<Void, Never>?
 
     /// 是否已启动监听（幂等保护）。
@@ -178,7 +182,6 @@ final class DictationCoordinator {
 
         applyHotkeyConfig()
         startEventLoop()
-        startLevelForwarding()
         hotkeyManager.start()
         phase = .idle
 
@@ -225,15 +228,26 @@ final class DictationCoordinator {
         }
     }
 
-    /// 把录音电平流转发到 HUD 波形。每个值在主线程刷新 `RecordingPanelController`。
+    /// 为**本轮录音会话**启动电平转发：在 `recorder.start()` 成功后调用，此刻读取的
+    /// `recorder.levels` 才是本会话重建出的新流（见 `levelTask` / `AudioRecorder.levels` 注释）。
+    /// 取消上一轮残留任务后建新任务，逐值在主线程刷新 HUD 波形（`@MainActor` 上 `panel.update` 安全）。
     private func startLevelForwarding() {
+        levelTask?.cancel()
+        // 录音已开始：在任务内读取当前会话的流（nonisolated，无需进 actor）。
         let levels = recorder.levels
         levelTask = Task { [weak self] in
             for await level in levels {
+                if Task.isCancelled { break }
                 guard let self else { return }
                 self.panel.update(level: level)
             }
         }
+    }
+
+    /// 停止并清理本轮电平转发任务（录音停止 / 失败收敛时调用）。
+    private func stopLevelForwarding() {
+        levelTask?.cancel()
+        levelTask = nil
     }
 
     /// 消费热键事件流：`.start` 起录音，`.stop` 起转写流水线。
@@ -277,6 +291,8 @@ final class DictationCoordinator {
             do {
                 try await self.recorder.start()
                 self.isRecording = true
+                // 录音已起：订阅本会话重建出的电平流，驱动 HUD 圆点随说话幅度起伏。
+                self.startLevelForwarding()
             } catch {
                 // 录音启动失败（多为麦克风未授权）：提示并收敛到 idle。
                 self.isRecording = false
@@ -330,11 +346,12 @@ final class DictationCoordinator {
             return
         }
 
-        // 1) 停止录音，取样本。
+        // 1) 停止录音，取样本。停录后电平转发已无意义（stop() 已产出 0 让波形平复）：清掉转发任务。
         let samples: [Float]
         do {
             samples = try await recorder.stop()
             isRecording = false
+            stopLevelForwarding()
         } catch {
             isRecording = false
             failToIdle(message: String(localized: "hud.stopRecordingFailed",
@@ -651,6 +668,7 @@ final class DictationCoordinator {
     private func failToIdle(message: String) {
         // 录音可能仍在进行（如启动后立即出错的边角场景），尽力停止以释放设备。
         isRecording = false
+        stopLevelForwarding()
         Task { [recorder] in _ = try? await recorder.stop() }
         showTransientError(message)
     }
