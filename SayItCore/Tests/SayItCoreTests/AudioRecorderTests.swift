@@ -133,6 +133,130 @@ final class AudioRecorderStateTests: XCTestCase {
     }
 }
 
+/// 复现并锁定「mic 测试第二次没有绿条」的回归测试。
+///
+/// 根因：`AudioRecorder.levels` 旧实现是「整个生命周期单一共享」的 `AsyncStream`。
+/// `AsyncStream` 是单消费者流——一旦其唯一消费迭代被取消/结束（`MicTestViewModel`
+/// 在 `stopTesting()` 里 `levelTask?.cancel()` 即触发），整条流便永久 finish；
+/// 第二次测试新建任务读取同一条已结束的流，立刻收到结束、零电平到达——表现为
+/// 「首测有绿条、复测无绿条」。
+///
+/// 修复：每次 `start()` 会话重建一对全新的流 + continuation；消费者在 `start()`
+/// 之后读取 `recorder.levels`（MicTest/HUD 均如此），拿到的是本会话的新流。
+final class AudioLevelStreamReconsumableTests: XCTestCase {
+    /// 在给定流上消费，直到收到 `count` 个 **非零** 电平或超时；返回收到的非零个数。
+    /// 模拟 HUD/MicTest：`for await value in recorder.levels`。
+    private func consumeNonZero(
+        _ stream: AsyncStream<Double>,
+        upTo count: Int,
+        timeout: TimeInterval
+    ) async -> Int {
+        let task = Task { () -> Int in
+            var received = 0
+            for await value in stream {
+                if value > 0 { received += 1 }
+                if received >= count { break }
+            }
+            return received
+        }
+        // 超时兜底：避免第二次会话拿不到值时永久挂起（即旧 bug 的表现）。
+        let timeoutTask = Task { () -> Int in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            task.cancel()
+            return 0
+        }
+        let result = await task.value
+        timeoutTask.cancel()
+        return result
+    }
+
+    /// 核心回归：两次顺序「会话 + 消费」，第二次必须仍能拿到电平。
+    ///
+    /// 复刻真实流程：
+    ///  会话1：`start()`(beginSession) → 读 `levels` → for-await 消费 → 任务被取消（stopTesting）→ `stop()`(endSession)
+    ///  会话2：`start()`(beginSession) → **重新读** `levels` → for-await 消费 → 断言仍有非零电平
+    /// 旧实现下会话2 会拿到 0 个非零值（流已永久结束）——本测试即用来复现并防回归。
+    func testLevelsAreReconsumableAcrossSessions() async {
+        let recorder = AudioRecorder()
+
+        // —— 会话 1 ——
+        recorder.beginLevelSessionForTesting()        // 等价于 start() 内的 beginSession()
+        let session1 = recorder.levels                // 消费者在 start() 之后读取 levels
+        // 持续产电平的「tap」，直到被取消。
+        let tap1 = Task {
+            while !Task.isCancelled {
+                recorder.emitLevelForTesting(0.5)
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+        }
+        let got1 = await consumeNonZero(session1, upTo: 3, timeout: 2.0)
+        tap1.cancel()
+        XCTAssertGreaterThanOrEqual(got1, 3, "会话1 应能拿到电平（首测有绿条）")
+        // 模拟 stopTesting()：消费任务已结束（上面 for-await 已 break），再 endSession()。
+        recorder.endLevelSessionForTesting()          // 等价于 stop() 内的 endSession()
+
+        // —— 会话 2 ——（关键：复用同一个 recorder，旧实现此处会拿到 0）
+        recorder.beginLevelSessionForTesting()        // 第二次 start()
+        let session2 = recorder.levels                // 重新读取 levels：必须是全新的流
+        let tap2 = Task {
+            while !Task.isCancelled {
+                recorder.emitLevelForTesting(0.7)
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+        }
+        let got2 = await consumeNonZero(session2, upTo: 3, timeout: 2.0)
+        tap2.cancel()
+        XCTAssertGreaterThanOrEqual(
+            got2, 3,
+            "会话2 仍应能拿到电平（复测必须有绿条）——旧实现此处为 0，即本 bug"
+        )
+    }
+
+    /// 即便上一次会话的消费任务是被「取消」而非自然 break 结束（正是 stopTesting 的真实路径），
+    /// 下一次会话仍应能拿到电平。这是旧实现最致命的失败路径。
+    func testLevelsReconsumableAfterConsumerTaskCancelled() async {
+        let recorder = AudioRecorder()
+
+        // 会话1：消费任务被显式 cancel（模拟 stopTesting 的 levelTask?.cancel()）。
+        recorder.beginLevelSessionForTesting()
+        let session1 = recorder.levels
+        let consumer1 = Task { () -> Int in
+            var n = 0
+            for await value in session1 where value > 0 {
+                n += 1
+            }
+            return n
+        }
+        let tap1 = Task {
+            while !Task.isCancelled {
+                recorder.emitLevelForTesting(0.5)
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        consumer1.cancel()                            // 关键：取消消费任务（旧 bug 触发点）
+        tap1.cancel()
+        _ = await consumer1.value
+        recorder.endLevelSessionForTesting()
+
+        // 会话2：读取全新流，必须仍能拿到非零电平。
+        recorder.beginLevelSessionForTesting()
+        let session2 = recorder.levels
+        let tap2 = Task {
+            while !Task.isCancelled {
+                recorder.emitLevelForTesting(0.7)
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+        }
+        let got2 = await consumeNonZero(session2, upTo: 3, timeout: 2.0)
+        tap2.cancel()
+        XCTAssertGreaterThanOrEqual(
+            got2, 3,
+            "上次消费任务被取消后，复测仍应能拿到电平——旧实现此处为 0"
+        )
+    }
+}
+
 final class AudioLevelTests: XCTestCase {
     func testSilenceIsZero() {
         XCTAssertEqual(AudioRecorder.normalizedLevel([Float](repeating: 0, count: 256)), 0, accuracy: 1e-9)
