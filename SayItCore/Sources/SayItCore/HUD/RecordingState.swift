@@ -7,15 +7,16 @@ import Foundation
 /// - `listening`: recording / listening to the user speak.
 /// - `transcribing`: recording finished, transcribing to text (old state, kept for backward compatibility).
 /// - `processing`: in progress (Typeless-style progress bar): carries a 0...1 progress and the current phase (transcribing/polish).
-///   0...0.5 is transcribing (STT), 0.5...1 is polish (LLM); when polish is off, transcription completion fills directly to 1.0.
+///   The progress bar is driven by ``RecordingPanelView`` as a single client-side ease spanning the whole run (0→90% ease-out, ~3s);
+///   the phase only selects the copy (Transcribing… / Polishing…) and never anchors the bar position; the backend's final 1.0 snaps it to 100%.
 /// - `info`: a neutral hint (e.g. "pasted into the current window"), carrying short copy; not an error, uses a checkmark icon.
 /// - `error`: an error, carrying short user-facing copy.
 public enum RecordingState: Equatable, Sendable {
-    /// The processing phase (for the Typeless-style progress bar): transcribing (STT) or polish (LLM).
+    /// The processing phase: transcribing (STT) or polish (LLM). It only selects the HUD copy and does not map to the progress-bar position.
     public enum ProcessingPhase: Equatable, Sendable {
-        /// Transcribing to text (progress 0...0.5).
+        /// Transcribing to text. The copy shows Transcribing….
         case transcribing
-        /// LLM polish (progress 0.5...1).
+        /// LLM polish. The copy shows Polishing….
         case polishing
     }
 
@@ -98,10 +99,10 @@ public enum RecordingState: Equatable, Sendable {
                   fallback: "Local model still downloading — please wait or switch to cloud")
     }
 
-    /// Localized copy for when the polish (`.polishing`) phase takes longer than expected and the progress bar has stuck at the 90% ceiling and held
+    /// Localized copy for when processing (any phase) takes longer than expected and the progress bar has stuck at the 90% ceiling and held
     /// (en + zh-Hans, via in-bundle `Bundle.module`).
     ///
-    /// Substituted in place for the primary copy by ``RecordingPanelView`` after client-side timing (polish start exceeding `expectedPolishDuration`),
+    /// Substituted in place for the primary copy by ``RecordingPanelView`` after client-side timing (the ramp exceeding `processingRampDuration`),
     /// hinting "taking longer than usual". Does not add an enum case / phase, keeping the type and exhaustive switch unchanged (cleanly rebasable with parallel tasks).
     public static var takingLongerMessage: String {
         localized("hud.takingLonger", fallback: "Taking longer than usual…")
