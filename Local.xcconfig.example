@@ -1,0 +1,11 @@
+// Local.xcconfig.example — template for machine-specific signing config.
+//
+// Setup:
+//   1. cp Local.xcconfig.example Local.xcconfig
+//   2. Set DEVELOPMENT_TEAM to your 10-character Apple Developer Team ID
+//      (Xcode > Settings > Accounts, or developer.apple.com > Membership).
+//   3. Run `xcodegen generate` and build.
+//
+// Local.xcconfig is gitignored so your Team ID is never committed. Leaving the
+// value empty is fine for `swift build` / running tests without code signing.
+DEVELOPMENT_TEAM =

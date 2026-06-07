@@ -3,8 +3,8 @@
 - 文档版本：v1（2026-06-07）
 - 作者：SayIt 项目
 - 状态：地基阶段设计确认稿（已确认的固定技术决策见下文，不在本文重复推翻）
-- 仓库：`/Users/liuwentong/Project/me/sayit`（git main，零提交）
-- 可复用项目：`/Users/liuwentong/Project/me/ZhiYu`（原生 Swift6/macOS14 菜单栏 app）
+- 仓库：本仓库（git main）
+- 可复用项目：内部既有的原生 Swift6/macOS14 菜单栏 app（下文以代号 ZhiYu 指代其可移植模块）
 
 ---
 

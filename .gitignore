@@ -8,7 +8,8 @@ DerivedData/
 build/
 **/build/
 
-# XcodeGen 生成的工程文件（project.yml 是唯一真相源，生成产物不提交）
+# XcodeGen output (project.yml is the single source of truth; generated
+# project files are not committed)
 *.xcodeproj/
 
 # Swift Package Manager
@@ -16,13 +17,17 @@ build/
 .swiftpm/
 Package.resolved
 
-# 临时构建产物（/tmp 派生目录等）
+# Temporary build products (e.g. /tmp derived-data dirs)
 /tmp/sayit-dd/
 
-# 语音模型目录（后续 WhisperKit 等，体积大不入库）
+# Speech models (WhisperKit etc. — too large to track)
 Models/
 *.mlmodelc
 *.mlpackage
 
-# 本地诊断/临时笔记
+# Local diagnostic / scratch notes
 .local-notes/
+
+# Local, machine-specific signing config (holds your own DEVELOPMENT_TEAM).
+# Copy Local.xcconfig.example to Local.xcconfig; see README.
+Local.xcconfig

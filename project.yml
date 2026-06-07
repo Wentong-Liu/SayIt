@@ -5,9 +5,18 @@ options:
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
-  # 界面本地化：开发语言英文。String Catalog（Localizable/InfoPlist.xcstrings）含 en + zh-Hans，
-  # 已知区域由 Xcode 在构建期据目录自动登记，CFBundleLocalizations 见 App/Info.plist。
+  # UI localization: development language is English. The String Catalogs
+  # (Localizable/InfoPlist.xcstrings) ship en + zh-Hans; Xcode registers the
+  # known regions from the catalogs at build time. See App/Info.plist for
+  # CFBundleLocalizations.
   developmentLanguage: en
+
+# Local, machine-specific signing config (gitignored). It supplies
+# DEVELOPMENT_TEAM so the code-signing Team ID is never committed. Copy
+# Local.xcconfig.example to Local.xcconfig and set your own team. See README.
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
 
 packages:
   SayItCore:
@@ -36,7 +45,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/SayIt.entitlements
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 95JJW8BPVA
+        # DEVELOPMENT_TEAM comes from the gitignored Local.xcconfig (see configFiles).
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -56,7 +65,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.liuwentong.SayItTests
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 95JJW8BPVA
+        # DEVELOPMENT_TEAM comes from the gitignored Local.xcconfig (see configFiles).
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
 
