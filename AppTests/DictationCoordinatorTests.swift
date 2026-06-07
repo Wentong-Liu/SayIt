@@ -30,6 +30,7 @@ final class DictationCoordinatorTests: XCTestCase {
         dictionaryStore: DictionaryStore? = nil,
         modelReadiness: @escaping (String) -> Bool = { _ in true },
         transcribeTimeout: Duration = .seconds(5),
+        cloudKeyReader: (@Sendable () -> String)? = nil,
         transcriber: @escaping () throws -> any Transcriber
     ) -> DictationCoordinator {
         // By default inject an empty-dictionary store backed by a temp directory: an empty dictionary -> Layer 3 rewriting is identity (zero behavior change),
@@ -46,7 +47,8 @@ final class DictationCoordinatorTests: XCTestCase {
             transcriberFactory: transcriber,
             accessibilityGate: { true },
             modelReadiness: modelReadiness,
-            transcribeTimeout: transcribeTimeout
+            transcribeTimeout: transcribeTimeout,
+            cloudKeyReader: cloudKeyReader
         )
     }
 
@@ -125,10 +127,40 @@ final class DictationCoordinatorTests: XCTestCase {
 
         let calls = await transcriber.calls
         XCTAssertEqual(calls.count, 1)
-        // Only enabled entries' canonicals are threaded through (disabled entry excluded). Order/sorting is the
-        // glossary builder's concern; here we just assert the right SET of terms reached the transcribe call.
-        XCTAssertEqual(Set(calls.first?.biasTerms ?? []), Set(["SwiftUI", "WhisperKit"]),
-                       "非空词典应把启用条目的 canonical 透传给转写调用作偏置词，禁用条目应排除")
+        // Only enabled entries' canonicals are threaded through (disabled entry excluded), AND now in usageCount-ascending
+        // order (most-used LAST) — the documented ordering is active end-to-end via GlossaryPrompt.orderedCanonicals.
+        // SwiftUI(usage 1) before WhisperKit(usage 5); disabled-term excluded.
+        XCTAssertEqual(calls.first?.biasTerms, ["SwiftUI", "WhisperKit"],
+                       "非空词典应把启用条目按 usageCount 升序（最常用在尾部）透传给转写调用，禁用条目排除")
+    }
+
+    /// A2 ordering active: higher-usage terms must sit LAST in the biasTerms array reaching the transcribe call,
+    /// so the WhisperKit token-cap suffix keeps the highest-usage terms (the documented ordering now runs).
+    func testBiasTermsAreUsageCountAscendingAtTranscribeCall() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let store = DictionaryStore(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appending(component: "sayit-coord-order-\(UUID().uuidString)"))
+        // Add out of usage order to prove the coordinator (not insertion order) decides the layout.
+        await store.add(DictionaryEntry(canonical: "common", usageCount: 99))
+        await store.add(DictionaryEntry(canonical: "rare", usageCount: 1))
+        await store.add(DictionaryEntry(canonical: "mid", usageCount: 50))
+
+        let transcriber = FakeTranscriber(text: "x")
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector, dictionaryStore: store
+        ) {
+            transcriber
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        let calls = await transcriber.calls
+        XCTAssertEqual(calls.first?.biasTerms, ["rare", "mid", "common"],
+                       "偏置词应按 usageCount 升序到达转写调用（最常用在尾部，使 token 上限保留高频词）")
     }
 
     /// An empty dictionary must pass empty bias terms to the transcribe call (no biasing -> byte-identical to today).
@@ -651,6 +683,160 @@ final class DictationCoordinatorTests: XCTestCase {
         }
         return panel.currentLevel >= threshold
     }
+
+    // MARK: - A3: transient delayed-hide task is owned by the latest transient and cancelled by cancel()/stop()
+
+    /// A fresh transient (error / info) must cancel+replace any prior in-flight delayed-hide, so only the LATEST
+    /// transient owns panel.hide().
+    func testNewTransientCancelsPriorDelayedHide() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder()
+        let injector = FakeTextInjector()
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            FakeTranscriber(text: "x")
+        }
+
+        coordinator._test_showTransientError("first")
+        XCTAssertTrue(coordinator._test_hasTransientTask, "首个 transient 应建立延迟隐藏任务")
+        XCTAssertFalse(coordinator._test_transientTaskCancelled, "首个 transient 任务尚未被取消")
+
+        // A second transient must cancel the first's sleeper (only the latest owns hide()).
+        coordinator._test_showTransientError("second")
+        // The CURRENT transientTask is the second (not cancelled); the first was cancelled+replaced.
+        XCTAssertTrue(coordinator._test_hasTransientTask)
+        XCTAssertFalse(coordinator._test_transientTaskCancelled, "最新 transient 任务不应被取消（取消的是被替换的旧任务）")
+    }
+
+    /// ESC-cancel during/after a transient must cancel the in-flight ~1.6s sleeper so a stale transient can never hide a
+    /// freshly-started session's HUD.
+    func testCancelCancelsInFlightTransient() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder()
+        let injector = FakeTextInjector()
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            FakeTranscriber(text: "x")
+        }
+
+        // Start a session so cancel() is not a no-op (it guards on phase != .idle).
+        await coordinator._test_start()
+        // Surface a transient (sets phase back to idle and starts the delayed-hide sleeper).
+        coordinator._test_showTransientError("transient")
+        // Capture the handle BEFORE cancel() nils it out, so we can assert it was cancelled.
+        let captured = coordinator._test_transientTask
+        XCTAssertNotNil(captured, "showTransient 应建立延迟隐藏任务")
+
+        // Re-enter an active session, then cancel: the in-flight transient sleeper must be cancelled.
+        await coordinator._test_start()
+        coordinator._test_cancel()
+        XCTAssertEqual(captured?.isCancelled, true, "取消应取消在途的 transient 延迟隐藏任务")
+        XCTAssertFalse(coordinator._test_hasTransientTask, "取消后应清空 transientTask 句柄")
+    }
+
+    // MARK: - A4: failToIdle guard — no redundant recorder.stop()/pendingStop on the already-stopped path
+
+    /// On the transcription-failure path the recorder was already stopped successfully earlier in runPipeline
+    /// (isRecording already false). failToIdle must NOT run a redundant no-op recorder.stop() nor leave a misleading
+    /// pendingStopTask. Assert exactly one stop and no lingering pendingStop.
+    func testFailToIdleDoesNotDoubleStopOnAlreadyStoppedPath() async {
+        let config = makeConfig()
+        config.sttMode = .cloud  // bypass the local readiness gate so the pipeline reaches the transcribe call that fails
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            FakeTranscriber(error: .transcriptionFailed(reason: "boom"))
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        // runPipeline ran recorder.stop() once (success), then transcribe threw -> failToIdle. The guard must skip a
+        // second stop (recorder is already .notRecording) and leave no pendingStop the next handleStart needlessly awaits.
+        let stopCount = await recorder.stopCount
+        XCTAssertEqual(stopCount, 1, "已停止路径上 failToIdle 不应再多停一次（避免被吞掉的 .notRecording 空操作）")
+        XCTAssertFalse(coordinator._test_hasPendingStop, "已停止路径上 failToIdle 不应遗留误导性的 pendingStop")
+        XCTAssertTrue(injector.injectedTexts.isEmpty)
+        XCTAssertFalse(coordinator._test_isRecording)
+    }
+
+    /// Start-failure path (microphone denied): the engine never started, so failToIdle must not stop the recorder at all
+    /// (no swallowed .notRecording no-op) and leave no pendingStop.
+    func testStartFailureDoesNotStopRecorderOrLeavePendingStop() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1], startBehavior: .throwsDenied)
+        let injector = FakeTextInjector()
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            FakeTranscriber(text: "unused")
+        }
+
+        await coordinator._test_start()
+
+        let stopCount = await recorder.stopCount
+        XCTAssertEqual(stopCount, 0, "启动失败（引擎未起）时 failToIdle 不应调用 recorder.stop()")
+        XCTAssertFalse(coordinator._test_hasPendingStop, "启动失败路径不应遗留 pendingStop")
+    }
+
+    // MARK: - A5: cloud key read off the per-dictation main-actor hot path (cached against the cheap signature)
+
+    /// The cloud-key reader must be invoked at most once across multiple same-config dictations (no synchronous Keychain
+    /// read on the per-dictation hot path): the cached key is reused while the cheap (mode/model) components are unchanged.
+    func testCloudKeyReaderNotInvokedPerDictationWhenConfigUnchanged() async {
+        let config = makeConfig()
+        config.sttMode = .cloud
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let readCount = Counter()
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            cloudKeyReader: { readCount.increment(); return "sk-test" }
+        ) {
+            FakeTranscriber(text: "云端")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertEqual(readCount.value, 1,
+                       "配置不变时云端密钥应缓存，跨多次听写最多读取一次（不在 @MainActor 热路径上同步读 Keychain）")
+    }
+
+    /// After a cheap (mode/model) signature change the cloud key is re-read (a rebuild is required anyway), so the cache
+    /// stays correct for a model switch.
+    func testCloudKeyReaderReinvokedAfterModelChange() async {
+        let config = makeConfig()
+        config.sttMode = .cloud
+        config.cloudSTTModel = "gpt-4o-mini-transcribe"
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let readCount = Counter()
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            cloudKeyReader: { readCount.increment(); return "sk-test" }
+        ) {
+            FakeTranscriber(text: "云端")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertEqual(readCount.value, 1)
+
+        // Switch the cloud model -> cheap signature changes -> the key is re-read (and the transcriber rebuilt).
+        config.cloudSTTModel = "whisper-1"
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertEqual(readCount.value, 2, "模型变更后应重新读取云端密钥（此时本就需要重建转写器）")
+    }
+}
+
+/// A tiny thread-safe counter for asserting injected-closure invocation counts.
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = 0
+    func increment() { lock.lock(); _value += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return _value }
 }
 
 /// A never-returning transcriber: used to verify the hard timeout protection (its transcribe sleeps until cancelled).

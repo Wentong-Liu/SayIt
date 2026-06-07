@@ -59,4 +59,44 @@ final class GlossaryPromptTests: XCTestCase {
         ]
         XCTAssertEqual(GlossaryPrompt.compactList(from: entries), "rare, common")
     }
+
+    // MARK: - orderedUnique / orderedCanonicals (the shared ordering primitive)
+
+    func testOrderedUniqueMatchesCompactListLayout() {
+        // orderedUnique is the single source of truth compactList joins; they must produce the same surface terms in the same order.
+        let terms = [
+            GlossaryPrompt.Term(canonical: "  rare  ", usageCount: 1),
+            GlossaryPrompt.Term(canonical: "common", usageCount: 99),
+            GlossaryPrompt.Term(canonical: "   ", usageCount: 0),
+            GlossaryPrompt.Term(canonical: "common", usageCount: 5),  // case-insensitive dupe -> dropped
+        ]
+        XCTAssertEqual(GlossaryPrompt.orderedUnique(from: terms), ["rare", "common"])
+        XCTAssertEqual(GlossaryPrompt.compactList(from: terms),
+                       GlossaryPrompt.orderedUnique(from: terms).joined(separator: ", "))
+    }
+
+    func testOrderedCanonicalsEmptyEntriesYieldsEmptyArray() {
+        XCTAssertEqual(GlossaryPrompt.orderedCanonicals(from: [DictionaryEntry]()), [])
+    }
+
+    func testOrderedCanonicalsOrdersByUsageAscendingAndExcludesDisabled() {
+        // usageCount-ascending (most-used LAST); disabled entries excluded; blanks dropped; case-insensitive dedupe.
+        let entries = [
+            DictionaryEntry(canonical: "WhisperKit", usageCount: 5),
+            DictionaryEntry(canonical: "SwiftUI", usageCount: 1),
+            DictionaryEntry(canonical: "disabled-term", enabled: false, usageCount: 100),
+            DictionaryEntry(canonical: "  ", usageCount: 50),
+        ]
+        XCTAssertEqual(GlossaryPrompt.orderedCanonicals(from: entries), ["SwiftUI", "WhisperKit"],
+                       "启用条目按 usageCount 升序（最常用在尾部），禁用条目排除，空白丢弃")
+    }
+
+    func testOrderedCanonicalsAllDisabledYieldsEmptyArray() {
+        let entries = [
+            DictionaryEntry(canonical: "a", enabled: false),
+            DictionaryEntry(canonical: "b", enabled: false),
+        ]
+        XCTAssertEqual(GlossaryPrompt.orderedCanonicals(from: entries), [],
+                       "全部禁用 -> 空数组 -> 不构造任何 prompt（零行为变化）")
+    }
 }
