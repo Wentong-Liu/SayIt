@@ -187,6 +187,9 @@ final class DictationCoordinator {
         }
 
         applyHotkeyConfig()
+        // ESC-to-cancel wiring: the manager fires onCancel only while a dictation session is active (phase != .idle), so ESC is never swallowed when idle.
+        hotkeyManager.isSessionActive = { [weak self] in (self?.phase ?? .idle) != .idle }
+        hotkeyManager.onCancel = { [weak self] in self?.cancel() }
         startEventLoop()
         hotkeyManager.start()
         phase = .idle
@@ -342,6 +345,26 @@ final class DictationCoordinator {
         }
     }
 
+    /// ESC during an in-progress dictation: abort recording + the in-flight transcribe/polish/inject Task, reset the HUD to idle, inject nothing.
+    /// No-op when already idle (ESC is ignored upstream by ``HotkeyManager`` when no session is active, but guard here too for direct callers/tests).
+    func cancel() {
+        guard phase != .idle else { return }
+        // Cancel the in-flight pipeline (transcribe/polish/inject). runPipeline early-returns at its `Task.isCancelled` guards and injects nothing;
+        // a cancel mid-transcribe surfaces as CancellationError, swallowed silently (no HUD error flash). Clear the handle now so re-entry guards see "no active processing".
+        processingTask?.cancel()
+        processingTask = nil
+        // Cancel a still-pending recording start (extremely-short-press race), so its completion cannot resurrect the session.
+        startTask?.cancel()
+        startTask = nil
+        // Stop level forwarding and best-effort stop the recorder to release the device (same pattern as failToIdle).
+        isRecording = false
+        stopLevelForwarding()
+        Task { [recorder] in _ = try? await recorder.stop() }
+        // Reset the HUD to idle. Inject NOTHING.
+        panel.hide()
+        phase = .idle
+    }
+
     /// The complete pipeline: stop recording -> transcribe -> (optional) polish -> inject. Runs in a background task, switching back to the main thread for UI calls.
     /// - Parameter pendingStart: this round's recording start Task (may still be in progress); `await` its completion before stopping.
     private func runPipeline(awaiting pendingStart: Task<Void, Never>?) async {
@@ -397,6 +420,10 @@ final class DictationCoordinator {
                 )
             }
             transcript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch is CancellationError {
+            // ESC cancelled the dictation mid-transcribe: abort silently (the user intentionally aborted), no HUD error flash, inject nothing.
+            // withTranscribeTimeout's child tasks inherit cancellation, so an outer cancel makes the inner transcribe/Task.sleep throw CancellationError that surfaces here.
+            return
         } catch is TranscribeTimeout {
             // Hard timeout: transcription does not return in time (e.g. the underlying layer stuck loading/downloading the model). Give an error hint and converge to idle.
             failToIdle(message: String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed"))
@@ -408,6 +435,10 @@ final class DictationCoordinator {
             failToIdle(message: String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed"))
             return
         }
+
+        // ESC cancel during transcribe: a transcriber that returns a value without throwing on cancel (e.g. FakeTranscriber) lands here.
+        // Early-return discards the result and injects nothing; the defer clears processingTask.
+        guard !Task.isCancelled else { return }
 
         // Empty transcription (silence / unintelligible): no injection, briefly hint then idle.
         guard !transcript.isEmpty else {
@@ -426,6 +457,9 @@ final class DictationCoordinator {
         // 3) Polish (on -> go through the LLM, auto-falls back to the original on failure/off, built into PolishPipeline).
         let polished = await polishIfEnabled(transcript)
 
+        // ESC cancel during polish: discard the polished result and inject nothing.
+        guard !Task.isCancelled else { return }
+
         // Polish done: fill the progress bar to 100% (with polish off it was already set to 1.0 above, idempotent here).
         if config.polishEnabled {
             updateProcessing(1.0, .polishing)
@@ -434,6 +468,9 @@ final class DictationCoordinator {
         // 3.5) User-dictionary Layer 3: deterministic rewriting (exact case / spacing) after polish, before injection.
         //      An empty dictionary is identity (zero behavior change), adding only one extremely light actor read.
         let finalText = await applyDictionary(to: polished.text)
+
+        // Load-bearing cancel guard: even if transcribe + polish + dictionary all completed, an ESC cancel before this line means injectFinalText is never reached — no text is injected.
+        guard !Task.isCancelled else { return }
 
         // 4) Inject at the target App's cursor (with a light hint on polish failure, but never losing characters).
         injectFinalText(finalText, polishFailed: polished.failed)
@@ -768,6 +805,15 @@ final class DictationCoordinator {
         handleStop()
         await processingTask?.value
     }
+
+    /// Directly triggers one "stop" but does NOT await the pipeline (so a test can interleave a `_test_cancel()` mid-flight). Pair with ``_test_awaitProcessing()``.
+    func _test_handleStop() { handleStop() }
+
+    /// Awaits the in-flight processing task's completion (no-op if none). Lets a test deterministically wait for the pipeline's early-return after a cancel.
+    func _test_awaitProcessing() async { await processingTask?.value }
+
+    /// Directly triggers a cancel (equivalent to ESC during an active session). For tests.
+    func _test_cancel() { cancel() }
 
     /// Whether currently recorded as recording (for tests to assert race protection).
     var _test_isRecording: Bool { isRecording }
