@@ -193,17 +193,33 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Selectable models for this Provider: (id sent to the API, label displayed). For the polish text task, defaults lean toward lightweight/cheap models.
+    /// Selectable models for this Provider: (id sent to the API, label displayed). The model ids
+    /// below are the bare, current ids verified 2026-06 against each vendor's live API; the labels
+    /// are brand product names that are identical in English and Simplified Chinese, so they are
+    /// rendered verbatim (no localization-catalog key needed). The per-Provider default is defined
+    /// separately in `defaultModel` (it is not necessarily the first item).
     public var modelOptions: [(id: String, label: String)] {
         switch self {
         case .openAI:
-            return [("gpt-4o-mini", "GPT-4o mini"), ("gpt-4o", "GPT-4o"),
-                    ("gpt-4.1-mini", "GPT-4.1 mini")]
+            // OpenAI API-key provider: current GPT-5.x chat models, bare ids (no date suffix).
+            // Legacy gpt-4o / gpt-4o-mini were removed (deprecated). Default is gpt-5.4-mini
+            // (cost-effective for the polish task), see `defaultModel`.
+            return [("gpt-5.5", "GPT-5.5"),
+                    ("gpt-5.4-mini", "GPT-5.4 mini"),
+                    ("gpt-5-mini", "GPT-5 mini")]
         case .deepSeek:
-            return [("deepseek-chat", "DeepSeek Chat")]
+            // DeepSeek API: the current V4 models. The legacy deepseek-chat / deepseek-reasoner ids
+            // are deprecated (sunset 2026-07-24) and were removed. Default is V4 Flash
+            // (faster/cheaper, best for the polish task), see `defaultModel`.
+            return [("deepseek-v4-flash", "DeepSeek V4 Flash"),
+                    ("deepseek-v4-pro", "DeepSeek V4 Pro")]
         case .anthropic:
-            return [("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
-                    ("claude-sonnet-4-6", "Claude Sonnet 4.6")]
+            // Anthropic: current Claude 4.x models, bare ids (no date suffix). Legacy claude-3.x ids
+            // were removed. Default is Haiku 4.5 (cheap/fast, best for the polish task), see
+            // `defaultModel`.
+            return [("claude-haiku-4-5", "Claude Haiku 4.5"),
+                    ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+                    ("claude-opus-4-8", "Claude Opus 4.8")]
         case .chatGPT:
             // ChatGPT-login (Codex) Responses API only accepts the Codex model set tied to the
             // logged-in ChatGPT account; legacy ids (gpt-4o / gpt-4o-mini) now return HTTP 400
@@ -218,6 +234,16 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The default model for this Provider (takes the first item of `modelOptions`).
-    public var defaultModel: String { modelOptions.first?.id ?? "" }
+    /// The default model for this Provider. For the polish text task the API-key Providers lean
+    /// toward the lightweight/cheap model rather than always the first (frontier) item; the
+    /// ChatGPT login keeps the frontier GPT-5.5 first item. Always one of `modelOptions` (guarded by
+    /// `testEveryProviderDefaultIsAValidOption`), so a stale stored id clamps to a real, usable model.
+    public var defaultModel: String {
+        switch self {
+        case .openAI:    return "gpt-5.4-mini"
+        case .deepSeek:  return "deepseek-v4-flash"
+        case .anthropic: return "claude-haiku-4-5"
+        case .chatGPT:   return "gpt-5.5"
+        }
+    }
 }
