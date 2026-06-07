@@ -7,17 +7,11 @@ struct SayItApp: App {
 
     @Environment(\.openSettings) private var openSettings
 
-    /// 听写高层状态的可观察持有者；驱动菜单栏图标与状态文案。
+    /// 听写高层状态的可观察持有者；驱动菜单栏图标。
     @State private var status = DictationStatus.shared
 
     var body: some Scene {
         MenuBarExtra("SayIt", systemImage: menuBarSymbol) {
-            Text(statusText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Divider()
-
             Button("设置…") {
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
@@ -43,15 +37,6 @@ struct SayItApp: App {
         case .listening: return "mic.circle.fill"
         case .working:   return "waveform.circle.fill"
         case .idle:      return "mic.fill"
-        }
-    }
-
-    /// 菜单首项的状态文案。
-    private var statusText: String {
-        switch status.phase {
-        case .idle:      return "就绪"
-        case .listening: return "聆听中…"
-        case .working:   return "识别中…"
         }
     }
 }
