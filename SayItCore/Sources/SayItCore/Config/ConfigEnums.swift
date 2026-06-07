@@ -153,7 +153,16 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
             return [("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
                     ("claude-sonnet-4-6", "Claude Sonnet 4.6")]
         case .chatGPT:
-            return [("gpt-4o-mini", "GPT-4o mini"), ("gpt-4o", "GPT-4o")]
+            // ChatGPT-login (Codex) Responses API only accepts the Codex model set tied to the
+            // logged-in ChatGPT account; legacy ids (gpt-4o / gpt-4o-mini) now return HTTP 400
+            // "model is not supported when using Codex with a ChatGPT account". The ids below were
+            // confirmed against the live Codex models endpoint and verified with a real HTTP 200
+            // from the Responses API. Default is GPT-5.5 (the current frontier model, first item).
+            // Note: "Pro" variants are not exposed to this Codex login (they return HTTP 400), so
+            // they are intentionally omitted to keep every offered model actually usable.
+            return [("gpt-5.5", "GPT-5.5"),
+                    ("gpt-5.4", "GPT-5.4"),
+                    ("gpt-5.4-mini", "GPT-5.4 mini")]
         }
     }
 

@@ -256,6 +256,19 @@ final class ConfigEnumTests: XCTestCase {
         }
     }
 
+    /// Regression guard: the ChatGPT-login (Codex) Responses API rejects the legacy gpt-4o ids
+    /// with HTTP 400 ("model is not supported when using Codex with a ChatGPT account"). The model
+    /// list must only offer Codex GPT-5.x ids (verified live with HTTP 200) and default to GPT-5.5.
+    func testChatGPTProviderOffersCurrentCodexModels() {
+        let ids = ProviderKind.chatGPT.modelOptions.map(\.id)
+        // None of the unsupported legacy ids may be offered.
+        XCTAssertFalse(ids.contains("gpt-4o-mini"), "ChatGPT login no longer supports gpt-4o-mini")
+        XCTAssertFalse(ids.contains("gpt-4o"), "ChatGPT login no longer supports gpt-4o")
+        // Exactly the Codex GPT-5.x ids confirmed available for the ChatGPT login.
+        XCTAssertEqual(ids, ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"])
+        XCTAssertEqual(ProviderKind.chatGPT.defaultModel, "gpt-5.5")
+    }
+
     func testUILanguageHasOnlyTwoCases() {
         XCTAssertEqual(Set(UILanguage.allCases), [.english, .simplifiedChinese])
     }
