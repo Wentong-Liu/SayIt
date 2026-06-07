@@ -1,4 +1,5 @@
 import Observation
+import os
 import SwiftUI
 import SayItCore
 
@@ -22,6 +23,16 @@ final class MicTestViewModel {
     /// The task consuming the `levels` stream in the background; cancelled on stopping the test.
     @ObservationIgnored private var levelTask: Task<Void, Never>?
 
+    /// Monotonic id of the current level-consuming task. Bumped each time a new level task is created
+    /// (start/restart); each task captures its own generation and only writes ``level`` while it still
+    /// matches. This closes the post-suspension stale-write race: a cancelled OLD task that already
+    /// passed its `Task.isCancelled` check can still resume from its `MainActor.run` hop AFTER a newer
+    /// task zeroed the level, and the generation mismatch makes it drop that stale VU sample.
+    @ObservationIgnored private var levelGeneration = 0
+
+    /// Mic-test logging (same subsystem/category as ``SettingsViewModel`` so start failures land in the same place).
+    @ObservationIgnored private let log = Logger(subsystem: "com.liuwentong.SayIt", category: "settings")
+
     /// The selectable input device list (with the "System Default" option presented separately by the UI).
     private(set) var devices: [AudioInputDevice] = []
 
@@ -35,11 +46,19 @@ final class MicTestViewModel {
     private(set) var level: Double = 0
 
     /// The device UID selected in the UI; `nil` means "System Default".
-    /// The setter writes back to ``AppConfig/inputDeviceUID``; if a test is in progress it restarts capture with the new device.
+    ///
+    /// This is an `@Observable`-tracked **stored** property (write-through to `config`), not a pure computed forward.
+    /// The `@Observable` macro only injects Observation tracking (`access` in the getter / `withMutation` in the setter)
+    /// for stored properties; if this read/wrote `config.inputDeviceUID` instead (`AppConfig` is not `@Observable`),
+    /// the device Picker bound to `$micVM.selectedUID` would write through and persist but SwiftUI would never be told the
+    /// property changed, so the Picker would keep showing the OLD selection (the same defect PR #18 fixed for
+    /// ``SettingsViewModel``). Storing it here reflects the pick instantly and persists it.
+    ///
+    /// The `didSet` writes through to ``AppConfig/inputDeviceUID``; if a test is in progress it restarts capture with the new device.
     var selectedUID: String? {
-        get { config.inputDeviceUID }
-        set {
-            config.inputDeviceUID = newValue
+        didSet {
+            guard selectedUID != oldValue else { return }
+            config.inputDeviceUID = selectedUID
             if isTesting {
                 // Switching the device takes effect instantly: restart the test capture to the new device.
                 restartTesting()
@@ -53,6 +72,8 @@ final class MicTestViewModel {
     init(config: AppConfig = .shared, recorder: AudioRecording = AudioRecorder()) {
         self.config = config
         self.recorder = recorder
+        // Seed the observable mirror from the persisted value (write-through to config happens in didSet afterwards).
+        self.selectedUID = config.inputDeviceUID
     }
 
     /// Refreshes the selectable device list and the system default device (called on entering the page or after device plug/unplug).
@@ -74,8 +95,11 @@ final class MicTestViewModel {
     func startTesting() {
         guard !isTesting else { return }
         isTesting = true
-        let deviceUID = config.inputDeviceUID
-        levelTask = makeLevelTask(deviceUID: deviceUID, stopFirst: false)
+        // `selectedUID` is the live source of truth (kept in sync with config via its didSet),
+        // so a device picked while not testing is honored on start.
+        let deviceUID = selectedUID
+        levelGeneration += 1
+        levelTask = makeLevelTask(deviceUID: deviceUID, stopFirst: false, generation: levelGeneration)
     }
 
     /// Constructs the capture task: optionally `stop()` first (for switching the device on restart), then `start(deviceUID:)`,
@@ -83,7 +107,7 @@ final class MicTestViewModel {
     ///
     /// Note: ``AudioRecorder/levels`` is a single-consumer stream,
     /// only one task should `for await` it at a time; here this is guaranteed by cancelling the old task before building a new one.
-    private func makeLevelTask(deviceUID: String?, stopFirst: Bool) -> Task<Void, Never> {
+    private func makeLevelTask(deviceUID: String?, stopFirst: Bool, generation: Int) -> Task<Void, Never> {
         Task { [weak self] in
             guard let self else { return }
             if stopFirst {
@@ -93,7 +117,9 @@ final class MicTestViewModel {
             do {
                 try await self.recorder.start(deviceUID: deviceUID)
             } catch {
-                // Start failure (no permission/device busy): reset the state, zero the level.
+                // Start failure (no permission/device busy): log the bound error so a mic-denied / device-busy
+                // failure is distinguishable from a stuck-at-0 level, then reset the state and zero the level.
+                self.log.error("Mic test start failed for device \(deviceUID ?? "system-default", privacy: .public): \(error.localizedDescription, privacy: .public)")
                 await MainActor.run {
                     self.isTesting = false
                     self.level = 0
@@ -103,7 +129,12 @@ final class MicTestViewModel {
             // Subscribe to the level stream; switch the normalized value back to MainActor to update the UI. The stream produces 0 after stop() and stays valid.
             for await value in self.recorder.levels {
                 if Task.isCancelled { break }
-                await MainActor.run { self.level = value }
+                await MainActor.run {
+                    // Drop the sample if a newer level task has since taken over (e.g. this task was cancelled
+                    // and restartTesting already zeroed the level): a stale VU value must not resurrect it.
+                    guard self.levelGeneration == generation else { return }
+                    self.level = value
+                }
             }
         }
     }
@@ -131,8 +162,11 @@ final class MicTestViewModel {
         level = 0
         // Cancel the old for-await, yielding the single-consumer levels stream; stop/start are executed serially by the new task below.
         levelTask?.cancel()
-        let deviceUID = config.inputDeviceUID
-        levelTask = makeLevelTask(deviceUID: deviceUID, stopFirst: true)
+        // Bump the generation so any in-flight write from the old (now cancelled) task is dropped after this zeroing.
+        levelGeneration += 1
+        // `selectedUID` is the live source of truth (kept in sync with config via its didSet).
+        let deviceUID = selectedUID
+        levelTask = makeLevelTask(deviceUID: deviceUID, stopFirst: true, generation: levelGeneration)
     }
 
     /// Called on leaving the page: ensures capture is stopped, to avoid the background occupying the microphone continuously.
