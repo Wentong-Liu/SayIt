@@ -66,4 +66,20 @@ public enum TriggerKey: String, CaseIterable, Identifiable, Sendable {
     ///
     /// 为兼容配置层早期 API 命名而保留；新代码优先用 ``label``。
     public var displayName: String { label }
+
+    /// 设置面板 Picker 展示用的本地化键（落在 App 端 `Localizable.xcstrings`）。
+    ///
+    /// ⌘/⌥/⌃ 字形通用，仅「左/右」前缀随 `uiLocale` 本地化；Fn/🌐 已中性，亦走 catalog 保持一致。
+    /// 视图用 `Text(LocalizedStringKey(localizationKey))` 渲染，故展示文案随界面语言即时切换。
+    public var localizationKey: String {
+        switch self {
+        case .rightCommand: return "triggerKey.rightCommand"
+        case .leftCommand:  return "triggerKey.leftCommand"
+        case .rightOption:  return "triggerKey.rightOption"
+        case .leftOption:   return "triggerKey.leftOption"
+        case .rightControl: return "triggerKey.rightControl"
+        case .leftControl:  return "triggerKey.leftControl"
+        case .fnGlobe:      return "triggerKey.fnGlobe"
+        }
+    }
 }

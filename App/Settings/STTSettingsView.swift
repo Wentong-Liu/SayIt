@@ -10,7 +10,7 @@ struct STTSettingsView: View {
             Section {
                 Picker("stt.engine", selection: $viewModel.sttMode) {
                     ForEach(STTMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
+                        Text(LocalizedStringKey(mode.localizationKey)).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -43,7 +43,7 @@ struct STTSettingsView: View {
                         }
                     }
 
-                    SecureField("OpenAI API Key", text: $viewModel.cloudSTTAPIKey)
+                    SecureField("stt.cloudAPIKeyField", text: $viewModel.cloudSTTAPIKey)
                         .onSubmit { viewModel.saveCloudSTTAPIKey() }
 
                     Button("stt.saveKey") { viewModel.saveCloudSTTAPIKey() }

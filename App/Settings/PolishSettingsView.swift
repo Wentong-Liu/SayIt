@@ -20,7 +20,7 @@ struct PolishSettingsView: View {
                 Section("polish.section.style") {
                     Picker("polish.style", selection: $viewModel.polishStyle) {
                         ForEach(PolishStyle.allCases) { style in
-                            Text(style.displayName).tag(style)
+                            Text(LocalizedStringKey(style.localizationKey)).tag(style)
                         }
                     }
                 }
@@ -28,7 +28,7 @@ struct PolishSettingsView: View {
                 Section("polish.section.model") {
                     Picker("polish.provider", selection: $viewModel.providerKind) {
                         ForEach(ProviderKind.allCases) { kind in
-                            Text(kind.displayName).tag(kind)
+                            Text(LocalizedStringKey(kind.localizationKey)).tag(kind)
                         }
                     }
                     .onChange(of: viewModel.providerKind) { _, _ in

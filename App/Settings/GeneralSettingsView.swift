@@ -13,13 +13,13 @@ struct GeneralSettingsView: View {
             Section {
                 Picker("general.triggerKey", selection: $viewModel.triggerKey) {
                     ForEach(TriggerKey.allCases) { key in
-                        Text(key.displayName).tag(key)
+                        Text(LocalizedStringKey(key.localizationKey)).tag(key)
                     }
                 }
 
                 Picker("general.interactionMode", selection: $viewModel.interactionMode) {
                     ForEach(InteractionMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
+                        Text(LocalizedStringKey(mode.localizationKey)).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -91,14 +91,14 @@ struct GeneralSettingsView: View {
                      defaultValue: "Tap “Test Microphone” to check the selected device has input.")
     }
 
-    private var interactionHint: String {
+    /// 交互方式提示文案的本地化键。返回 `LocalizedStringKey` 而非预解析 `String`，
+    /// 让 `Text(interactionHint)` 随 `uiLocale`（环境 locale）即时切换语言（与其它 Picker 文案一致）。
+    private var interactionHint: LocalizedStringKey {
         switch viewModel.interactionMode {
         case .singleTap:
-            return String(localized: "general.interactionHint.singleTap",
-                          defaultValue: "Tap the trigger key alone to start, tap again to stop. Holding it with another key (a shortcut) won’t trigger.")
+            return "general.interactionHint.singleTap"
         case .hold:
-            return String(localized: "general.interactionHint.hold",
-                          defaultValue: "Hold the trigger key to record, release to stop.")
+            return "general.interactionHint.hold"
         }
     }
 }
