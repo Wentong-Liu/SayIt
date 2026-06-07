@@ -52,7 +52,8 @@ public struct CloudTranscriber: Transcriber {
             throw STTError.transcriptionFailed(reason: "invalid baseURL: \(baseURL)")
         }
 
-        let wav = WAVEncoder.encode(samples: audio, sampleRate: sampleRate)
+        // 非法/越界采样率会抛 STTError.unsupportedFormat（避免 UInt32(sampleRate) 陷阱崩溃）。
+        let wav = try WAVEncoder.encode(samples: audio, sampleRate: sampleRate)
         let boundary = "Boundary-\(UUID().uuidString)"
         let body = makeMultipartBody(wav: wav, boundary: boundary, language: language)
 
