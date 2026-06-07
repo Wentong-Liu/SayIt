@@ -116,6 +116,26 @@ final class RecordingStateTests: XCTestCase {
         XCTAssertTrue(doneFallbacks.contains(RecordingState.info("   ").displayText))
     }
 
+    /// The processing-state "transcribing vs polish" distinction is carried entirely by the copy (decoupled from the progress-bar position):
+    /// at the same progress value, switching only the phase should yield different copy (Transcribing… / Polishing…), proving the phase drives the text only.
+    func testProcessingPhaseDrivesLabelNotBarValue() {
+        let transcribing = ["Transcribing…", "识别中…"]
+        let polishing = ["Polishing…", "润色中…"]
+
+        // At the same progress (0.0), differing only in phase produces different copy.
+        let t0 = RecordingState.processing(progress: 0.0, phase: .transcribing).displayText
+        let p0 = RecordingState.processing(progress: 0.0, phase: .polishing).displayText
+        XCTAssertTrue(transcribing.contains(t0), "got \(t0)")
+        XCTAssertTrue(polishing.contains(p0), "got \(p0)")
+        XCTAssertNotEqual(t0, p0, "switching the phase must change the copy")
+
+        // The copy only looks at the phase, not the progress: different progress but the same phase keeps the copy consistent.
+        let p05 = RecordingState.processing(progress: 0.5, phase: .polishing).displayText
+        let p09 = RecordingState.processing(progress: 0.9, phase: .polishing).displayText
+        XCTAssertEqual(p0, p05)
+        XCTAssertEqual(p05, p09)
+    }
+
     func testVisibility() {
         XCTAssertFalse(RecordingState.idle.isVisible)
         XCTAssertTrue(RecordingState.listening.isVisible)
