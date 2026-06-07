@@ -39,8 +39,31 @@ final class HotkeyConfigTests: XCTestCase {
         }
     }
 
-    func testHotkeyModeHasHoldAndToggle() {
+    func testHotkeyModeHasAllThreeModes() {
         XCTAssertTrue(HotkeyMode.allCases.contains(.holdToTalk))
+        XCTAssertTrue(HotkeyMode.allCases.contains(.singleTapToggle))
         XCTAssertTrue(HotkeyMode.allCases.contains(.toggle))
+    }
+
+    func testInteractionModeDefaultIsSingleTap() {
+        XCTAssertEqual(InteractionMode.default, .singleTap)
+    }
+
+    func testInteractionModeHasAllThreeCases() {
+        XCTAssertTrue(InteractionMode.allCases.contains(.singleTap))
+        XCTAssertTrue(InteractionMode.allCases.contains(.hold))
+        XCTAssertTrue(InteractionMode.allCases.contains(.toggle))
+    }
+
+    func testInteractionModeRawValueRoundTrip() {
+        for mode in InteractionMode.allCases {
+            XCTAssertEqual(InteractionMode(rawValue: mode.rawValue), mode)
+        }
+    }
+
+    func testInteractionModeDisplayNamesNonEmpty() {
+        for mode in InteractionMode.allCases {
+            XCTAssertFalse(mode.displayName.isEmpty, "\(mode) 缺少 displayName")
+        }
     }
 }

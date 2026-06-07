@@ -2,8 +2,10 @@ import AppKit
 
 /// 全局热键管理器：监听系统级按键，按所选模式产出 `.start` / `.stop` 事件。
 ///
-/// 支持两种模式（见 ``HotkeyMode``）：
+/// 支持三种模式（见 ``HotkeyMode``）：
 /// - **hold-to-talk**：按住触发键说话（keyDown -> `.start`，keyUp -> `.stop`）。
+/// - **single-tap-to-toggle**：孤立轻点修饰键开始，再次轻点结束（默认）。「孤立轻点」=
+///   修饰键按下→松开且中途没夹普通键、在短窗口内完成，故不与 ⌘C 等快捷键冲突。
 /// - **toggle**：双击修饰键开始，再次双击结束。
 ///
 /// 事件以两种方式对外发出，二者同时生效：
@@ -40,6 +42,9 @@ public final class HotkeyManager {
     /// 判定 toggle 双击的两次按下最大间隔（秒）。
     public let doubleTapThreshold: TimeInterval
 
+    /// single-tap 模式判定「孤立轻点」的按下→松开最大间隔（秒）。
+    public let singleTapWindow: TimeInterval
+
     // MARK: 事件输出
 
     /// 主线程事件回调（与 ``events`` 同时生效）。
@@ -53,6 +58,7 @@ public final class HotkeyManager {
 
     private var holdMachine = HoldStateMachine()
     private var toggleMachine: ToggleStateMachine
+    private var singleTapMachine: SingleTapToggleStateMachine
 
     private var flagsMonitor: Any?
     private var keyDownMonitor: Any?
@@ -65,17 +71,21 @@ public final class HotkeyManager {
 
     /// - Parameters:
     ///   - triggerKey: 触发键，默认右 ⌘。
-    ///   - mode: 触发模式，默认按住说话。
+    ///   - mode: 触发模式，默认单击切换。
     ///   - doubleTapThreshold: toggle 双击判定阈值（秒），默认 0.4。
+    ///   - singleTapWindow: single-tap 孤立轻点按下→松开窗口（秒），默认 0.3。
     public init(
         triggerKey: TriggerKey = .default,
-        mode: HotkeyMode = .holdToTalk,
-        doubleTapThreshold: TimeInterval = 0.4
+        mode: HotkeyMode = .singleTapToggle,
+        doubleTapThreshold: TimeInterval = 0.4,
+        singleTapWindow: TimeInterval = 0.3
     ) {
         self.triggerKey = triggerKey
         self.mode = mode
         self.doubleTapThreshold = doubleTapThreshold
+        self.singleTapWindow = singleTapWindow
         self.toggleMachine = ToggleStateMachine(threshold: doubleTapThreshold)
+        self.singleTapMachine = SingleTapToggleStateMachine(window: singleTapWindow)
 
         var continuation: AsyncStream<HotkeyEvent>.Continuation!
         self.events = AsyncStream { continuation = $0 }
@@ -142,10 +152,7 @@ public final class HotkeyManager {
         case .toggle:
             // 仅认目标键的「按下」边沿：该键的修饰标志此刻被 set。
             // Fn/Globe 的物理 keyCode 不稳定，故对它只比对 .function 标志。
-            let isModifierTrigger = key == .fnGlobe
-                ? event.modifierFlags.contains(.function)
-                : (event.keyCode == key.keyCode && event.modifierFlags.contains(key.modifierFlag))
-            if isModifierTrigger {
+            if isTriggerPressEdge(event, key: key) {
                 if let result = toggleMachine.registerPress(at: event.timestamp) {
                     emit(result)
                 }
@@ -154,9 +161,36 @@ public final class HotkeyManager {
                 toggleMachine.reset()
             }
 
+        case .singleTapToggle:
+            handleSingleTapFlagsChanged(event, key: key)
+
         case .holdToTalk:
             handleHoldFlagsChanged(event, key: key)
         }
+    }
+
+    /// single-tap 模式下，触发键的按下/松开走 `.flagsChanged`（修饰键不发 keyDown/keyUp）。
+    /// 按下开始候选轻点，松开时由状态机判定是否构成孤立轻点（中途夹普通键由 `handleKeyDown` 污染）。
+    private func handleSingleTapFlagsChanged(_ event: NSEvent, key: TriggerKey) {
+        if isTriggerPressEdge(event, key: key) {
+            singleTapMachine.modifierDown(at: event.timestamp)
+        } else if key == .fnGlobe || event.keyCode == key.keyCode {
+            // 目标键的松开边沿（标志被清）。
+            if let result = singleTapMachine.modifierUp(at: event.timestamp) {
+                emit(result)
+            }
+        } else {
+            // 另一修饰键按下/松开（如同时按了 ⌘＋⌥）：视为夹了别的键，作废本次候选轻点。
+            singleTapMachine.otherKeyDown()
+        }
+    }
+
+    /// 判断本次 `.flagsChanged` 是否为触发键的「按下」边沿（该键的修饰标志此刻被 set）。
+    /// Fn/Globe 的物理 keyCode 不稳定，故对它只比对 `.function` 标志。
+    private func isTriggerPressEdge(_ event: NSEvent, key: TriggerKey) -> Bool {
+        key == .fnGlobe
+            ? event.modifierFlags.contains(.function)
+            : (event.keyCode == key.keyCode && event.modifierFlags.contains(key.modifierFlag))
     }
 
     /// hold 模式下，若触发键本身是修饰键，其按下/松开走 `.flagsChanged`（修饰键不发 keyDown/keyUp）。
@@ -178,6 +212,9 @@ public final class HotkeyManager {
         case .toggle:
             // 任意普通键按下打断 toggle 的半个双击（避免「修饰键+键」被当成双击的一半）。
             toggleMachine.reset()
+        case .singleTapToggle:
+            // 修饰键按住期间按了普通键（如 ⌘C）：污染本次候选轻点，松开不再触发 -> 让位给快捷键。
+            singleTapMachine.otherKeyDown()
         case .holdToTalk:
             // 触发键为修饰键时由 .flagsChanged 处理；此处仅处理非修饰触发键（预留扩展）。
             break
@@ -198,5 +235,6 @@ public final class HotkeyManager {
     private func resetStateMachines() {
         holdMachine.reset()
         toggleMachine.reset()
+        singleTapMachine.reset()
     }
 }

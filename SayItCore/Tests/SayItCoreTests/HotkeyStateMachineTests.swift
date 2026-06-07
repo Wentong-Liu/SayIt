@@ -98,4 +98,121 @@ final class HotkeyStateMachineTests: XCTestCase {
         // 且可以重新开始。
         XCTAssertEqual(machine.keyDown(), .start)
     }
+
+    // MARK: - IsolatedTapDetector（孤立轻点：单击触发的核心判定）
+
+    func testIsolatedTapWithinWindowFires() {
+        var detector = IsolatedTapDetector(window: 0.3)
+        detector.modifierDown(at: 0.0)
+        // 按下→松开间隔在窗口内、中途没夹普通键 -> 是孤立轻点。
+        XCTAssertTrue(detector.modifierUp(at: 0.1))
+    }
+
+    func testIsolatedTapAtExactWindowFires() {
+        var detector = IsolatedTapDetector(window: 0.5)
+        detector.modifierDown(at: 1.0)
+        // 间隔恰好等于窗口（<= 判定，含端点）-> 触发。用可精确表示的二进制小数避开浮点误差。
+        XCTAssertTrue(detector.modifierUp(at: 1.5))
+    }
+
+    func testIsolatedTapBeyondWindowDoesNotFire() {
+        var detector = IsolatedTapDetector(window: 0.3)
+        detector.modifierDown(at: 0.0)
+        // 长按超过窗口 -> 不算轻点。
+        XCTAssertFalse(detector.modifierUp(at: 0.5))
+    }
+
+    func testChordWithOtherKeyDoesNotFire() {
+        var detector = IsolatedTapDetector(window: 0.3)
+        detector.modifierDown(at: 0.0)
+        // 按住期间夹了普通键（如 ⌘C）-> 污染 -> 松开不触发，让位给快捷键。
+        detector.otherKeyDown()
+        XCTAssertFalse(detector.modifierUp(at: 0.1))
+    }
+
+    func testOtherKeyBeforeModifierDownIsIgnored() {
+        var detector = IsolatedTapDetector(window: 0.3)
+        // 修饰键未按下时的普通键按下不应污染下一次轻点。
+        detector.otherKeyDown()
+        detector.modifierDown(at: 0.0)
+        XCTAssertTrue(detector.modifierUp(at: 0.1))
+    }
+
+    func testIsolatedTapUpWithoutDownIsIgnored() {
+        var detector = IsolatedTapDetector(window: 0.3)
+        // 没按下就松开（监听启动残留）应被忽略，不触发。
+        XCTAssertFalse(detector.modifierUp(at: 0.1))
+    }
+
+    func testIsolatedTapResetsBetweenTaps() {
+        var detector = IsolatedTapDetector(window: 0.3)
+        detector.modifierDown(at: 0.0)
+        XCTAssertTrue(detector.modifierUp(at: 0.1), "第一次轻点")
+        // 状态已复位：第二次完整轻点仍应触发。
+        detector.modifierDown(at: 1.0)
+        XCTAssertTrue(detector.modifierUp(at: 1.1), "第二次轻点")
+    }
+
+    func testIsolatedTapContaminationClearsAfterUp() {
+        var detector = IsolatedTapDetector(window: 0.3)
+        detector.modifierDown(at: 0.0)
+        detector.otherKeyDown()
+        XCTAssertFalse(detector.modifierUp(at: 0.1), "夹键的这次不触发")
+        // 污染随松开复位：下一次干净轻点应触发。
+        detector.modifierDown(at: 1.0)
+        XCTAssertTrue(detector.modifierUp(at: 1.05))
+    }
+
+    func testIsolatedTapDownIsIdempotentKeepsFirstTimestamp() {
+        var detector = IsolatedTapDetector(window: 0.3)
+        detector.modifierDown(at: 0.0)
+        // 重复按下边沿不应刷新起点（保险防自动重复）。
+        detector.modifierDown(at: 0.25)
+        // 以首次 0.0 计：到 0.4 已超窗口 -> 不触发。
+        XCTAssertFalse(detector.modifierUp(at: 0.4))
+    }
+
+    // MARK: - SingleTapToggleStateMachine（孤立轻点 -> start，再次 -> stop）
+
+    func testSingleTapToggleAlternatesStartStop() {
+        var machine = SingleTapToggleStateMachine(window: 0.3)
+        machine.modifierDown(at: 0.0)
+        XCTAssertEqual(machine.modifierUp(at: 0.1), .start, "首个孤立轻点开始")
+        machine.modifierDown(at: 1.0)
+        XCTAssertEqual(machine.modifierUp(at: 1.1), .stop, "再次轻点结束")
+        machine.modifierDown(at: 2.0)
+        XCTAssertEqual(machine.modifierUp(at: 2.1), .start, "第三次轻点重新开始")
+    }
+
+    func testSingleTapToggleChordDoesNotToggle() {
+        var machine = SingleTapToggleStateMachine(window: 0.3)
+        machine.modifierDown(at: 0.0)
+        machine.otherKeyDown()
+        // 夹了普通键（快捷键）-> 不触发、会话状态不变。
+        XCTAssertNil(machine.modifierUp(at: 0.1))
+        // 之后一次干净轻点应正常 start（证明会话仍处于未激活）。
+        machine.modifierDown(at: 1.0)
+        XCTAssertEqual(machine.modifierUp(at: 1.1), .start)
+    }
+
+    func testSingleTapToggleLongPressDoesNotToggle() {
+        var machine = SingleTapToggleStateMachine(window: 0.3)
+        machine.modifierDown(at: 0.0)
+        // 长按超窗口不触发。
+        XCTAssertNil(machine.modifierUp(at: 0.6))
+    }
+
+    func testSingleTapToggleResetDoesNotChangeActiveState() {
+        var machine = SingleTapToggleStateMachine(window: 0.3)
+        machine.modifierDown(at: 0.0)
+        XCTAssertEqual(machine.modifierUp(at: 0.1), .start)
+        // reset 仅作废进行中的候选轻点，不改变「已激活」会话。
+        machine.modifierDown(at: 1.0)
+        machine.reset()
+        // reset 后松开不触发（候选已作废）。
+        XCTAssertNil(machine.modifierUp(at: 1.05))
+        // 下一次干净轻点应给 .stop（会话仍是激活态）。
+        machine.modifierDown(at: 2.0)
+        XCTAssertEqual(machine.modifierUp(at: 2.1), .stop)
+    }
 }

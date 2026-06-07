@@ -93,12 +93,15 @@ struct GeneralSettingsView: View {
 
     private var interactionHint: String {
         switch viewModel.interactionMode {
+        case .singleTap:
+            return String(localized: "general.interactionHint.singleTap",
+                          defaultValue: "Tap the trigger key alone to start, tap again to stop. Holding it with another key (a shortcut) won’t trigger.")
         case .hold:
             return String(localized: "general.interactionHint.hold",
                           defaultValue: "Hold the trigger key to record, release to stop.")
         case .toggle:
             return String(localized: "general.interactionHint.toggle",
-                          defaultValue: "Tap the trigger key to start, tap again to stop.")
+                          defaultValue: "Double-tap the trigger key to start, double-tap again to stop.")
         }
     }
 }
