@@ -202,6 +202,25 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(config.model, ProviderKind.anthropic.defaultModel)
     }
 
+    /// Regression guard: a previously-persisted but now-deprecated model id must gracefully clamp to
+    /// the current provider's default rather than be served back as an invalid id to the API.
+    func testStaleStoredModelClampsToNewDefault() {
+        // DeepSeek: a stored legacy "deepseek-chat" must clamp to the new V4 default.
+        defaults.set(ProviderKind.deepSeek.rawValue, forKey: "provider.kind")
+        defaults.set("deepseek-chat", forKey: "provider.model")
+        XCTAssertEqual(AppConfig(defaults: defaults).model, ProviderKind.deepSeek.defaultModel)
+
+        // OpenAI: a stored legacy "gpt-4o-mini" must clamp to the new GPT-5.x default.
+        defaults.set(ProviderKind.openAI.rawValue, forKey: "provider.kind")
+        defaults.set("gpt-4o-mini", forKey: "provider.model")
+        XCTAssertEqual(AppConfig(defaults: defaults).model, ProviderKind.openAI.defaultModel)
+
+        // Anthropic: a stored legacy "claude-3-5-haiku-20241022" must clamp to the new default.
+        defaults.set(ProviderKind.anthropic.rawValue, forKey: "provider.kind")
+        defaults.set("claude-3-5-haiku-20241022", forKey: "provider.model")
+        XCTAssertEqual(AppConfig(defaults: defaults).model, ProviderKind.anthropic.defaultModel)
+    }
+
     // MARK: Silent fallback for corrupt/unknown values
 
     func testUnknownRawValueFallsBackToDefault() {
@@ -282,6 +301,61 @@ final class ConfigEnumTests: XCTestCase {
         // Exactly the Codex GPT-5.x ids confirmed available for the ChatGPT login.
         XCTAssertEqual(ids, ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"])
         XCTAssertEqual(ProviderKind.chatGPT.defaultModel, "gpt-5.5")
+    }
+
+    /// Regression guard: the DeepSeek API key provider must offer only the current DeepSeek V4
+    /// models. The legacy deepseek-chat / deepseek-reasoner ids are deprecated (sunset 2026-07-24)
+    /// and must no longer be offered. Default is the faster/cheaper V4 Flash (best for polishing).
+    func testDeepSeekProviderOffersCurrentModels() {
+        let options = ProviderKind.deepSeek.modelOptions
+        let ids = options.map(\.id)
+        XCTAssertFalse(ids.contains("deepseek-chat"), "deepseek-chat is deprecated and must be removed")
+        XCTAssertFalse(ids.contains("deepseek-reasoner"), "deepseek-reasoner is deprecated and must be removed")
+        XCTAssertEqual(ids, ["deepseek-v4-flash", "deepseek-v4-pro"])
+        XCTAssertEqual(options.map(\.label), ["DeepSeek V4 Flash", "DeepSeek V4 Pro"])
+        XCTAssertEqual(ProviderKind.deepSeek.defaultModel, "deepseek-v4-flash")
+    }
+
+    /// Regression guard: the OpenAI API key provider must use current GPT-5.x chat model ids with
+    /// bare ids (no date suffix). The legacy gpt-4o / gpt-4o-mini ids must no longer be offered.
+    /// Default is the cost-effective gpt-5.4-mini (best for polishing).
+    func testOpenAIProviderOffersCurrentModels() {
+        let ids = ProviderKind.openAI.modelOptions.map(\.id)
+        XCTAssertFalse(ids.contains("gpt-4o"), "gpt-4o must be removed")
+        XCTAssertFalse(ids.contains("gpt-4o-mini"), "gpt-4o-mini must be removed")
+        XCTAssertTrue(ids.contains("gpt-5.5"), "OpenAI must offer gpt-5.5")
+        XCTAssertTrue(ids.contains("gpt-5.4-mini"), "OpenAI must offer gpt-5.4-mini")
+        // Bare ids only (no date suffix like -2025-xx-xx).
+        for id in ids {
+            XCTAssertNil(id.range(of: #"-\d{4}-\d{2}-\d{2}$"#, options: .regularExpression),
+                         "\(id) must be a bare model id without a date suffix")
+        }
+        XCTAssertEqual(ProviderKind.openAI.defaultModel, "gpt-5.4-mini")
+    }
+
+    /// Regression guard: the Anthropic provider must use the current Claude 4.x bare ids (no date
+    /// suffix). Legacy claude-3.x ids must no longer be offered. Default is the cheap/fast
+    /// claude-haiku-4-5 (best for polishing).
+    func testAnthropicProviderOffersCurrentModels() {
+        let ids = ProviderKind.anthropic.modelOptions.map(\.id)
+        for id in ids {
+            XCTAssertFalse(id.hasPrefix("claude-3"), "\(id): claude-3.x must be removed")
+            // Bare ids only (no trailing date like -20251001).
+            XCTAssertNil(id.range(of: #"-\d{8}$"#, options: .regularExpression),
+                         "\(id) must be a bare model id without a date suffix")
+        }
+        XCTAssertEqual(ids, ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"])
+        XCTAssertEqual(ProviderKind.anthropic.defaultModel, "claude-haiku-4-5")
+    }
+
+    /// Regression guard: every provider's default model must be one of its own valid options
+    /// (no stale default pointing at a removed id).
+    func testEveryProviderDefaultIsAValidOption() {
+        for kind in ProviderKind.allCases {
+            let ids = kind.modelOptions.map(\.id)
+            XCTAssertTrue(ids.contains(kind.defaultModel),
+                          "\(kind) default \(kind.defaultModel) is not in its options \(ids)")
+        }
     }
 
     func testUILanguageHasOnlyTwoCases() {
