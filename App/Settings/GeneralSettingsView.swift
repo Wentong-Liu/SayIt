@@ -11,6 +11,20 @@ struct GeneralSettingsView: View {
     var body: some View {
         Form {
             Section {
+                Picker("general.uiLanguage", selection: $viewModel.uiLanguage) {
+                    ForEach(viewModel.uiLanguageOptions) { lang in
+                        Text(lang.displayName).tag(lang)
+                    }
+                }
+            } header: {
+                Text("general.section.interfaceLanguage")
+            } footer: {
+                Text("general.uiLanguage.footer")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Picker("general.triggerKey", selection: $viewModel.triggerKey) {
                     ForEach(TriggerKey.allCases) { key in
                         Text(LocalizedStringKey(key.localizationKey)).tag(key)
@@ -53,20 +67,6 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
             } header: {
                 Text("general.section.microphone")
-            }
-
-            Section {
-                Picker("general.uiLanguage", selection: $viewModel.uiLanguage) {
-                    ForEach(viewModel.uiLanguageOptions) { lang in
-                        Text(lang.displayName).tag(lang)
-                    }
-                }
-            } header: {
-                Text("general.section.interfaceLanguage")
-            } footer: {
-                Text("general.uiLanguage.footer")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
