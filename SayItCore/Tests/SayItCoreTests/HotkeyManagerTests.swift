@@ -9,8 +9,9 @@ final class HotkeyManagerTests: XCTestCase {
     func testDefaultConfiguration() {
         let manager = HotkeyManager()
         XCTAssertEqual(manager.triggerKey, .rightCommand)
-        XCTAssertEqual(manager.mode, .holdToTalk)
+        XCTAssertEqual(manager.mode, .singleTapToggle, "默认应为单击切换（孤立轻点）")
         XCTAssertEqual(manager.doubleTapThreshold, 0.4, accuracy: 0.0001)
+        XCTAssertEqual(manager.singleTapWindow, 0.3, accuracy: 0.0001)
         XCTAssertFalse(manager.isRunning)
     }
 

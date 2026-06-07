@@ -4,24 +4,27 @@ import Foundation
 // modifierFlag / label 等热键运行期所需成员，以及 leftControl、fnGlobe 完整用例）。
 // 此处不再重复声明，仅保留其余配置枚举。配置面板展示名见该类型的 `displayName`。
 
-/// 触发交互方式：按住说话 vs 单击切换。
+/// 触发交互方式：单击切换 / 按住说话 / 双击切换。
 ///
 /// `rawValue` 为落盘字符串，不可随意更名。
 public enum InteractionMode: String, CaseIterable, Identifiable, Sendable {
+    /// 孤立单击修饰键开始录音，再次单击结束（默认，类似 Typeless / 闪电说）。
+    case singleTap
     /// 按住触发键录音，松开结束（push-to-talk）。
     case hold
-    /// 单击开始录音，再次单击结束（toggle）。
+    /// 双击开始录音，再次双击结束。
     case toggle
 
     public var id: String { rawValue }
 
-    /// 默认交互方式：按住说话。
-    public static let `default`: InteractionMode = .hold
+    /// 默认交互方式：单击切换（孤立轻点）。
+    public static let `default`: InteractionMode = .singleTap
 
     public var displayName: String {
         switch self {
-        case .hold:   return "按住说话"
-        case .toggle: return "单击切换"
+        case .singleTap: return "单击切换"
+        case .hold:      return "按住说话"
+        case .toggle:    return "双击切换"
         }
     }
 }

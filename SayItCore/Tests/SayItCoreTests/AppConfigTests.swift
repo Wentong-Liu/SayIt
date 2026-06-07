@@ -28,7 +28,7 @@ final class AppConfigTests: XCTestCase {
 
     func testDefaultsOnFreshStore() {
         XCTAssertEqual(config.triggerKey, .rightCommand)
-        XCTAssertEqual(config.interactionMode, .hold)
+        XCTAssertEqual(config.interactionMode, .singleTap)
         XCTAssertEqual(config.sttMode, .local)
         XCTAssertEqual(config.localModel, "large-v3-turbo")
         XCTAssertEqual(config.cloudSTTModel, "gpt-4o-mini-transcribe")
@@ -197,7 +197,7 @@ final class AppConfigTests: XCTestCase {
         defaults.set("nope", forKey: "provider.kind")
         let fresh = AppConfig(defaults: defaults)
         XCTAssertEqual(fresh.triggerKey, .rightCommand)
-        XCTAssertEqual(fresh.interactionMode, .hold)
+        XCTAssertEqual(fresh.interactionMode, .singleTap)
         XCTAssertEqual(fresh.sttMode, .local)
         XCTAssertEqual(fresh.polishStyle, .smart)
         XCTAssertEqual(fresh.providerKind, .openAI)
@@ -236,7 +236,7 @@ final class ConfigEnumTests: XCTestCase {
     }
 
     func testInteractionModeDefault() {
-        XCTAssertEqual(InteractionMode.default, .hold)
+        XCTAssertEqual(InteractionMode.default, .singleTap)
     }
 
     func testSTTModeDefault() {

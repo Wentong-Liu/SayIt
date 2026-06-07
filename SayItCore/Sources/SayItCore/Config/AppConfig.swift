@@ -55,7 +55,7 @@ public final class AppConfig {
         set { setEnum(newValue, forKey: Key.triggerKey) }
     }
 
-    /// 触发交互方式（按住 / 单击切换）。缺省按住说话。
+    /// 触发交互方式（单击切换 / 按住说话 / 双击切换）。缺省单击切换。
     public var interactionMode: InteractionMode {
         get { enumValue(Key.interactionMode, default: .default) }
         set { setEnum(newValue, forKey: Key.interactionMode) }
