@@ -21,8 +21,7 @@ It is free because of two choices:
   i.e. a subscription you may already pay for — so there is no extra
   per-token API spend for the core dictation loop.
 
-Hold *or* tap the trigger key, speak (mixed Chinese + English is supported and
-the language is auto-detected), then release or tap again. SayIt transcribes
+Hold *or* tap the trigger key, speak, then release or tap again. SayIt transcribes
 your speech, lets an LLM clean it up, and inserts the polished text at the
 cursor in **any** macOS app.
 
@@ -62,6 +61,14 @@ hotkey → record → STT (local or cloud) → LLM polish → inject at cursor (
 - **Everything else is optional.** Cloud STT and the other API-key providers
   (OpenAI / DeepSeek / Anthropic) are available only if you choose to bring your
   own key.
+
+**AI polishing is optional — SayIt is completely free without it.** Speech-to-text
+runs entirely on a local, on-device model, so the app is fully usable with no
+account, no network, and no cost. Polishing (cleaning up filler words,
+punctuation, and phrasing) is opt-in: leave it off and SayIt stays 100% free;
+turn it on and power it with a ChatGPT / Codex subscription you may already have
+— no per-token API bill — or with your own API key. Either way, you never pay
+SayIt anything.
 
 ## Requirements
 
