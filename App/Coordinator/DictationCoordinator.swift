@@ -260,7 +260,8 @@ final class DictationCoordinator {
         // 先取走启动句柄，进入 pipeline 后 `await` 它完成，确保 stop 不早于 start 在 actor 执行。
         let pendingStart = startTask
 
-        panel.update(state: .transcribing)
+        // 进入处理态：从识别阶段、进度 0.0 起步（Typeless 风格进度条 0...0.5 = 识别）。
+        updateProcessing(0.0, .transcribing)
         phase = .working
 
         processingTask = Task { [weak self] in
@@ -326,8 +327,21 @@ final class DictationCoordinator {
             return
         }
 
+        // 识别完成：到达进度条 50% 边界。开启润色则翻入润色阶段（0.5...1）；
+        // 关闭润色则按需求识别完成即直接填满到 1.0（不展示润色阶段）。
+        if config.polishEnabled {
+            updateProcessing(0.5, .polishing)
+        } else {
+            updateProcessing(1.0, .transcribing)
+        }
+
         // 3) 润色（开则走 LLM，失败/关闭自动回退原文，PolishPipeline 内建）。
         let polished = await polishIfEnabled(transcript)
+
+        // 润色结束：填满进度条到 100%（关闭润色时上面已置 1.0，这里幂等）。
+        if config.polishEnabled {
+            updateProcessing(1.0, .polishing)
+        }
 
         // 4) 注入到目标 App 光标处（润色失败时附带轻提示，但绝不丢字）。
         injectFinalText(polished.text, polishFailed: polished.failed)
@@ -466,6 +480,12 @@ final class DictationCoordinator {
     }
 
     // MARK: 状态收敛工具
+
+    /// 把处理进度（0...1）与当前阶段推到 HUD（Typeless 风格进度条）。
+    /// 集中一处便于把贯穿流水线的进度更新写得紧凑、可读。
+    private func updateProcessing(_ progress: Double, _ phase: RecordingState.ProcessingPhase) {
+        panel.update(state: .processing(progress: progress, phase: phase))
+    }
 
     /// 取当前前台 App 快照。
     private func currentFrontmostTarget() -> InjectionTarget? {

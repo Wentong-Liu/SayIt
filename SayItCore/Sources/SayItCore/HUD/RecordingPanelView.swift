@@ -29,6 +29,10 @@ public struct RecordingPanelView: View {
     private static let cornerRadius: CGFloat = 16
     /// 波形条数量。
     private static let barCount = 5
+    /// 处理态进度条轨道宽度（pt）。
+    private static let progressBarWidth: CGFloat = 48
+    /// 处理态进度条高度（pt）。
+    private static let progressBarHeight: CGFloat = 5
 
     @ObservedObject var model: RecordingPanelModel
     @State private var appeared = false
@@ -75,6 +79,8 @@ public struct RecordingPanelView: View {
             waveform
         case .transcribing:
             spinner
+        case .processing(let progress, let phase):
+            progressBar(progress: progress, phase: phase)
         case .info:
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 14, weight: .semibold))
@@ -122,6 +128,26 @@ public struct RecordingPanelView: View {
             .frame(width: 16, height: 16)
             .rotationEffect(.degrees(spin ? 360 : 0))
             .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: spin)
+    }
+
+    /// 处理态进度条（Typeless 风格）：固定宽度轨道 + 按进度填充的前景胶囊。
+    /// 进度在阶段边界阶梯式推进（0→0.5→1.0），靠 `.animation` 让填充宽度平滑滑动，观感连续。
+    /// 前景色随阶段切换以在 50% 边界强化「识别 → 润色」的相位变化。
+    private func progressBar(progress: Double, phase: RecordingState.ProcessingPhase) -> some View {
+        let clamped = min(max(progress, 0), 1)
+        let fillColor: Color = (phase == .polishing)
+            ? Color.green.opacity(0.9)   // 润色：绿色
+            : Color.white.opacity(0.9)   // 识别：白色
+        return ZStack(alignment: .leading) {
+            Capsule()
+                .fill(Color.white.opacity(0.2))
+                .frame(width: Self.progressBarWidth, height: Self.progressBarHeight)
+            Capsule()
+                .fill(fillColor)
+                .frame(width: Self.progressBarWidth * CGFloat(clamped), height: Self.progressBarHeight)
+                .animation(.easeInOut(duration: 0.3), value: clamped)
+        }
+        .frame(width: Self.progressBarWidth, height: Self.progressBarHeight)
     }
 }
 #endif
