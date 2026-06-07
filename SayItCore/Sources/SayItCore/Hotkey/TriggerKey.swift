@@ -61,4 +61,9 @@ public enum TriggerKey: String, CaseIterable, Identifiable, Sendable {
         case .fnGlobe:      return "Fn / 🌐"
         }
     }
+
+    /// 设置面板展示名（与 ``label`` 同源）。
+    ///
+    /// 为兼容配置层早期 API 命名而保留；新代码优先用 ``label``。
+    public var displayName: String { label }
 }

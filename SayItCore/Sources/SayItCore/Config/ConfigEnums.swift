@@ -1,33 +1,8 @@
 import Foundation
 
-/// 听写触发用的修饰键。双击/按住该键触发录音。
-///
-/// `rawValue` 为落盘字符串：**改了会读不到旧配置**，须与历史保持一致。
-public enum TriggerKey: String, CaseIterable, Identifiable, Sendable {
-    case rightCommand
-    case leftCommand
-    case rightOption
-    case leftOption
-    case rightControl
-    case fn
-
-    public var id: String { rawValue }
-
-    /// 默认触发键：右⌘（不挡左手常用快捷键）。
-    public static let `default`: TriggerKey = .rightCommand
-
-    /// 设置面板展示名。
-    public var displayName: String {
-        switch self {
-        case .rightCommand: return "右 ⌘"
-        case .leftCommand:  return "左 ⌘"
-        case .rightOption:  return "右 ⌥"
-        case .leftOption:   return "左 ⌥"
-        case .rightControl: return "右 ⌃"
-        case .fn:           return "fn"
-        }
-    }
-}
+// NOTE: `TriggerKey` 的单一真相源在 ``Hotkey/TriggerKey.swift``（含 keyCode /
+// modifierFlag / label 等热键运行期所需成员，以及 leftControl、fnGlobe 完整用例）。
+// 此处不再重复声明，仅保留其余配置枚举。配置面板展示名见该类型的 `displayName`。
 
 /// 触发交互方式：按住说话 vs 单击切换。
 ///
@@ -73,17 +48,20 @@ public enum STTMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// 润色风格：决定送给 LLM 的润色指令倾向。
+/// 润色风格：决定送给 LLM 的润色指令倾向（见设计 Spec 第 6.2 节）。
+///
+/// 风格只影响 system 提示词中「语域 / 整理力度」那一段的措辞，
+/// 不改变第 6.1 节的硬约束（只整理不回答、去语气词、保真等）。
 ///
 /// `rawValue` 为落盘字符串，不可随意更名。
-public enum PolishStyle: String, CaseIterable, Identifiable, Sendable {
-    /// 智能润色：去口水、补标点、理顺断句，保留口语自然度。
+public enum PolishStyle: String, CaseIterable, Identifiable, Codable, Sendable {
+    /// 智能（默认）：全套整理——去口水词、补标点、改口纠正、必要时分点、按 App 名调语域，保留口语自然度。
     case smart
-    /// 仅补标点：尽量保留原文措辞，只补全标点与断句。
+    /// 仅标点：只补标点与大小写、去最明显口水词；不重组句子、不分点、不改措辞（最保真）。
     case punctuationOnly
-    /// 正式书面：偏书面、严谨的措辞。
+    /// 正式书面：在「智能」基础上转为书面 / 正式语域（去口语化、完整句）。
     case formal
-    /// 轻松随意：偏口语、轻松的措辞。
+    /// 轻松随意：在「智能」基础上保留自然口语节奏（适合发消息 / 聊天），轻整理。
     case casual
 
     public var id: String { rawValue }
