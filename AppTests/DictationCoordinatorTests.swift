@@ -317,6 +317,64 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["云端转写结果"], "云端模式应正常转写并注入")
     }
 
+    // MARK: - 输入设备实时生效：端到端听写用持久化的 inputDeviceUID
+
+    /// 回归守卫：设置页选定的麦克风必须对**下一次**听写立即生效（无需重启 App）。
+    /// handleStart 现读 config.inputDeviceUID 并传给 recorder.start(deviceUID:)；
+    /// 旧 bug 是调用无参 start()，永远录系统默认设备，持久化的选择从不应用到运行中的流水线。
+    func testStartUsesPersistedInputDevice() async {
+        let config = makeConfig()
+        config.inputDeviceUID = "DeviceXYZ"
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            FakeTranscriber(text: "你好")
+        }
+
+        await coordinator._test_start()
+
+        let usedUID = await recorder.lastStartDeviceUID
+        XCTAssertEqual(usedUID, "DeviceXYZ", "端到端听写应使用持久化选定的输入设备")
+    }
+
+    /// 未选设备（nil）时，端到端听写以系统默认设备开始（deviceUID 传 nil）。
+    func testStartUsesSystemDefaultWhenNoDeviceSelected() async {
+        let config = makeConfig()  // inputDeviceUID 默认为 nil
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            FakeTranscriber(text: "你好")
+        }
+
+        await coordinator._test_start()
+
+        let usedUID = await recorder.lastStartDeviceUID
+        XCTAssertNil(usedUID, "未选设备时应传 nil（跟随系统默认）")
+    }
+
+    /// 设备选择实时切换：两次听写之间改 config.inputDeviceUID，第二次须用新设备
+    /// （证明运行中的协调器每次按下都现读，无需重启）。
+    func testStartPicksUpDeviceChangeBetweenDictations() async {
+        let config = makeConfig()
+        config.inputDeviceUID = "DeviceA"
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            FakeTranscriber(text: "x")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        let firstUID = await recorder.lastStartDeviceUID
+        XCTAssertEqual(firstUID, "DeviceA")
+
+        // 设置页改选另一台设备 → 下一次听写应立即用新设备。
+        config.inputDeviceUID = "DeviceB"
+        await coordinator._test_start()
+        let secondUID = await recorder.lastStartDeviceUID
+        XCTAssertEqual(secondUID, "DeviceB", "运行中的协调器应在下次听写现读最新设备选择")
+    }
+
     // MARK: - 转写硬超时：绝不永久卡在「识别中」
 
     /// 回归守卫：转写迟迟不返回（模拟底层卡在加载/下载）时，硬超时介入、收敛到 idle，不注入、不卡死。
