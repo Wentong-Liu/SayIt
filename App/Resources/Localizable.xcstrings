@@ -606,8 +606,8 @@
     },
     "stt.footer.local" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local models run offline, privacy-first; the model downloads on first use." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型离线运行，隐私优先，首次使用会下载模型。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local models run offline, completely free; the model downloads on first use." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型离线运行，完全免费，首次使用会下载模型。" } }
       }
     },
     "stt.model" : {
