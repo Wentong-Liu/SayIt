@@ -49,7 +49,7 @@ struct STTSettingsView: View {
                 }
             }
 
-            if let message = viewModel.credentialStatusMessage {
+            if let message = viewModel.sttStatusMessage {
                 Section {
                     Text(message)
                         .font(.footnote)
@@ -58,6 +58,7 @@ struct STTSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { viewModel.reloadCredentials() }
     }
 }
 
