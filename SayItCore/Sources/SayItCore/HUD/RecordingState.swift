@@ -46,6 +46,17 @@ public enum RecordingState: Equatable, Sendable {
     public var isVisible: Bool {
         self != .idle
     }
+
+    /// 「本地模型尚未下载就绪」时面向用户的本地化提示文案（en + zh-Hans，走包内 `Bundle.module`）。
+    ///
+    /// 不新增枚举 case（避免牵动 ``RecordingPanelView`` 的穷举 switch）：由调用方包进现成的
+    /// `.error(_:)`/`.info(_:)` 态展示。当本地模型未缓存时，本地转写底层会先触发下载（可能耗时数分钟），
+    /// 期间 HUD 会一直停在「识别中」表现为卡死；上层据此**在转写前**就给出本提示并收敛，
+    /// 引导用户等待下载完成或切换到云端。
+    public static var modelNotReadyMessage: String {
+        localized("hud.modelNotReady",
+                  fallback: "Local model still downloading — please wait or switch to cloud")
+    }
 }
 
 private extension String {

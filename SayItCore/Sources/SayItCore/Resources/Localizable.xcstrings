@@ -73,6 +73,24 @@
         }
       }
     },
+    "hud.modelNotReady" : {
+      "comment" : "Recording HUD: local model not yet downloaded / still downloading",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Local model still downloading — please wait or switch to cloud"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本地模型仍在下载，请稍候或切换到云端"
+          }
+        }
+      }
+    },
     "hud.transcribing" : {
       "comment" : "Recording HUD: transcribing audio",
       "extractionState" : "manual",
