@@ -122,6 +122,16 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(config.uiLanguage, UILanguage.systemDefault)
     }
 
+    func testSystemDefaultResolvesToASupportedCase() {
+        // systemDefault (the unset-key default) always maps the system preferred language to one of the two
+        // supported options; it never produces an out-of-range value regardless of the host locale.
+        let resolved = UILanguage.systemDefault
+        XCTAssertTrue([.english, .simplifiedChinese].contains(resolved))
+        // It must agree with the zh-prefix rule applied to the live preferred language.
+        let isChinese = (Locale.preferredLanguages.first ?? "en").lowercased().hasPrefix("zh")
+        XCTAssertEqual(resolved, isChinese ? .simplifiedChinese : .english)
+    }
+
     func testUILanguageRoundTrip() {
         for lang in UILanguage.allCases {
             config.uiLanguage = lang
