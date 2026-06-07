@@ -120,7 +120,7 @@ public enum PolishPromptBuilder {
     /// Builds the user message: the target application context (if any) + the dictation original wrapped in tags.
     /// The application line is injected only when `appName` is non-empty, to avoid an empty placeholder polluting the prompt.
     ///
-    /// The dictation original is wrapped in the `<dictation-source> ... </dictation-source>` tag (echoing the injection defense in the system prompt),
+    /// The dictation original is wrapped in the `<口述原文> ... </口述原文>` tag (echoing the injection defense in the system prompt),
     /// making the model treat everything inside the tag as "material to be cleaned up" rather than instructions -- borrowing opentypeless's
     /// `<transcription>` wrapping technique, reinforcing our core guarantee of "only cleanup, no answering".
     static func userMessage(rawText: String, context: PolishContext) -> String {
