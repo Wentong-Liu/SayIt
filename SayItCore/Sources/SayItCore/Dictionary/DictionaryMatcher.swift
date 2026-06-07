@@ -178,7 +178,10 @@ enum DictionaryMatcher {
     // MARK: - Rules
 
     /// A matching rule pre-compiled from one ``DictionaryEntry`` (read-only, reusable).
-    private struct Rule {
+    ///
+    /// `internal` (not `private`) so the pure ``derivedSpokenForms(from:)`` helper is unit-testable via
+    /// `@testable import`; the rest of its surface is incidental and only consumed by ``DictionaryMatcher``.
+    struct Rule {
         let canonical: String
         let caseSensitive: Bool
         /// The full raw set of "recognizable forms" (variants + the canonical form itself), preserving case -- for exact case-sensitive comparison.
@@ -198,6 +201,19 @@ enum DictionaryMatcher {
                 // Recognizable forms = each variant + the canonical form itself (the canonical form is itself a spoken form that can be recognized and preserved/normalized).
                 var forms = entry.variants
                 forms.append(canonical)
+                // Auto-derive likely spoken/misheard forms from the canonical spelling, so the deterministic
+                // replacement still works when the user supplied no variants (the single-word/Typeless model):
+                // a typed "useEffect" gains "use effect" / "use-effect" / "useeffect" without any user input.
+                // These are additive and de-duped by the Set construction below; for a plain/Chinese/all-caps
+                // term `derivedSpokenForms` returns [] (over-correction guard), leaving exact matching as-is.
+                //
+                // Skipped for caseSensitive entries: derived forms are lowercase and would land in `exactForms`,
+                // where the case-sensitive layer matches byte-for-byte — that would defeat the user's strict-case
+                // choice (e.g. an `iOS`/caseSensitive entry must not match a lowercase "ios"). A caseSensitive entry
+                // therefore matches only its own user-supplied forms.
+                if !entry.caseSensitive {
+                    forms.append(contentsOf: derivedSpokenForms(from: canonical))
+                }
                 // Drop pure-whitespace forms.
                 let cleaned = forms.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
                 guard !cleaned.isEmpty,
@@ -231,6 +247,106 @@ enum DictionaryMatcher {
                 }
             }
             return count
+        }
+
+        /// Derives the likely spoken / misheard forms of a canonical term so the deterministic Layer-3 matcher can
+        /// normalize them back to the canonical even when the user supplied **no** variants (the single-word model).
+        ///
+        /// The canonical is split into segments on internal boundaries:
+        /// - existing whitespace / hyphens (so a typed `"feature flag"` yields `[feature, flag]`),
+        /// - lower→upper case boundaries (`useEffect` → `use|Effect`; `bigQuery` → `big|Query`),
+        /// - acronym→word boundaries: a run of uppercase letters followed by an upper+lower pair splits before that
+        ///   last uppercase (`HTTPServer` → `HTTP|Server`),
+        /// - letter↔digit boundaries (`PT1` → `PT|1`), matching the `PT时间` spirit.
+        ///
+        /// When the split produces a single segment — a plain word (`codex`), an all-caps token (`GPT`), or a
+        /// non-cased / CJK term (`拓荆科技`) — this returns `[]`: case-insensitive exact matching already covers those,
+        /// and we must not fabricate spoken variants for them (the over-correction guard).
+        ///
+        /// From two or more lowercased segments it builds the space-joined, hyphen-joined, and run-on lowercase forms
+        /// (e.g. `"use effect"`, `"use-effect"`, `"useeffect"`), de-duped, with any form equal (case-insensitively) to
+        /// the canonical or empty dropped. Pure and order-stable, so determinism is preserved. Derived forms are
+        /// lowercase and only ever consulted by the case-INSENSITIVE matching layers, so they are inert for a
+        /// `caseSensitive` entry (which correctly stays strict-case).
+        static func derivedSpokenForms(from canonical: String) -> [String] {
+            let segments = caseAwareSegments(of: canonical)
+            // One segment (or none): plain word / all-caps / CJK / non-cased term — exact handles it; do not fabricate.
+            guard segments.count >= 2 else { return [] }
+
+            let lowered = segments.map { $0.lowercased() }
+            let spaceJoined = lowered.joined(separator: " ")
+            let hyphenJoined = lowered.joined(separator: "-")
+            let runOn = lowered.joined()
+
+            var seen = Set<String>()
+            var result: [String] = []
+            for form in [spaceJoined, hyphenJoined, runOn] {
+                guard !form.isEmpty else { continue }
+                // Drop a form that is byte-for-byte the canonical itself (the canonical is already a form); a
+                // lowercased run-on like "useeffect" is kept on purpose — it documents intent and is inert (the
+                // canonical's own lowercased spelling already covers it via the case-insensitive layer).
+                guard form != canonical else { continue }
+                guard !seen.contains(form) else { continue }
+                seen.insert(form)
+                result.append(form)
+            }
+            return result
+        }
+
+        /// Splits a term into segments on whitespace/hyphens **and** internal case / script boundaries.
+        ///
+        /// Boundaries (a new segment starts at the character after the boundary):
+        /// - any whitespace or hyphen acts as a separator (consumed, not part of a segment),
+        /// - lower→upper (`useEffect`),
+        /// - upper-run→word: `XMLParser`-style — break before the last uppercase of an uppercase run when the next
+        ///   character is lowercase, so `HTTPServer` → `HTTP` + `Server`,
+        /// - letter↔digit in either direction (`PT1` → `PT` + `1`).
+        ///
+        /// Returns only non-empty segments. A term with no internal boundary yields a single segment.
+        private static func caseAwareSegments(of term: String) -> [String] {
+            let chars = Array(term)
+            guard !chars.isEmpty else { return [] }
+
+            var segments: [String] = []
+            var current = ""
+
+            func isSeparator(_ c: Character) -> Bool {
+                c.isWhitespace || c == "-" || c == "\u{2010}"
+            }
+
+            for index in chars.indices {
+                let c = chars[index]
+                if isSeparator(c) {
+                    if !current.isEmpty { segments.append(current); current = "" }
+                    continue
+                }
+                if current.isEmpty {
+                    current.append(c)
+                    continue
+                }
+                let prev = chars[index - 1]
+                var boundary = false
+                // lower → upper (useEffect, bigQuery)
+                if prev.isLowercase, c.isUppercase {
+                    boundary = true
+                }
+                // upper-run → word: prev is uppercase, current is uppercase, next is lowercase (HTTPServer -> HTTP|Server)
+                else if prev.isUppercase, c.isUppercase,
+                        index + 1 < chars.count, chars[index + 1].isLowercase {
+                    boundary = true
+                }
+                // letter ↔ digit, either direction (PT1 -> PT|1; 1x -> 1|x)
+                else if (prev.isLetter && c.isNumber) || (prev.isNumber && c.isLetter) {
+                    boundary = true
+                }
+                if boundary {
+                    segments.append(current)
+                    current = ""
+                }
+                current.append(c)
+            }
+            if !current.isEmpty { segments.append(current) }
+            return segments
         }
     }
 }
