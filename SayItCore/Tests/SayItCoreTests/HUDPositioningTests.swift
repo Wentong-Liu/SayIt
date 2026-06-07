@@ -91,6 +91,17 @@ final class RecordingStateTests: XCTestCase {
         XCTAssertTrue(supported.contains(message), "got \(message)")
     }
 
+    /// 「比往常要长」提示已本地化（en + zh-Hans），按受支持语言集断言，且不得回退成原始 key。
+    func testTakingLongerMessageLocalizedToSupportedLanguage() {
+        let supported = [
+            "Taking longer than usual…",
+            "转写时间比往常要长",
+        ]
+        let message = RecordingState.takingLongerMessage
+        XCTAssertNotEqual(message, "hud.takingLonger", "不应回退成原始 key：本地化资源未命中")
+        XCTAssertTrue(supported.contains(message), "got \(message)")
+    }
+
     func testErrorTextTrimsAndFallsBack() {
         XCTAssertEqual(RecordingState.error("  超时  ").displayText, "超时")
         // 空消息回落到本地化通用错误文案（en 或 zh-Hans 之一）。

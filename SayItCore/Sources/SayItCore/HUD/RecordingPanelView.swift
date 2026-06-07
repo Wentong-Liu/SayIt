@@ -34,10 +34,28 @@ public struct RecordingPanelView: View {
     /// 处理态进度条高度（pt）。
     private static let progressBarHeight: CGFloat = 5
 
+    /// 润色阶段的预期时长（秒）。进度条用它作为 50%→90% 缓动爬升的时间窗，
+    /// 也是「比往常要长」文案的触发阈值：超过此时长仍未拿到润色结果即翻文案。
+    private static let expectedPolishDuration: Double = 3
+    /// 润色阶段进度条的爬升上限（占比）。爬到 90% 后保持，绝不在拿到真实结果前越过此线。
+    private static let polishProgressCap: CGFloat = 0.9
+    /// 拿到润色结果后由当前位置吸附到 100% 的吸附动画时长（秒）。
+    private static let snapDuration: Double = 0.3
+
     @ObservedObject var model: RecordingPanelModel
     @State private var appeared = false
     /// 持续旋转的相位，驱动识别态的环形进度动画。
     @State private var spin = false
+
+    /// 进度条当前展示值（0...1）：润色阶段由客户端定时缓动驱动（与后端解耦），
+    /// 而非直接绑定后端发布的离散值（后端仅发 0.5 起、1.0 完成两点）。
+    @State private var displayedProgress: CGFloat = 0
+    /// 本轮润色起算时刻；`nil` 表示尚未进入润色阶段。用于判定是否超过预期时长。
+    @State private var polishStartedAt: Date?
+    /// 润色是否已超过 `expectedPolishDuration` 仍未返回：为真时主文案翻成「比往常要长」。
+    @State private var polishElapsedLong = false
+    /// 驱动「比往常要长」文案翻转的延时任务句柄；润色完成 / 离开处理态时取消。
+    @State private var longLabelTask: Task<Void, Never>?
 
     public init(model: RecordingPanelModel) {
         self.model = model
@@ -46,7 +64,7 @@ public struct RecordingPanelView: View {
     public var body: some View {
         HStack(spacing: 12) {
             indicator
-            Text(model.state.displayText)
+            Text(statusText)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.white.opacity(0.95))
                 .fixedSize(horizontal: true, vertical: false)
@@ -69,7 +87,88 @@ public struct RecordingPanelView: View {
         .onAppear {
             withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { appeared = true }
             spin = true
+            // 首帧若已处于处理态（例如 HUD 在 .processing 时才挂载），同步驱动一次。
+            handleStateChange(model.state)
         }
+        .onChange(of: model.state) { _, newState in
+            handleStateChange(newState)
+        }
+        .onDisappear {
+            // 视图卸载：取消挂起的文案翻转任务，避免悬挂的 Task 在下一轮误触发。
+            longLabelTask?.cancel()
+            longLabelTask = nil
+        }
+    }
+
+    /// HUD 主文案：润色阶段一旦超过预期时长（`polishElapsedLong`），就地替换成「比往常要长」；
+    /// 其余情况沿用 ``RecordingState/displayText``（识别/润色的常规文案与 info/error 文案均不变）。
+    private var statusText: String {
+        if polishElapsedLong, model.state.processingPhase == .polishing {
+            return RecordingState.takingLongerMessage
+        }
+        return model.state.displayText
+    }
+
+    /// 响应状态变化，驱动进度条的客户端缓动与「比往常要长」文案翻转（与后端解耦）。
+    ///
+    /// 时间线（聚焦润色）：后端在识别完成时发布 `0.5 + .polishing`，本方法据此把展示值在
+    /// `expectedPolishDuration` 内以 `.easeOut` 缓动爬到 `polishProgressCap`(90%) 并自然保持；
+    /// 同时起一个延时任务，超过预期时长仍未返回则翻文案。后端在润色返回时发布 `1.0`，
+    /// 本方法据此把展示值吸附到 100% 并清理计时；离开处理态则把所有状态复位，保证下一轮干净起步。
+    private func handleStateChange(_ state: RecordingState) {
+        switch (state.processingPhase, state.progress) {
+        case (.transcribing?, let progress?):
+            // 识别阶段：直接跟随后端发布值（0.0 起步），交由进度条的既有缓动平滑过渡。
+            resetPolishTracking()
+            withAnimation(.easeInOut(duration: Self.snapDuration)) {
+                displayedProgress = CGFloat(min(max(progress, 0), 1))
+            }
+        case (.polishing?, let progress?):
+            if progress >= 1.0 {
+                // 润色返回：从当前位置（≤90%）吸附到 100%，并取消「比往常要长」计时。
+                longLabelTask?.cancel()
+                longLabelTask = nil
+                withAnimation(.easeInOut(duration: Self.snapDuration)) {
+                    displayedProgress = 1.0
+                }
+            } else if polishStartedAt == nil {
+                // 润色起步：从 50% 起以 ease-out 在 expectedPolishDuration 内爬到 90% 并保持。
+                beginPolishTrickle(from: CGFloat(min(max(progress, 0), 1)))
+            }
+        default:
+            // 离开处理态（idle/info/error/listening/transcribing-旧态）：复位，为下一轮做准备。
+            resetPolishTracking()
+            displayedProgress = 0
+        }
+    }
+
+    /// 起步润色缓动：把展示值从起点（~50%）以 `.easeOut` 在预期时长内爬到 90% 上限并保持，
+    /// 同时排程一个延时任务——超过预期时长仍处于润色阶段则翻「比往常要长」文案。
+    private func beginPolishTrickle(from start: CGFloat) {
+        polishStartedAt = Date()
+        polishElapsedLong = false
+        displayedProgress = start
+        withAnimation(.easeOut(duration: Self.expectedPolishDuration)) {
+            displayedProgress = Self.polishProgressCap
+        }
+        longLabelTask?.cancel()
+        longLabelTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(Self.expectedPolishDuration * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            // 仍在润色阶段（未返回结果）才翻文案；否则保持常规文案。
+            if model.state.processingPhase == .polishing,
+               (model.state.progress ?? 1) < 1.0 {
+                polishElapsedLong = true
+            }
+        }
+    }
+
+    /// 复位润色相关的计时与文案状态，并取消挂起的延时任务。
+    private func resetPolishTracking() {
+        longLabelTask?.cancel()
+        longLabelTask = nil
+        polishStartedAt = nil
+        polishElapsedLong = false
     }
 
     /// 左侧状态指示：聆听=波形、识别=旋转环、出错=红色感叹号。
@@ -131,21 +230,22 @@ public struct RecordingPanelView: View {
     }
 
     /// 处理态进度条（Typeless 风格）：固定宽度轨道 + 按进度填充的前景胶囊。
-    /// 进度在阶段边界阶梯式推进（0→0.5→1.0），靠 `.animation` 让填充宽度平滑滑动，观感连续。
+    /// 填充宽度绑定客户端展示值 `displayedProgress`（由 `handleStateChange` 驱动），而非后端发布的离散值：
+    /// 润色阶段从 50% 以 ease-out 在 `expectedPolishDuration` 内缓动爬到 90% 上限并保持，
+    /// 拿到真实结果后再吸附到 100%——绝不停在 50%，等待发生在 90% 上限附近。
     /// 前景色随阶段切换以在 50% 边界强化「识别 → 润色」的相位变化。
     private func progressBar(progress: Double, phase: RecordingState.ProcessingPhase) -> some View {
-        let clamped = min(max(progress, 0), 1)
         let fillColor: Color = (phase == .polishing)
             ? Color.green.opacity(0.9)   // 润色：绿色
             : Color.white.opacity(0.9)   // 识别：白色
+        let fill = min(max(displayedProgress, 0), 1)
         return ZStack(alignment: .leading) {
             Capsule()
                 .fill(Color.white.opacity(0.2))
                 .frame(width: Self.progressBarWidth, height: Self.progressBarHeight)
             Capsule()
                 .fill(fillColor)
-                .frame(width: Self.progressBarWidth * CGFloat(clamped), height: Self.progressBarHeight)
-                .animation(.easeInOut(duration: 0.3), value: clamped)
+                .frame(width: Self.progressBarWidth * fill, height: Self.progressBarHeight)
         }
         .frame(width: Self.progressBarWidth, height: Self.progressBarHeight)
     }
