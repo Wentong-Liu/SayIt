@@ -61,6 +61,15 @@ killall SayIt 2>/dev/null || true
 rm -rf "${DEST}"
 cp -R "${PRODUCT}" "${DEST}"
 
+# 清理重复的同 bundle-id 副本：磁盘上残留的旧 .app 会污染 TCC（隐私授权）与
+# LaunchServices（重复登记 → 弹错应用、授权错乱）。安装后只保留 /Applications/SayIt.app。
+# 幂等：目标不存在时 rm -rf 静默通过。
+echo "    清理重复 bundle 副本（仅保留 ${DEST}）"
+# 仓库内 Release 输出（已拷贝到 /Applications，源副本不再需要）。
+rm -rf "${REPO}/build"
+# Xcode DerivedData 里的旧产物（含 SayIt.app 同 bundle-id 副本）。
+rm -rf "${HOME}/Library/Developer/Xcode/DerivedData/SayIt-"*
+
 echo "==> [5/6] 验证签名"
 codesign --verify --strict "${DEST}"
 codesign -dv --verbose=2 "${DEST}"
