@@ -1,10 +1,22 @@
-# SayIt
+<div align="center">
+  <img src="docs/logo.png" width="140" alt="SayIt logo">
 
-> A completely free, open-source macOS voice-dictation app — hold or tap a hotkey, speak, and clean polished text lands at your cursor in any app.
+  <h1>SayIt</h1>
 
-![platform](https://img.shields.io/badge/platform-macOS%2014%2B-blue)
-![language](https://img.shields.io/badge/Swift-6-orange)
-![license](https://img.shields.io/badge/license-see%20LICENSE-lightgrey)
+  <p>
+    <strong>A completely free, open-source macOS voice-dictation app</strong><br>
+    Hold or tap a hotkey, speak, and clean polished text lands at your cursor in any app.
+  </p>
+
+  <p>
+    <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%2014%2B-blue">
+    <img alt="Language" src="https://img.shields.io/badge/Swift-6-orange">
+    <img alt="License" src="https://img.shields.io/badge/license-see%20LICENSE-lightgrey">
+    <img alt="Free" src="https://img.shields.io/badge/price-free-brightgreen">
+  </p>
+</div>
+
+<hr>
 
 ## Why SayIt
 
