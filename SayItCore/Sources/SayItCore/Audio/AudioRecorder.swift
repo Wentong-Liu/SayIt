@@ -22,9 +22,19 @@ import os
 /// Uses an `actor` to guarantee concurrency safety of the recording state and accumulation buffer. The tap callback runs on the audio real-time thread,
 /// where it only does "synchronous format conversion + delivering the converted samples back to the actor for accumulation via a Task".
 public actor AudioRecorder: AudioRecording {
+    /// Backing storage for the current recording session's `AVAudioEngine`, held in a `Sendable` box so it
+    /// is reachable from the `nonisolated` `deinit` (which cannot touch actor-isolated, non-Sendable state
+    /// under Swift 6) for off-actor teardown. Mirrors the `nonisolated(unsafe)` box style already used in
+    /// this file. All in-session reads/writes still go through the actor-isolated `engine` accessor below,
+    /// so the actor serializes start/stop and the stored reference is never touched concurrently.
+    private nonisolated let engineHolder = EngineHolder()
+
     /// The AVAudioEngine used by the current recording session. Rebuilt on each `start()`, released on `stop()`.
     /// Classic pitfall: reusing an old engine caches a bad inputFormat (0ch/0Hz), causing silent capture.
-    private var engine: AVAudioEngine?
+    private var engine: AVAudioEngine? {
+        get { engineHolder.engine }
+        set { engineHolder.engine = newValue }
+    }
 
     /// The target output format: 16kHz / mono / Float32 (non-interleaved).
     private let targetFormat: AVAudioFormat
@@ -79,6 +89,13 @@ public actor AudioRecorder: AudioRecording {
     }
 
     deinit {
+        // Actor deinit is nonisolated; AVAudioEngine teardown is safe off-actor. A recorder dropped
+        // mid-session must not leave the mic/input device live, so reach the engine through the
+        // nonisolated holder and mirror stop()'s teardown order (removeTap then stop) before releasing it.
+        if let engine = engineHolder.engine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
         levelStream.finishCurrent()
     }
 
@@ -132,51 +149,67 @@ public actor AudioRecorder: AudioRecording {
         //      so rebuild here first, ensuring they get this session's new stream.
         levelStream.beginSession()
 
-        // 2) Key: create a brand-new AVAudioEngine. Never reuse the old engine (avoiding the cached bad inputFormat).
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
+        // Pair the level-stream lifecycle with the engine lifecycle: any failure after beginSession()
+        // (converterUnavailable / engineStartFailed / the invalid-format fast-fail below / any AVFoundation throw)
+        // must tear down this session's level stream so no orphaned live-but-dead stream is left behind.
+        // The success path is behavior-identical (a do/catch with re-throw is transparent when nothing throws).
+        do {
+            // 2) Key: create a brand-new AVAudioEngine. Never reuse the old engine (avoiding the cached bad inputFormat).
+            let engine = AVAudioEngine()
+            let inputNode = engine.inputNode
 
-        // 2.5) Selected device: bind the inputNode's underlying AudioUnit to that device.
-        //      When deviceUID is nil (or no device resolves), leave it unchanged, using the system default input device.
-        //      Must be done before reading inputFormat / installing the tap -- when the device changes the raw format may change too.
-        if let deviceUID, let deviceID = AudioInputDeviceManager.deviceID(forUID: deviceUID) {
-            Self.setCurrentInputDevice(deviceID, on: inputNode)
-        }
-
-        var workingEngine = engine
-        var workingInputNode = inputNode
-        var inputFormat = inputNode.inputFormat(forBus: 0)
-        Self.log.notice("inputFormat: sampleRate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public)")
-
-        // 3) Defense: a bad format (0 channels or 0Hz) would confirm the hypothesis of "reusing the engine caches a bad inputFormat".
-        //    Try one recovery: discard the current engine, rebuild a new engine and query again. If still bad, log an error and continue trying to start.
-        if inputFormat.channelCount == 0 || inputFormat.sampleRate == 0 {
-            Self.log.error("inputFormat invalid (channels=\(inputFormat.channelCount, privacy: .public), sampleRate=\(inputFormat.sampleRate, privacy: .public)); attempting one engine rebuild to recover")
-            let rebuilt = AVAudioEngine()
-            let rebuiltInput = rebuilt.inputNode
+            // 2.5) Selected device: bind the inputNode's underlying AudioUnit to that device.
+            //      When deviceUID is nil (or no device resolves), leave it unchanged, using the system default input device.
+            //      Must be done before reading inputFormat / installing the tap -- when the device changes the raw format may change too.
             if let deviceUID, let deviceID = AudioInputDeviceManager.deviceID(forUID: deviceUID) {
-                Self.setCurrentInputDevice(deviceID, on: rebuiltInput)
+                Self.setCurrentInputDevice(deviceID, on: inputNode)
             }
-            let recoveredFormat = rebuiltInput.inputFormat(forBus: 0)
-            Self.log.notice("rebuilt inputFormat: sampleRate=\(recoveredFormat.sampleRate, privacy: .public) channels=\(recoveredFormat.channelCount, privacy: .public)")
-            if recoveredFormat.channelCount != 0, recoveredFormat.sampleRate != 0 {
-                // Recovery succeeded: switch to the rebuilt engine.
-                workingEngine = rebuilt
-                workingInputNode = rebuiltInput
-                inputFormat = recoveredFormat
-            } else {
-                Self.log.error("inputFormat still invalid after rebuild; proceeding with start attempt anyway")
-            }
-        }
 
-        // 4) Install the tap + start the engine (save the engine reference on success).
-        self.engine = workingEngine
-        try installTapStartAndStore(
-            engine: workingEngine,
-            inputNode: workingInputNode,
-            inputFormat: inputFormat
-        )
-        recording = true
+            var workingEngine = engine
+            var workingInputNode = inputNode
+            var inputFormat = inputNode.inputFormat(forBus: 0)
+            Self.log.notice("inputFormat: sampleRate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public)")
+
+            // 3) Defense: a bad format (0 channels or 0Hz) would confirm the hypothesis of "reusing the engine caches a bad inputFormat".
+            //    Try one recovery: discard the current engine, rebuild a new engine and query again. If still bad, fail fast.
+            if inputFormat.channelCount == 0 || inputFormat.sampleRate == 0 {
+                Self.log.error("inputFormat invalid (channels=\(inputFormat.channelCount, privacy: .public), sampleRate=\(inputFormat.sampleRate, privacy: .public)); attempting one engine rebuild to recover")
+                let rebuilt = AVAudioEngine()
+                let rebuiltInput = rebuilt.inputNode
+                if let deviceUID, let deviceID = AudioInputDeviceManager.deviceID(forUID: deviceUID) {
+                    Self.setCurrentInputDevice(deviceID, on: rebuiltInput)
+                }
+                let recoveredFormat = rebuiltInput.inputFormat(forBus: 0)
+                Self.log.notice("rebuilt inputFormat: sampleRate=\(recoveredFormat.sampleRate, privacy: .public) channels=\(recoveredFormat.channelCount, privacy: .public)")
+                if recoveredFormat.channelCount != 0, recoveredFormat.sampleRate != 0 {
+                    // Recovery succeeded: switch to the rebuilt engine.
+                    workingEngine = rebuilt
+                    workingInputNode = rebuiltInput
+                    inputFormat = recoveredFormat
+                } else {
+                    // Fast-fail: handing a degenerate 0ch/0Hz format to AVAudioConverter/installTap can raise an
+                    // uncatchable AVFoundation NSException. Throw instead; the do/catch above tears down the level
+                    // stream and self.engine stays nil (it is only assigned after this branch), leaving a clean failed-start state.
+                    Self.log.error("inputFormat still invalid after rebuild (0ch/0Hz); failing fast instead of feeding a degenerate format to AVAudioConverter/installTap")
+                    throw AudioRecordingError.engineStartFailed("invalid input format 0ch/0Hz")
+                }
+            }
+
+            // 4) Install the tap + start the engine (save the engine reference on success).
+            self.engine = workingEngine
+            try installTapStartAndStore(
+                engine: workingEngine,
+                inputNode: workingInputNode,
+                inputFormat: inputFormat
+            )
+            recording = true
+        } catch {
+            // installTapStartAndStore already nils self.engine on its own throw paths, and the fast-fail above
+            // throws before self.engine is assigned, so the catch only needs to tear down the level stream
+            // (touching self.engine here would conflict with the existing engine-cleanup contract). Re-throw unchanged.
+            levelStream.endSession()
+            throw error
+        }
     }
 
     /// Builds a converter for the given engine, installs the tap and starts it. On failure, cleans up the engine reference and throws.
@@ -207,10 +240,16 @@ public actor AudioRecorder: AudioRecording {
         // AVAudioPCMBuffer across isolation domains, which would cause a data race.
         // tapCounter: a pure counter, used to rate-limit real-time-thread logs (the first buffer + about every 50 thereafter).
         nonisolated(unsafe) let tapCounter = TapCounter()
+        // The converter is built once here and is then used ONLY by the realtime tap closure below, which runs
+        // serially on the single audio real-time thread (no concurrent calls). It is bound to an explicit local
+        // before capture to make that single-realtime-thread ownership transfer auditable, mirroring the
+        // FeedState/TapCounter pattern in this file. (On this SDK AVAudioConverter is Sendable, so no
+        // nonisolated(unsafe) box is required; the explicit binding documents the realtime-only usage.)
+        let realtimeConverter = converter
         inputNode.installTap(onBus: 0, bufferSize: tapBufferSize, format: inputFormat) { [weak self] buffer, _ in
             guard let self else { return }
             let frameLength = buffer.frameLength
-            let samples = AudioRecorder.convertToSamples(buffer, using: converter, to: targetFormat) ?? []
+            let samples = AudioRecorder.convertToSamples(buffer, using: realtimeConverter, to: targetFormat) ?? []
             let level = AudioRecorder.normalizedLevel(samples)
             // After synchronously computing the normalized level on the real-time thread, deliver it immediately (the continuation is Sendable, keeping only the latest value).
             levelContinuation.yield(level)
@@ -360,6 +399,23 @@ private final class TapCounter {
         count += 1
         return count
     }
+}
+
+/// A `Sendable` box holding the current session's `AVAudioEngine`.
+///
+/// Why it is needed: `AudioRecorder.deinit` is `nonisolated` (actor deinits cannot be actor-isolated on
+/// macOS < 15.4), so it cannot read the actor-isolated, non-Sendable engine directly under Swift 6 strict
+/// concurrency. Routing the engine through this holder lets the deinit reach it for safe off-actor teardown
+/// (a recorder dropped mid-session must stop the mic/input device).
+///
+/// Concurrency safety: every in-session read/write goes through `AudioRecorder`'s actor-isolated `engine`
+/// accessor, so the actor serializes all access while the recorder is alive; the deinit only runs once the
+/// actor is no longer reachable (no concurrent actor method can run during deinit). The single stored
+/// reference is therefore never touched concurrently, so it is held with `nonisolated(unsafe)` and the box
+/// is `@unchecked Sendable` -- the same single-owner-thread escape-hatch style as the `nonisolated(unsafe)`
+/// boxes (`FeedState`/`TapCounter`) used elsewhere in this file.
+private final class EngineHolder: @unchecked Sendable {
+    nonisolated(unsafe) var engine: AVAudioEngine?
 }
 
 /// A "per-session rebuildable" level stream holder.
