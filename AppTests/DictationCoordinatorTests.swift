@@ -433,6 +433,65 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator._test_isRecording, "超时后应收敛到非录音中")
     }
 
+    // MARK: - ESC cancel: mid-transcribe cancel injects nothing and returns to idle
+
+    /// Regression guard (ESC-to-cancel): when a dictation is cancelled while the transcribe await is still in flight, the in-flight
+    /// processing Task is cancelled, the pipeline early-returns at its `Task.isCancelled` / `CancellationError` guards, NOTHING is injected,
+    /// the HUD/phase returns to idle, and the recorder is no longer marked recording.
+    func testCancelMidTranscribeDoesNotInjectAndReturnsToIdle() async {
+        let config = makeConfig()
+        config.sttMode = .cloud  // bypass the local readiness gate so the pipeline reaches the transcribe await
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            transcribeTimeout: .seconds(30)  // long enough that the timeout never fires; the cancel is what aborts
+        ) {
+            HangingTranscriber()  // blocks (sleeps 3600s) until cancelled, so the cancel lands mid-transcribe
+        }
+
+        await coordinator._test_start()
+        XCTAssertTrue(coordinator._test_isRecording)
+
+        // Kick off the pipeline WITHOUT awaiting it, then yield so it reaches the (hanging) transcribe await.
+        coordinator._test_handleStop()
+        for _ in 0..<50 {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+
+        // ESC: cancel mid-transcribe.
+        coordinator._test_cancel()
+        // Let the cancelled pipeline run its early-return + defer to completion.
+        await coordinator._test_awaitProcessing()
+
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "取消后绝不应注入任何文本")
+        XCTAssertEqual(coordinator.phase, .idle, "取消后应复位到 idle")
+        XCTAssertFalse(coordinator._test_isRecording, "取消后不应再标记为录音中")
+    }
+
+    // MARK: - ESC cancel when idle is a no-op
+
+    /// Cancelling on a fresh (idle) coordinator does nothing: no injection, no recorder churn, phase stays idle.
+    /// This proves the idle guard (ESC is ignored when no session is active).
+    func testCancelWhenIdleIsNoOp() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            FakeTranscriber(text: "不应被调用")
+        }
+
+        coordinator._test_cancel()
+
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "idle 时取消不应注入")
+        let stopCount = await recorder.stopCount
+        XCTAssertEqual(stopCount, 0, "idle 时取消不应触碰录音器")
+    }
+
     // MARK: - Level forwarding: each session subscribes to the current session's level stream, forwarding to the HUD waveform
 
     /// Regression guard: the orchestration layer must subscribe to this session's level stream **after** `recorder.start()` succeeds,

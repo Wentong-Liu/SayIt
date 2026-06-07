@@ -41,10 +41,21 @@ public final class HotkeyManager {
     /// The maximum down -> up interval (seconds) used by single-tap mode to judge an "isolated tap".
     public let singleTapWindow: TimeInterval
 
+    /// The macOS virtual keyCode for the ESC key (used to cancel an in-progress dictation; mirrors ``TriggerKey``'s named-keyCode style instead of a bare magic number).
+    private let escapeKeyCode: UInt16 = 53
+
     // MARK: Event output
 
     /// Main-thread event callback (active simultaneously with ``events``).
     public var onEvent: ((HotkeyEvent) -> Void)?
+
+    /// Fired (main thread) when ESC is pressed AND a dictation session is active (see ``isSessionActive``). The coordinator wires this to its cancel path.
+    public var onCancel: (() -> Void)?
+
+    /// Queried on each ESC keyDown to decide whether a dictation is in progress; ESC is ignored (not consumed, and ``onCancel`` not fired) when this
+    /// returns false / is nil, so we never swallow ESC globally — the foreground app keeps receiving it. The coordinator owns this state (its phase),
+    /// keeping the "ignore ESC when idle" rule in one place rather than duplicating dictation state inside the manager.
+    public var isSessionActive: (() -> Bool)?
 
     /// Event async sequence, convenient for `for await event in manager.events { ... }`.
     public let events: AsyncStream<HotkeyEvent>
@@ -187,6 +198,13 @@ public final class HotkeyManager {
     }
 
     private func handleKeyDown(_ event: NSEvent) {
+        if event.keyCode == escapeKeyCode {
+            // ESC cancels an in-progress dictation only. When idle (isSessionActive false/nil) we do nothing and leave ESC to the foreground app,
+            // and return early so ESC never taints the single-tap candidate (otherwise a stray ESC during a hold could void the tap).
+            if isSessionActive?() == true { onCancel?() }
+            return
+        }
+
         switch mode {
         case .singleTapToggle:
             // An ordinary key (e.g. Cmd-C) was pressed while the modifier was held: taint this candidate tap, release no longer triggers -> yield to the shortcut.
