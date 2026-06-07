@@ -156,7 +156,7 @@ final class CloudTranscriberTests: XCTestCase {
     func testEncodedWAVHeaderIsValid() throws {
         // 3 个样本 @16kHz、单声道、16-bit。
         let samples: [Float] = [0.0, 1.0, -1.0]
-        let wav = WAVEncoder.encode(samples: samples, sampleRate: 16_000)
+        let wav = try WAVEncoder.encode(samples: samples, sampleRate: 16_000)
 
         // 头部至少 44 字节。
         XCTAssertGreaterThanOrEqual(wav.count, 44)
@@ -188,7 +188,7 @@ final class CloudTranscriberTests: XCTestCase {
     func testWAVSampleClampingAndScaling() throws {
         // 1.0 -> Int16.max ; -1.0 -> Int16.min ; 0 -> 0 ; 越界值被夹紧。
         let samples: [Float] = [0.0, 1.0, -1.0, 2.0, -2.0]
-        let wav = WAVEncoder.encode(samples: samples, sampleRate: 16_000)
+        let wav = try WAVEncoder.encode(samples: samples, sampleRate: 16_000)
         let bytes = [UInt8](wav)
         XCTAssertEqual(s16(bytes, 44), 0)
         XCTAssertEqual(s16(bytes, 46), Int16.max)
@@ -198,7 +198,7 @@ final class CloudTranscriberTests: XCTestCase {
     }
 
     func testWAVUsesProvidedSampleRate() throws {
-        let wav = WAVEncoder.encode(samples: [0.0], sampleRate: 8_000)
+        let wav = try WAVEncoder.encode(samples: [0.0], sampleRate: 8_000)
         let bytes = [UInt8](wav)
         XCTAssertEqual(le32(bytes, 24), 8_000)
         XCTAssertEqual(le32(bytes, 28), 8_000 * 2)
@@ -227,6 +227,18 @@ final class CloudTranscriberTests: XCTestCase {
         let transcriber = makeTranscriber(apiKey: "")
         await assertThrows(STTError.notReady) {
             _ = try await transcriber.transcribe([0.1], sampleRate: 16_000, language: nil)
+        }
+    }
+
+    func testInvalidSampleRateThrowsUnsupportedFormatBeforeNetwork() async {
+        StubURLProtocol.responder = { _ in
+            XCTFail("network must not be hit for invalid sample rate")
+            let body = Data()
+            return (Self.ok(body), body)
+        }
+        let transcriber = makeTranscriber()
+        await assertThrows(STTError.unsupportedFormat) {
+            _ = try await transcriber.transcribe([0.1], sampleRate: 0, language: nil)
         }
     }
 
