@@ -102,8 +102,12 @@ public actor WhisperKitTranscriber: Transcriber {
         if let engine {
             return engine
         }
+        // downloadBase 显式取自 ``ModelManager/downloadBase`` 这一单一真相源：
+        // 与 ``ModelManager/download(model:)`` 落盘的根目录完全一致，确保「下了就用得上」。
         let config = WhisperKitConfig(
-            model: model,
+            model: ModelManager.variant(for: model),
+            downloadBase: ModelManager.downloadBase,
+            modelRepo: ModelManager.modelRepo,
             verbose: false,
             prewarm: prewarm,
             load: true,
