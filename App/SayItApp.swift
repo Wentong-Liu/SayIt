@@ -7,14 +7,14 @@ struct SayItApp: App {
 
     @Environment(\.openSettings) private var openSettings
 
-    /// 听写高层状态的可观察持有者；驱动菜单栏图标。
-    @State private var status = DictationStatus.shared
-
     /// 应用配置：监听其变更以即时应用界面语言。
     @State private var uiLocale: Locale = AppConfig.shared.uiLanguage.locale
 
     var body: some Scene {
-        MenuBarExtra("SayIt", systemImage: menuBarSymbol) {
+        // The status item uses the app's own speech mark as a monochrome
+        // template image ("MenuBarIcon"), so AppKit recolors it for light/dark
+        // menu bars. The title stays "SayIt" for VoiceOver accessibility.
+        MenuBarExtra {
             Button("menu.settings") {
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
@@ -27,6 +27,9 @@ struct SayItApp: App {
                 NSApp.terminate(nil)
             }
             .keyboardShortcut("q", modifiers: .command)
+        } label: {
+            Image("MenuBarIcon")
+                .accessibilityLabel("SayIt")
         }
         .environment(\.locale, uiLocale)
 
@@ -37,15 +40,6 @@ struct SayItApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: AppConfig.didChangeNotification)) { _ in
                     uiLocale = AppConfig.shared.uiLanguage.locale
                 }
-        }
-    }
-
-    /// 菜单栏图标：聆听中 / 识别中各用不同符号反映状态，其余为常态麦克风。
-    private var menuBarSymbol: String {
-        switch status.phase {
-        case .listening: return "mic.circle.fill"
-        case .working:   return "waveform.circle.fill"
-        case .idle:      return "mic.fill"
         }
     }
 }
