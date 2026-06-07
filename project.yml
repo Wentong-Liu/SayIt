@@ -33,7 +33,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/SayIt.entitlements
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic
-        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: 95JJW8BPVA
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
 
@@ -51,6 +51,8 @@ targets:
         PRODUCT_NAME: SayItTests
         PRODUCT_BUNDLE_IDENTIFIER: com.liuwentong.SayItTests
         GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 95JJW8BPVA
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
 
