@@ -74,7 +74,7 @@ public actor WhisperKitTranscriber: Transcriber {
 
         let engine = try await loadedEngine()
 
-        let options = DecodingOptions(language: language)
+        let options = Self.makeDecodingOptions(language: language)
         // 不显式标注返回类型，让推断接住 WhisperKit 的 `[TranscriptionResult]`，
         // 随即在闭包内把每个分段抽取为本模块无关的原始元组，避免命名歧义。
         // `engine.transcribe(...)` 抛的是 WhisperKit 自己的错误类型，永远不是本模块的
@@ -96,6 +96,23 @@ public actor WhisperKitTranscriber: Transcriber {
     }
 
     // MARK: - 内部
+
+    /// 构造一次转写所用的 ``DecodingOptions``。
+    ///
+    /// 两条不可动摇的约束（修复「中文被转写/翻译成英文」的回归）：
+    /// - `task` 恒为 `.transcribe`：始终把语音转写为「其本来的语言」，绝不 `.translate`（翻成英文）。
+    /// - 当未显式指定语言（`language == nil`）时开启 `detectLanguage`，让 WhisperKit 先检测语种再解码。
+    ///   否则 WhisperKit 在 `language == nil` 且 `detectLanguage` 关闭时会回落到默认语言码 `"en"`，
+    ///   把中文等非英语语音按英文解码（实际表现为被「翻译」成英文）。
+    ///
+    /// 该函数为纯函数、不触发任何模型下载/加载，可独立单测。
+    static func makeDecodingOptions(language: String?) -> DecodingOptions {
+        DecodingOptions(
+            task: .transcribe,
+            language: language,
+            detectLanguage: language == nil
+        )
+    }
 
     /// 返回已加载的引擎，必要时惰性构建（含下载+加载）。
     private func loadedEngine() async throws -> WhisperKit {
