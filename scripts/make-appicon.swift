@@ -1,188 +1,206 @@
 #!/usr/bin/env swift
 //
-// make-appicon.swift — 用 AppKit/CoreGraphics 绘制 SayIt 的 App 图标。
+// make-appicon.swift — Draw SayIt's app icon with AppKit/CoreGraphics.
 //
-// 设计：macOS squircle 圆角方底 + 靛蓝→紫的柔和对角渐变；
-// 中心一个简洁的白色麦克风字形（胶囊话筒 + 支架 + 底座），
-// 两侧对称声波弧线，传达「语音听写」。无文字、高对比、留白克制。
+// Design (T25 redesign — abstract & minimal):
+//   A single bold, abstract monochrome speech mark on a rounded-square
+//   off-white field. The mark is a chunky rounded speech-blob (evoking a
+//   voice / speech bubble) with three negative-space soundwave bars carved
+//   out of it — reading as "voice / dictation" without any literal
+//   microphone. Flat, high-contrast, no text, legible at 16px. Near-black
+//   ink (#16181D) on warm off-white (#F8F6F0). This is our own distinct
+//   mark, not a copy of any other product's icon.
 //
-// 用法：
-//   swift scripts/make-appicon.swift <输出目录>
-// 输出 icon_1024.png（1024×1024 主图）到该目录；各尺寸由 sips 降采样。
+// The whole mark is rendered at high resolution and downsampled to every
+// macOS appiconset size, so the script is self-contained (no external
+// sips step required).
+//
+// Usage:
+//   swift scripts/make-appicon.swift <outputDir>
+// Writes icon_1024.png plus icon_16/32/64/128/256/512.png into <outputDir>.
 //
 import AppKit
 import CoreGraphics
 
-// MARK: - 参数
+// MARK: - Arguments
 
 let args = CommandLine.arguments
 guard args.count >= 2 else {
-    FileHandle.standardError.write("用法: make-appicon.swift <输出目录>\n".data(using: .utf8)!)
+    FileHandle.standardError.write("Usage: make-appicon.swift <outputDir>\n".data(using: .utf8)!)
     exit(2)
 }
 let outDir = args[1]
-let size: CGFloat = 1024
 
-// MARK: - 颜色（sRGB，靛蓝→紫的现代渐变）
+// MARK: - Colors (sRGB — restrained monochrome: dark ink on off-white)
 
-func srgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> CGColor {
-    CGColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: 1)
+func srgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> CGColor {
+    CGColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: a)
 }
-let topColor    = srgb(99, 102, 241)   // indigo-500
-let bottomColor = srgb(124, 58, 237)   // violet-600
-
-// MARK: - 位图上下文
+let bgTop    = srgb(248, 246, 240)   // warm off-white (subtle top)
+let bgBottom = srgb(238, 234, 226)   // warm off-white (subtle bottom)
+let ink      = srgb(22, 24, 29)      // near-black mark
 
 let colorSpace = CGColorSpaceCreateDeviceRGB()
-guard let ctx = CGContext(
-    data: nil,
-    width: Int(size),
-    height: Int(size),
-    bitsPerComponent: 8,
-    bytesPerRow: 0,
-    space: colorSpace,
-    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-) else {
-    FileHandle.standardError.write("无法创建位图上下文\n".data(using: .utf8)!)
-    exit(1)
+
+// MARK: - Drawing
+
+/// Render the full icon at the given pixel size into a fresh bitmap and
+/// return the resulting CGImage. Everything is expressed as a ratio of
+/// `size` so it scales crisply to any resolution.
+func renderIcon(size: CGFloat) -> CGImage {
+    guard let ctx = CGContext(
+        data: nil,
+        width: Int(size),
+        height: Int(size),
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        FileHandle.standardError.write("Failed to create bitmap context\n".data(using: .utf8)!)
+        exit(1)
+    }
+
+    ctx.setAllowsAntialiasing(true)
+    ctx.setShouldAntialias(true)
+    ctx.interpolationQuality = .high
+
+    // Rounded-square field (macOS-style squircle approximation). Content
+    // occupies ~84% of the canvas with a transparent margin, matching the
+    // system icon template proportions.
+    let margin = size * 0.08
+    let rect = CGRect(x: margin, y: margin, width: size - margin * 2, height: size - margin * 2)
+    let corner = rect.width * 0.2237   // Apple squircle corner ratio approximation
+    let roundedPath = CGPath(roundedRect: rect, cornerWidth: corner, cornerHeight: corner, transform: nil)
+
+    ctx.saveGState()
+    ctx.addPath(roundedPath)
+    ctx.clip()
+
+    // Soft vertical gradient on the off-white field for a non-flat feel.
+    let bgGradient = CGGradient(
+        colorsSpace: colorSpace,
+        colors: [bgTop, bgBottom] as CFArray,
+        locations: [0.0, 1.0]
+    )!
+    ctx.drawLinearGradient(
+        bgGradient,
+        start: CGPoint(x: rect.midX, y: rect.maxY),
+        end: CGPoint(x: rect.midX, y: rect.minY),
+        options: []
+    )
+    ctx.restoreGState()
+
+    // The mark: a bold abstract speech-blob with carved soundwave bars.
+    // We build the solid blob path, then SUBTRACT three rounded bars using
+    // the even-odd fill rule so the bars read as crisp negative space.
+    let cx = rect.midX
+    let cy = rect.midY
+    let markYOffset = rect.height * 0.045   // nudge the optical center down a touch
+
+    let blobW = rect.width * 0.62
+    let blobH = blobW * 0.86
+    let blobRect = CGRect(x: cx - blobW / 2,
+                          y: cy - blobH / 2 + markYOffset,
+                          width: blobW,
+                          height: blobH)
+    let r = blobW * 0.30   // generous corner radius for a soft, bold form
+
+    let minX = blobRect.minX, maxX = blobRect.maxX
+    let minY = blobRect.minY, maxY = blobRect.maxY
+
+    // Tail tip extends down-left from the bottom-left corner — a speech tail.
+    let tailTipX = minX - blobW * 0.16
+    let tailTipY = minY - blobH * 0.20
+
+    let blob = CGMutablePath()
+    blob.move(to: CGPoint(x: minX, y: maxY - r))
+    // top-left corner
+    blob.addArc(tangent1End: CGPoint(x: minX, y: maxY),
+                tangent2End: CGPoint(x: minX + r, y: maxY),
+                radius: r)
+    // top edge -> top-right corner
+    blob.addLine(to: CGPoint(x: maxX - r, y: maxY))
+    blob.addArc(tangent1End: CGPoint(x: maxX, y: maxY),
+                tangent2End: CGPoint(x: maxX, y: maxY - r),
+                radius: r)
+    // right edge -> bottom-right corner
+    blob.addLine(to: CGPoint(x: maxX, y: minY + r))
+    blob.addArc(tangent1End: CGPoint(x: maxX, y: minY),
+                tangent2End: CGPoint(x: maxX - r, y: minY),
+                radius: r)
+    // bottom edge toward the tail
+    blob.addLine(to: CGPoint(x: minX + blobW * 0.30, y: minY))
+    // sweep down into the tail tip, then back up the left edge — a soft swoosh
+    blob.addQuadCurve(to: CGPoint(x: tailTipX, y: tailTipY),
+                      control: CGPoint(x: minX + blobW * 0.02, y: minY - blobH * 0.04))
+    blob.addQuadCurve(to: CGPoint(x: minX, y: minY + blobH * 0.34),
+                      control: CGPoint(x: minX + blobW * 0.02, y: minY + blobH * 0.06))
+    // left edge -> back to start (close)
+    blob.addLine(to: CGPoint(x: minX, y: maxY - r))
+    blob.closeSubpath()
+
+    // Negative-space soundwave bars: three vertical rounded bars centered in
+    // the blob, tall in the middle and short on the sides (a waveform).
+    func barPath(centerX: CGFloat, halfHeight: CGFloat, width: CGFloat) -> CGPath {
+        let bar = CGRect(x: centerX - width / 2,
+                         y: (cy + markYOffset) - halfHeight,
+                         width: width,
+                         height: halfHeight * 2)
+        return CGPath(roundedRect: bar, cornerWidth: width / 2, cornerHeight: width / 2, transform: nil)
+    }
+
+    let barWidth = blobW * 0.115
+    let gap = blobW * 0.205
+    let h1 = blobH * 0.16   // short
+    let h2 = blobH * 0.30   // tall (center)
+    let h3 = blobH * 0.16   // short
+
+    let bars = CGMutablePath()
+    bars.addPath(barPath(centerX: cx - gap, halfHeight: h1, width: barWidth))
+    bars.addPath(barPath(centerX: cx,       halfHeight: h2, width: barWidth))
+    bars.addPath(barPath(centerX: cx + gap, halfHeight: h3, width: barWidth))
+
+    let combined = CGMutablePath()
+    combined.addPath(blob)
+    combined.addPath(bars)
+
+    ctx.saveGState()
+    ctx.setFillColor(ink)
+    ctx.addPath(combined)
+    ctx.fillPath(using: .evenOdd)
+    ctx.restoreGState()
+
+    guard let image = ctx.makeImage() else {
+        FileHandle.standardError.write("Failed to render image at \(Int(size))px\n".data(using: .utf8)!)
+        exit(1)
+    }
+    return image
 }
 
-ctx.setAllowsAntialiasing(true)
-ctx.setShouldAntialias(true)
-ctx.interpolationQuality = .high
+// MARK: - Export
 
-// MARK: - 圆角方底（macOS 风格 squircle 近似：连续圆角）
-// macOS 图标内容约占画布的 ~80%，四周留透明边距，符合系统模板比例。
-
-let margin: CGFloat = size * 0.08          // 约 82px 边距
-let rect = CGRect(x: margin, y: margin, width: size - margin * 2, height: size - margin * 2)
-let corner: CGFloat = rect.width * 0.2237   // Apple squircle 圆角比例近似
-
-let roundedPath = CGPath(roundedRect: rect, cornerWidth: corner, cornerHeight: corner, transform: nil)
-
-ctx.saveGState()
-ctx.addPath(roundedPath)
-ctx.clip()
-
-// 对角渐变填充（左上偏亮 → 右下偏深）
-let gradient = CGGradient(
-    colorsSpace: colorSpace,
-    colors: [topColor, bottomColor] as CFArray,
-    locations: [0.0, 1.0]
-)!
-ctx.drawLinearGradient(
-    gradient,
-    start: CGPoint(x: rect.minX, y: rect.maxY),
-    end: CGPoint(x: rect.maxX, y: rect.minY),
-    options: []
-)
-
-// 顶部柔光高光，增加质感、避免「平」
-let highlight = CGGradient(
-    colorsSpace: colorSpace,
-    colors: [CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.16),
-             CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.0)] as CFArray,
-    locations: [0.0, 1.0]
-)!
-ctx.drawLinearGradient(
-    highlight,
-    start: CGPoint(x: rect.midX, y: rect.maxY),
-    end: CGPoint(x: rect.midX, y: rect.midY),
-    options: []
-)
-ctx.restoreGState()
-
-// MARK: - 中心字形：麦克风 + 声波（全部白色）
-
-let cx = rect.midX
-let cy = rect.midY
-let white = CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
-
-ctx.setFillColor(white)
-ctx.setStrokeColor(white)
-ctx.setLineCap(.round)
-ctx.setLineJoin(.round)
-
-// — 话筒胶囊体
-let micW = rect.width * 0.26
-let micH = micW * 1.55
-let micRect = CGRect(x: cx - micW / 2,
-                     y: cy - micH * 0.18,
-                     width: micW,
-                     height: micH)
-let micPath = CGPath(roundedRect: micRect,
-                     cornerWidth: micW / 2, cornerHeight: micW / 2,
-                     transform: nil)
-ctx.addPath(micPath)
-ctx.fillPath()
-
-// — 话筒支架（U 形弧线，环抱话筒底部）
-let cradleLine = rect.width * 0.05
-ctx.setLineWidth(cradleLine)
-let cradleRadius = micW * 0.86
-let cradleCenterY = micRect.minY + micW * 0.55
-ctx.beginPath()
-// 半圆从左到右（下半弧），π 到 2π
-ctx.addArc(center: CGPoint(x: cx, y: cradleCenterY),
-           radius: cradleRadius,
-           startAngle: .pi, endAngle: 2 * .pi,
-           clockwise: false)
-ctx.strokePath()
-
-// — 支杆 + 底座
-let stemTop = cradleCenterY - cradleRadius
-let stemBottom = stemTop - rect.height * 0.11
-ctx.setLineWidth(cradleLine)
-ctx.beginPath()
-ctx.move(to: CGPoint(x: cx, y: stemTop))
-ctx.addLine(to: CGPoint(x: cx, y: stemBottom))
-ctx.strokePath()
-
-// 底座短横
-let baseHalf = micW * 0.42
-ctx.setLineWidth(cradleLine)
-ctx.beginPath()
-ctx.move(to: CGPoint(x: cx - baseHalf, y: stemBottom))
-ctx.addLine(to: CGPoint(x: cx + baseHalf, y: stemBottom))
-ctx.strokePath()
-
-// — 两侧对称声波弧（外扩两道，传达「发声/听写」）
-func soundArc(radius: CGFloat, lineWidth: CGFloat, alpha: CGFloat) {
-    ctx.setStrokeColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: alpha))
-    ctx.setLineWidth(lineWidth)
-    let center = CGPoint(x: cx, y: cy + micH * 0.06)
-    // 右弧：-50° .. 50°
-    ctx.beginPath()
-    ctx.addArc(center: center, radius: radius,
-               startAngle: -50 * .pi / 180, endAngle: 50 * .pi / 180,
-               clockwise: false)
-    ctx.strokePath()
-    // 左弧：130° .. 230°
-    ctx.beginPath()
-    ctx.addArc(center: center, radius: radius,
-               startAngle: 130 * .pi / 180, endAngle: 230 * .pi / 180,
-               clockwise: false)
-    ctx.strokePath()
+func writePNG(_ image: CGImage, to path: String) {
+    let rep = NSBitmapImageRep(cgImage: image)
+    guard let pngData = rep.representation(using: .png, properties: [:]) else {
+        FileHandle.standardError.write("Failed to encode PNG: \(path)\n".data(using: .utf8)!)
+        exit(1)
+    }
+    do {
+        try pngData.write(to: URL(fileURLWithPath: path))
+        print("Wrote \(path)")
+    } catch {
+        FileHandle.standardError.write("Write failed (\(path)): \(error)\n".data(using: .utf8)!)
+        exit(1)
+    }
 }
-soundArc(radius: micW * 1.18, lineWidth: rect.width * 0.040, alpha: 0.95)
-soundArc(radius: micW * 1.62, lineWidth: rect.width * 0.034, alpha: 0.55)
 
-// MARK: - 导出 PNG
-
-guard let cgImage = ctx.makeImage() else {
-    FileHandle.standardError.write("无法生成图像\n".data(using: .utf8)!)
-    exit(1)
-}
-let rep = NSBitmapImageRep(cgImage: cgImage)
-guard let pngData = rep.representation(using: .png, properties: [:]) else {
-    FileHandle.standardError.write("无法编码 PNG\n".data(using: .utf8)!)
-    exit(1)
-}
-let outPath = (outDir as NSString).appendingPathComponent("icon_1024.png")
-do {
-    try pngData.write(to: URL(fileURLWithPath: outPath))
-    print("已生成主图: \(outPath)")
-} catch {
-    FileHandle.standardError.write("写入失败: \(error)\n".data(using: .utf8)!)
-    exit(1)
+// All pixel sizes referenced by AppIcon.appiconset/Contents.json.
+let pixelSizes: [Int] = [16, 32, 64, 128, 256, 512, 1024]
+for px in pixelSizes {
+    // Render each size natively (rather than downsampling one master) so
+    // every PNG gets crisp, hinted antialiasing at its target resolution.
+    let image = renderIcon(size: CGFloat(px))
+    let outPath = (outDir as NSString).appendingPathComponent("icon_\(px).png")
+    writePNG(image, to: outPath)
 }
