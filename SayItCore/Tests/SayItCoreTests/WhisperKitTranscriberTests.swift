@@ -1,3 +1,4 @@
+import WhisperKit
 import XCTest
 @testable import SayItCore
 
@@ -106,6 +107,34 @@ final class WhisperKitTranscriberTests: XCTestCase {
 
     func testCollapseWhitespaceLeavesSingleSpacedTextUnchanged() {
         XCTAssertEqual(WhisperKitTranscriber.collapseWhitespace("a b c"), "a b c")
+    }
+
+    // MARK: - DecodingOptions 构造（语言自动检测回归保护）
+
+    // 回归：用户说中文却被转写/翻译成英文。根因是 language==nil 且 detectLanguage 关闭时，
+    // WhisperKit 在 TranscribeTask 里跳过语言检测，回落到 Constants.defaultLanguageCode（"en"），
+    // 于是按英文解码。下面的用例锁定「nil 语言 => 自动检测」与「task 永远是 transcribe（绝不 translate）」。
+
+    func testDecodingOptionsAutoDetectsLanguageWhenNil() {
+        let options = WhisperKitTranscriber.makeDecodingOptions(language: nil)
+        XCTAssertTrue(
+            options.detectLanguage,
+            "language==nil 时必须开启自动检测，否则 WhisperKit 默认按英文解码（中文会被转成英文）"
+        )
+        XCTAssertNil(options.language, "未指定语言时不应硬塞一个语言码")
+    }
+
+    func testDecodingOptionsTaskIsTranscribeNeverTranslate() {
+        let detectOptions = WhisperKitTranscriber.makeDecodingOptions(language: nil)
+        let explicitOptions = WhisperKitTranscriber.makeDecodingOptions(language: "zh")
+        XCTAssertEqual(detectOptions.task, .transcribe, "必须转写为原语言，绝不能翻译")
+        XCTAssertEqual(explicitOptions.task, .transcribe, "必须转写为原语言，绝不能翻译")
+    }
+
+    func testDecodingOptionsPassesThroughExplicitLanguage() {
+        let options = WhisperKitTranscriber.makeDecodingOptions(language: "zh")
+        XCTAssertEqual(options.language, "zh", "显式指定的语言码应原样透传")
+        XCTAssertFalse(options.detectLanguage, "已显式指定语言时无需再自动检测")
     }
 
     // MARK: - 协议一致性
