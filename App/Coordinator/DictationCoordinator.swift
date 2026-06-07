@@ -80,6 +80,27 @@ final class DictationCoordinator {
     /// 配置变更通知的观察者 token（block 形式注册，须用 token 移除）。
     private var configObserver: NSObjectProtocol?
 
+    /// 复用的暖转写器实例：与 ``cachedSignature`` 配套。配置不变时跨多次听写复用，
+    /// 使 ``WhisperKitTranscriber`` 的 CoreML 引擎只加载一次并保持暖态（修复每次听写重载 ~1GB 模型 ~10s）。
+    private var cachedTranscriber: (any Transcriber)?
+
+    /// 上次构造转写器时的相关 STT 配置签名；当前签名与之不同才重建（本地/云端切换、本地模型变更、
+    /// 云端模型/API key 变更）。其余无关配置变更（如触发键）不触发重建。
+    private var cachedSignature: TranscriberSignature?
+
+    /// 正在进行的后台预热任务（避免重复预热同一实例）。
+    private var preloadTask: Task<Void, Never>?
+
+    /// 决定是否需要重建转写器的相关 STT 配置快照。仅包含会改变转写器身份/行为的字段：
+    /// `sttMode`（本地/云端）、`localModel`（本地模型）、`cloudModel` 与 `cloudKey`（云端模型与凭据）。
+    /// 语言恒自动检测、不入签名。
+    private struct TranscriberSignature: Equatable {
+        let mode: STTMode
+        let localModel: String
+        let cloudModel: String
+        let cloudKey: String
+    }
+
     // MARK: 初始化
 
     /// 转写器工厂：按当前配置产出 ``Transcriber``。默认按 ``STTMode`` 选本地/云端实现；
@@ -142,13 +163,17 @@ final class DictationCoordinator {
         guard !isStarted else { return }
         isStarted = true
 
-        // 配置变更（触发键 / 交互模式改动）后实时同步到热键管理器。
+        // 配置变更（触发键 / 交互模式改动）后实时同步到热键管理器；
+        // 相关 STT 配置变更（切到本地模式 / 换本地模型）则机会性预热，让下次听写也快。
         configObserver = NotificationCenter.default.addObserver(
             forName: AppConfig.didChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.applyHotkeyConfig() }
+            MainActor.assumeIsolated {
+                self?.applyHotkeyConfig()
+                self?.preloadLocalIfReady()
+            }
         }
 
         applyHotkeyConfig()
@@ -156,6 +181,9 @@ final class DictationCoordinator {
         startLevelForwarding()
         hotkeyManager.start()
         phase = .idle
+
+        // 启动机会性预热：本地模式且模型已下载时提前加载，让第一次听写也不慢（不阻塞主线程）。
+        preloadLocalIfReady()
     }
 
     /// 停止监听并清理（一般 App 退出前调用；非必需）。
@@ -171,6 +199,8 @@ final class DictationCoordinator {
         startTask = nil
         processingTask?.cancel()
         processingTask = nil
+        preloadTask?.cancel()
+        preloadTask = nil
         if let configObserver {
             NotificationCenter.default.removeObserver(configObserver)
             self.configObserver = nil
@@ -331,7 +361,7 @@ final class DictationCoordinator {
         //    保证 HUD「绝不永久卡在识别中」——即便上面的就绪检查与真实加载之间出现竞态/边角情况）。
         let transcript: String
         do {
-            let transcriber = try transcriberFactory()
+            let transcriber = try currentTranscriber()
             // 语音识别恒自动检测语言（T24）：始终传 nil 让后端按语音判断，不再读 AppConfig.language。
             let result = try await withTranscribeTimeout {
                 try await transcriber.transcribe(
@@ -476,7 +506,60 @@ final class DictationCoordinator {
         }
     }
 
-    // MARK: 转写器构造
+    // MARK: 转写器构造 / 复用 / 预热
+
+    /// 返回复用的暖转写器：当前相关配置签名与缓存一致则复用同一实例（本地引擎保持暖态，不重载模型）；
+    /// 否则经 ``transcriberFactory`` 重建并缓存，同时在后台预热（本地模型首帧不再慢）。
+    ///
+    /// 这是修复「每次听写重载 ~1GB 模型 ~10s」的核心：旧逻辑每次听写都 `transcriberFactory()` 产新实例，
+    /// 而 ``WhisperKitTranscriber`` 的引擎是**实例级**缓存，新实例必惰性重载模型。复用单实例即可保持暖态。
+    private func currentTranscriber() throws -> any Transcriber {
+        let signature = currentSignature()
+        if let cachedTranscriber, cachedSignature == signature {
+            return cachedTranscriber
+        }
+        let transcriber = try transcriberFactory()
+        cachedTranscriber = transcriber
+        cachedSignature = signature
+        // 新建即后台预热（本地模型会触发加载），不阻塞主线程，错误仅记录。
+        preloadInBackground(transcriber)
+        return transcriber
+    }
+
+    /// 当前相关 STT 配置的签名。云端 key 取自 Keychain（缺失记为空串），变更后会触发重建。
+    private func currentSignature() -> TranscriberSignature {
+        let cloudKey = (KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return TranscriberSignature(
+            mode: config.sttMode,
+            localModel: config.localModel,
+            cloudModel: config.cloudSTTModel,
+            cloudKey: cloudKey
+        )
+    }
+
+    /// 后台预热转写器：仅本地 ``WhisperKitTranscriber`` 有意义（加载 CoreML 引擎）。
+    /// 不阻塞 UI；预热失败只记录日志（不影响后续真正听写时的惰性加载兜底）。
+    private func preloadInBackground(_ transcriber: any Transcriber) {
+        guard let whisper = transcriber as? WhisperKitTranscriber else { return }
+        preloadTask?.cancel()
+        preloadTask = Task.detached(priority: .utility) {
+            do {
+                try await whisper.preload()
+            } catch {
+                NSLog("[SayIt] 本地模型预热失败（将按需惰性加载）: %@", String(describing: error))
+            }
+        }
+    }
+
+    /// 启动时机会性预热：若当前为本地模式且模型已下载，则提前构造并预热转写器，
+    /// 让**第一次**听写也不慢。构造失败（理论上本地路径不会）仅记录，不影响后续按需构造。
+    private func preloadLocalIfReady() {
+        guard config.sttMode == .local else { return }
+        guard ModelManager.isDownloaded(model: config.localModel) else { return }
+        // 复用 currentTranscriber 的缓存 + 预热路径，避免重复实例。
+        _ = try? currentTranscriber()
+    }
 
     /// 按 ``STTMode`` 选转写器。本地用 ``WhisperKitTranscriber``，云端用 ``CloudTranscriber``。
     ///
