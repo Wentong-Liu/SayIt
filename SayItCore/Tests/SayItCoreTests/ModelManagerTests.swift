@@ -184,6 +184,81 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertEqual(mgr.state, before)
     }
 
+    // MARK: - Download-speed estimation (pure logic, no network)
+
+    func testEstimatedDownloadBytesPositiveForKnownModels() {
+        // Every known model must yield a positive size so the derived speed is sane.
+        for model in ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"] {
+            XCTAssertGreaterThan(ModelManager.estimatedDownloadBytes(for: model), 0,
+                                 "estimatedDownloadBytes(for: \(model)) should be > 0")
+        }
+    }
+
+    func testEstimatedDownloadBytesOrderingBySize() {
+        // Rough on-disk sizes should increase with model capacity.
+        let tiny = ModelManager.estimatedDownloadBytes(for: "tiny")
+        let base = ModelManager.estimatedDownloadBytes(for: "base")
+        let small = ModelManager.estimatedDownloadBytes(for: "small")
+        let medium = ModelManager.estimatedDownloadBytes(for: "medium")
+        let large = ModelManager.estimatedDownloadBytes(for: "large-v3")
+        XCTAssertLessThan(tiny, base)
+        XCTAssertLessThan(base, small)
+        XCTAssertLessThan(small, medium)
+        XCTAssertLessThan(medium, large)
+    }
+
+    func testEstimatedDownloadBytesMatchesViaRealFolderName() {
+        // Friendly name and its real repo folder name should bucket to the same estimate.
+        XCTAssertEqual(
+            ModelManager.estimatedDownloadBytes(for: "large-v3-turbo"),
+            ModelManager.estimatedDownloadBytes(for: "openai_whisper-large-v3-v20240930_turbo")
+        )
+    }
+
+    func testEstimatedDownloadBytesUnknownModelUsesPositiveFallback() {
+        // Unknown names fall back to a generic positive size (so speed is still computable).
+        XCTAssertGreaterThan(ModelManager.estimatedDownloadBytes(for: "distil-large-v3"), 0)
+    }
+
+    func testSmoothedSpeedFirstSampleReturnsInstantaneous() {
+        // With no previous value the result is just deltaBytes / dt.
+        let speed = ModelManager.smoothedSpeed(previous: nil, deltaBytes: 1_000, dt: 2)
+        XCTAssertEqual(speed, 500, accuracy: 1e-9)
+    }
+
+    func testSmoothedSpeedBlendsPreviousWithInstantaneous() {
+        // EMA: alpha*instantaneous + (1-alpha)*previous, alpha = 0.3.
+        // instantaneous = 2000/1 = 2000; expected = 0.3*2000 + 0.7*1000 = 1300.
+        let speed = ModelManager.smoothedSpeed(previous: 1_000, deltaBytes: 2_000, dt: 1, alpha: 0.3)
+        XCTAssertEqual(speed, 1_300, accuracy: 1e-9)
+    }
+
+    func testSmoothedSpeedClampsNegativeDeltaToZero() {
+        // A negative byte delta (e.g. fraction regressed) must not produce a negative rate.
+        let speed = ModelManager.smoothedSpeed(previous: nil, deltaBytes: -500, dt: 1)
+        XCTAssertEqual(speed, 0, accuracy: 1e-9)
+    }
+
+    // MARK: - State shape / Equatable (with speed)
+
+    func testDownloadingStateEqualityConsidersSpeed() {
+        // Same progress, different speed → not equal.
+        XCTAssertNotEqual(
+            ModelManager.State.downloading(progress: 0.5, speedBytesPerSec: nil),
+            ModelManager.State.downloading(progress: 0.5, speedBytesPerSec: 1_000)
+        )
+        // Identical progress + speed → equal.
+        XCTAssertEqual(
+            ModelManager.State.downloading(progress: 0.5, speedBytesPerSec: 1_000),
+            ModelManager.State.downloading(progress: 0.5, speedBytesPerSec: 1_000)
+        )
+        // Both nil speed, same progress → equal.
+        XCTAssertEqual(
+            ModelManager.State.downloading(progress: 0.5, speedBytesPerSec: nil),
+            ModelManager.State.downloading(progress: 0.5, speedBytesPerSec: nil)
+        )
+    }
+
     // MARK: - 辅助
 
     private func makeTempDir() throws -> URL {

@@ -67,7 +67,18 @@ struct STTSettingsView: View {
         }
     }
 
-    /// 本地模型「下载状态」行：未下载 / 下载中（进度 + 取消）/ 已下载（重新下载）/ 失败（重试）。
+    /// Formats a bytes/sec value into a human-readable size string (e.g. "1.2 MB"), to
+    /// which we append "/s" at the call site. KB/MB/GB units keep the readout compact;
+    /// `.binary` count style matches how download sizes are conventionally shown.
+    private static let speedFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .binary
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.includesUnit = true
+        return formatter
+    }()
+
+    /// 本地模型「下载状态」行：未下载 / 下载中（进度 + 速度 + 取消）/ 已下载（重新下载）/ 失败（重试）。
     /// 观察 ``SettingsViewModel/localModelState``（其源为 `@Observable` 的 `ModelManager.state`）。
     @ViewBuilder
     private var modelStatusRow: some View {
@@ -82,7 +93,7 @@ struct STTSettingsView: View {
                 }
             }
 
-        case .downloading(let progress):
+        case .downloading(let progress, let speedBytesPerSec):
             LabeledContent("stt.downloadStatus") {
                 HStack(spacing: 8) {
                     ProgressView(value: progress)
@@ -90,6 +101,16 @@ struct STTSettingsView: View {
                     Text("\(Int(progress * 100))%")
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
+                    // Live speed beside the percentage, available once we have a sample.
+                    // Rendered verbatim because ByteCountFormatter already produces a
+                    // locale-aware string (e.g. "1.2 MB"); we append "/s" to make it a
+                    // rate. Using verbatim avoids adding a new Localizable.xcstrings key
+                    // (the catalog is outside this change's scope).
+                    if let speedBytesPerSec {
+                        Text(verbatim: Self.speedFormatter.string(fromByteCount: Int64(speedBytesPerSec)) + "/s")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
                     Button("stt.cancel") { viewModel.cancelLocalModelDownload() }
                 }
             }

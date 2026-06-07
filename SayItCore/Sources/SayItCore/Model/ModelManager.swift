@@ -34,8 +34,12 @@ public final class ModelManager {
     public enum State: Equatable, Sendable {
         /// 本地无缓存（或文件不齐全），需要下载。
         case notDownloaded
-        /// 下载中，`progress` 为 0...1 的完成比例。
-        case downloading(progress: Double)
+        /// 下载中。
+        /// - `progress`: completion fraction in `0...1`.
+        /// - `speedBytesPerSec`: smoothed download speed in bytes/sec, `nil` until the
+        ///   first measurable sample (so the UI shows only the percentage at the very
+        ///   start, then percentage + speed). `Double?` stays `Equatable` & `Sendable`.
+        case downloading(progress: Double, speedBytesPerSec: Double?)
         /// 已下载且关键权重文件齐全，可直接加载。
         case downloaded
         /// 下载失败，附带可读原因。
@@ -50,6 +54,21 @@ public final class ModelManager {
 
     /// 进行中的下载任务；用于取消与防重入。
     @ObservationIgnored private var downloadTask: Task<Void, Never>?
+
+    // MARK: - Download-speed tracking (MainActor-isolated)
+    //
+    // The Progress forwarded by WhisperKit's progressCallback has FILE-COUNT units
+    // (HubApi adds one unit per file), not bytes, so a byte delta from completedUnitCount
+    // would be wrong. The only continuous byte-like signal is `fractionCompleted` (0...1),
+    // so we scale it by an estimated total size and differentiate over wall-clock time.
+    // These fields are only ever touched from `applyProgress`, which runs on the MainActor.
+
+    /// Wall-clock timestamp of the last progress sample used for the speed estimate.
+    @ObservationIgnored private var lastSampleTime: Date?
+    /// `fractionCompleted * estimatedDownloadBytes` captured at the last sample.
+    @ObservationIgnored private var lastFractionBytes: Double?
+    /// Exponential moving average of bytes/sec; `nil` until the first measurable sample.
+    @ObservationIgnored private var smoothedBytesPerSec: Double?
 
     /// - Parameter model: 初始关注的模型友好名；默认 `"large-v3-turbo"`，与 ``AppConfig/localModel``
     ///   的缺省、``WhisperKitTranscriber`` 的缺省一致。
@@ -196,6 +215,60 @@ public final class ModelManager {
         return true
     }
 
+    // MARK: - Download-speed estimation helpers
+
+    /// Approximate on-disk download size, in bytes, for a friendly/variant model name.
+    ///
+    /// These are deliberately rough constants. The Progress reported by WhisperKit /
+    /// HubApi counts FILES, not bytes (one progress unit per file in the repo), so the
+    /// only continuous signal we get is `fractionCompleted` (0...1). We multiply that
+    /// fraction by this estimate purely to turn it into a human-facing speed readout
+    /// (e.g. "1.2 MB/s"); exact accuracy is non-critical for a live indicator.
+    /// Unknown names fall back to a generic ~1 GB so the speed number is still sane.
+    nonisolated public static func estimatedDownloadBytes(for model: String) -> Double {
+        // Normalize so both friendly names ("tiny") and real folder names
+        // ("openai_whisper-tiny") map to the same bucket.
+        let key = normalizedVariantKey(variant(for: model))
+        let mb = 1_000_000.0
+        let gb = 1_000_000_000.0
+        // Match against the normalized real-folder keys produced by `variant(for:)`.
+        if key.contains("largev3v20240930turbo") { return 1.6 * gb }  // large-v3-turbo
+        if key.contains("largev3")              { return 3.1 * gb }   // large-v3
+        if key.contains("medium")               { return 1.5 * gb }
+        if key.contains("small")                { return 480 * mb }
+        if key.contains("base")                 { return 145 * mb }
+        if key.contains("tiny")                 { return 75 * mb }
+        return 1.0 * gb  // generic fallback for unknown models
+    }
+
+    /// Pure exponential-moving-average step for the speed estimate (no I/O, deterministic).
+    ///
+    /// Extracted as a `nonisolated static` helper so the smoothing math is unit-testable
+    /// without any network, matching this file's "pure logic, no real network" tests.
+    /// - Parameters:
+    ///   - previous: prior smoothed bytes/sec, or `nil` if this is the first sample.
+    ///   - deltaBytes: estimated bytes transferred since the last sample (clamped to >= 0).
+    ///   - dt: elapsed wall-clock seconds since the last sample (must be > 0).
+    ///   - alpha: EMA weight for the new instantaneous reading (0...1); ~0.3 is a light smooth.
+    /// - Returns: the new smoothed bytes/sec.
+    nonisolated static func smoothedSpeed(
+        previous: Double?,
+        deltaBytes: Double,
+        dt: Double,
+        alpha: Double = 0.3
+    ) -> Double {
+        let instantaneous = max(0, deltaBytes) / max(dt, .ulpOfOne)
+        guard let previous else { return instantaneous }
+        return alpha * instantaneous + (1 - alpha) * previous
+    }
+
+    /// Reset the speed-tracking state to its pre-download baseline.
+    private func resetSpeedTracking() {
+        lastSampleTime = nil
+        lastFractionBytes = nil
+        smoothedBytesPerSec = nil
+    }
+
     // MARK: - 状态刷新 / 切换模型
 
     /// 把 ``state`` 重新对齐到当前 ``model`` 的本地缓存实况（不下载、不联网）。
@@ -244,7 +317,9 @@ public final class ModelManager {
             break
         }
 
-        state = .downloading(progress: 0)
+        // Reset the speed tracker so a new download starts from a clean baseline.
+        resetSpeedTracking()
+        state = .downloading(progress: 0, speedBytesPerSec: nil)
 
         let variant = Self.variant(for: newModel)
         let base = Self.downloadBase
@@ -300,11 +375,37 @@ public final class ModelManager {
     }
 
     /// 主线程内把下载比例写入 ``state``（仅当仍在下载且模型未被切换）。
+    ///
+    /// Also derives a smoothed download speed: the Progress units are file counts (not
+    /// bytes), so we scale `fractionCompleted` by an estimated total size and
+    /// differentiate that estimated-byte position over wall-clock time. The first sample
+    /// only seeds the baseline (speed stays `nil`); subsequent samples produce a value.
     private func applyProgress(_ fraction: Double, forModel: String) {
         guard model == forModel else { return }
         guard case .downloading = state else { return }
         let clamped = min(max(fraction, 0), 1)
-        state = .downloading(progress: clamped)
+
+        let now = Date()
+        let currentBytes = clamped * Self.estimatedDownloadBytes(for: forModel)
+        if let lastTime = lastSampleTime, let lastBytes = lastFractionBytes {
+            let dt = now.timeIntervalSince(lastTime)
+            // Ignore samples that are too close together to differentiate reliably.
+            if dt > 0.05 {
+                smoothedBytesPerSec = Self.smoothedSpeed(
+                    previous: smoothedBytesPerSec,
+                    deltaBytes: currentBytes - lastBytes,
+                    dt: dt
+                )
+                lastSampleTime = now
+                lastFractionBytes = currentBytes
+            }
+        } else {
+            // First sample: seed the baseline, leave speed nil until we can measure a delta.
+            lastSampleTime = now
+            lastFractionBytes = currentBytes
+        }
+
+        state = .downloading(progress: clamped, speedBytesPerSec: smoothedBytesPerSec)
     }
 }
 
