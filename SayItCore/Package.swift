@@ -21,8 +21,12 @@ let package = Package(
                 .product(name: "WhisperKit", package: "WhisperKit"),
             ],
             // String catalog for in-package user-facing text such as the HUD (generates Bundle.module's .lproj).
+            // The dictation start/stop chime cues are .copy (not .process): CAFs are opaque binaries that must be
+            // bundled byte-verbatim, whereas .process is for assets Xcode compiles (the .xcstrings catalog).
             resources: [
                 .process("Resources/Localizable.xcstrings"),
+                .copy("Resources/start.caf"),
+                .copy("Resources/stop.caf"),
             ]
         ),
         .testTarget(name: "SayItCoreTests", dependencies: ["SayItCore"]),

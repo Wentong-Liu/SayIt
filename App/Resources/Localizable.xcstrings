@@ -65,10 +65,28 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "麦克风" } }
       }
     },
+    "general.section.sound" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sound" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "声音" } }
+      }
+    },
     "general.section.trigger" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Trigger" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "触发" } }
+      }
+    },
+    "general.soundCues" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Play sound cues" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "播放声音提示" } }
+      }
+    },
+    "general.soundCues.footer" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Plays a short chime when dictation starts and stops." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "听写开始和结束时播放短促的提示音。" } }
       }
     },
     "general.stopTest" : {

@@ -40,6 +40,7 @@ final class SettingsViewModel {
         self.cloudSTTModel = config.cloudSTTModel
         self.polishEnabled = config.polishEnabled
         self.polishStyle = config.polishStyle
+        self.soundCuesEnabled = config.soundCuesEnabled
         self.providerKind = config.providerKind
         self.model = config.model
         // Sync the secrets and permission state once on first entering the panel.
@@ -82,6 +83,15 @@ final class SettingsViewModel {
 
     /// The UI language options (only English and Simplified Chinese); the display name is that language's endonym, not localized.
     let uiLanguageOptions: [UILanguage] = UILanguage.allCases
+
+    /// Whether to play the start/stop chime cues on dictation. Stored mirror, same rationale as ``triggerKey``
+    /// (write-through to `config` so the Toggle reflects live and persists; the coordinator reads `config` live each press).
+    var soundCuesEnabled: Bool {
+        didSet {
+            guard soundCuesEnabled != oldValue else { return }
+            config.soundCuesEnabled = soundCuesEnabled
+        }
+    }
 
     // MARK: STT
 

@@ -46,6 +46,16 @@ struct GeneralSettingsView: View {
             }
 
             Section {
+                Toggle("general.soundCues", isOn: $viewModel.soundCuesEnabled)
+            } header: {
+                Text("general.section.sound")
+            } footer: {
+                Text("general.soundCues.footer")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Picker("general.inputDevice", selection: $micVM.selectedUID) {
                     Text(defaultDeviceLabel).tag(String?.none)
                     ForEach(micVM.devices) { device in

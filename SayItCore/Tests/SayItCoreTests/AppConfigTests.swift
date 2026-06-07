@@ -33,6 +33,7 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(config.localModel, "large-v3-turbo")
         XCTAssertEqual(config.cloudSTTModel, "gpt-4o-mini-transcribe")
         XCTAssertTrue(config.polishEnabled)
+        XCTAssertTrue(config.soundCuesEnabled)
         XCTAssertEqual(config.polishStyle, .smart)
         XCTAssertEqual(config.providerKind, .openAI)
         XCTAssertEqual(config.model, ProviderKind.openAI.defaultModel)
@@ -80,6 +81,20 @@ final class AppConfigTests: XCTestCase {
         XCTAssertFalse(AppConfig(defaults: defaults).polishEnabled)
         config.polishEnabled = true
         XCTAssertTrue(config.polishEnabled)
+    }
+
+    func testSoundCuesEnabledRoundTrip() {
+        config.soundCuesEnabled = false
+        XCTAssertFalse(config.soundCuesEnabled)
+        XCTAssertFalse(AppConfig(defaults: defaults).soundCuesEnabled)
+        config.soundCuesEnabled = true
+        XCTAssertTrue(config.soundCuesEnabled)
+    }
+
+    func testSoundCuesEnabledChangePostsNotification() {
+        let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config)
+        config.soundCuesEnabled = false
+        wait(for: [exp], timeout: 1.0)
     }
 
     func testLocalModelRoundTrip() {
