@@ -1,0 +1,48 @@
+name: SayIt
+
+options:
+  bundleIdPrefix: com.liuwentong
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+packages:
+  SayItCore:
+    path: SayItCore
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+targets:
+  SayIt:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: App
+    dependencies:
+      - package: SayItCore
+    settings:
+      base:
+        PRODUCT_NAME: SayIt
+        PRODUCT_BUNDLE_IDENTIFIER: com.liuwentong.SayIt
+        INFOPLIST_FILE: App/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: App/SayIt.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+schemes:
+  SayIt:
+    build:
+      targets:
+        SayIt: all
+    run:
+      config: Debug
+    archive:
+      config: Release
