@@ -31,7 +31,7 @@ public actor WhisperKitTranscriber: Transcriber {
     /// Whether to prewarm the model during loading (reduces first-frame latency, at the cost of higher peak memory and slower loading).
     private let prewarm: Bool
 
-    /// The loaded WhisperKit engine; lazily built on the first ``preload()`` or ``transcribe(_:sampleRate:language:)``.
+    /// The loaded WhisperKit engine; lazily built on the first ``preload()`` or ``transcribe(_:sampleRate:language:options:)``.
     private var engine: WhisperKit?
 
     /// Creates a local WhisperKit transcriber.
@@ -63,7 +63,8 @@ public actor WhisperKitTranscriber: Transcriber {
     public func transcribe(
         _ audio: [Float],
         sampleRate: Double,
-        language: String?
+        language: String?,
+        options transcribeOptions: TranscribeOptions
     ) async throws -> TranscriptionResult {
         guard !audio.isEmpty else {
             throw STTError.emptyAudio
@@ -74,7 +75,39 @@ public actor WhisperKitTranscriber: Transcriber {
 
         let engine = try await loadedEngine()
 
-        let options = Self.makeDecodingOptions(language: language)
+        // User-dictionary Layer 1 biasing: build promptTokens from the dictionary terms, but only when there ARE terms
+        // AND the tokenizer is available (it is nil until the model has loaded — `loadedEngine()` above loads it, but
+        // guard defensively so a missing tokenizer simply falls back to no prompt rather than crashing). An empty
+        // dictionary -> nil promptTokens -> byte-identical to before this feature existed.
+        let promptTokens: [Int]? = {
+            guard !transcribeOptions.biasTerms.isEmpty, let tokenizer = engine.tokenizer else { return nil }
+            let tokens = Self.promptTokens(from: transcribeOptions.biasTerms, tokenizer: tokenizer)
+            return tokens.isEmpty ? nil : tokens
+        }()
+
+        let result = try await runDecode(engine: engine, audio: audio, language: language, promptTokens: promptTokens)
+
+        // WhisperKit issue #372: on large-v3-turbo, a non-nil promptTokens can yield an EMPTY transcription. We already
+        // mitigate by setting firstTokenLogProbThreshold to nil when prompting (so the decode loop does not break early),
+        // but if the prompted result still comes back empty, re-transcribe ONCE without promptTokens so dictation never
+        // silently fails. Only triggers when we actually prompted -> zero behavior change for the un-biased path.
+        if promptTokens != nil, result.text.isEmpty {
+            return try await runDecode(engine: engine, audio: audio, language: language, promptTokens: nil)
+        }
+        return result
+    }
+
+    /// Runs one WhisperKit decode with the given (optional) biasing prompt and maps the result into this module's type.
+    ///
+    /// Kept private (not static): it touches the WhisperKit engine. Factored out so the prompted decode and the
+    /// issue-372 no-prompt fallback decode share one identical mapping path.
+    private func runDecode(
+        engine: WhisperKit,
+        audio: [Float],
+        language: String?,
+        promptTokens: [Int]?
+    ) async throws -> TranscriptionResult {
+        let options = Self.makeDecodingOptions(language: language, promptTokens: promptTokens)
         // Do not explicitly annotate the return type, let inference capture WhisperKit's `[TranscriptionResult]`,
         // then within the closure extract each segment into a module-agnostic raw tuple, to avoid the naming ambiguity.
         // `engine.transcribe(...)` throws WhisperKit's own error type, never this module's
@@ -106,12 +139,40 @@ public actor WhisperKitTranscriber: Transcriber {
     ///   decoding non-English speech such as Chinese as English (manifesting as being "translated" into English).
     ///
     /// This function is pure, triggers no model download/load, and can be unit-tested standalone.
-    static func makeDecodingOptions(language: String?) -> DecodingOptions {
-        DecodingOptions(
+    ///
+    /// User-dictionary Layer 1 biasing (`promptTokens`): when non-nil and non-empty, the tokens are prepended to the
+    /// decoder prefill to steer recognition toward the dictionary terms, AND `firstTokenLogProbThreshold` is set to `nil`
+    /// to mitigate WhisperKit issue #372 — on large-v3-turbo a prompt can drive the first sampled token's log-prob below
+    /// the default threshold (`-1.5`), breaking the decode loop early and yielding an empty transcription. With `nil`
+    /// there is no early break. When `promptTokens` is nil/empty everything is byte-identical to today (no prompt,
+    /// `firstTokenLogProbThreshold` keeps WhisperKit's `-1.5` default).
+    static func makeDecodingOptions(language: String?, promptTokens: [Int]? = nil) -> DecodingOptions {
+        let hasPrompt = !(promptTokens?.isEmpty ?? true)
+        return DecodingOptions(
             task: .transcribe,
             language: language,
-            detectLanguage: language == nil
+            detectLanguage: language == nil,
+            promptTokens: hasPrompt ? promptTokens : nil,
+            firstTokenLogProbThreshold: hasPrompt ? nil : DecodingOptions().firstTokenLogProbThreshold
         )
+    }
+
+    /// Builds biasing `promptTokens` from the user's canonical dictionary terms (a best-effort recall boost).
+    ///
+    /// Encodes the shared compact glossary string (see ``GlossaryPrompt``, most-relevant term LAST) with the model's
+    /// tokenizer, drops any special tokens (`id >= specialTokenBegin`, so only real word-piece ids remain), then keeps
+    /// the LAST `maxTokens` (the suffix) so the highest-priority tail survives the cap. WhisperKit's hard limit is 224;
+    /// the default cap of 200 stays safely under it. Empty terms / all-blank -> `[]` (no prompt).
+    ///
+    /// Pure (given a tokenizer) -> unit-testable with a stub `WhisperTokenizer`. Triggers no model download/load itself.
+    static func promptTokens(from terms: [String], tokenizer: WhisperTokenizer, maxTokens: Int = 200) -> [Int] {
+        let glossary = GlossaryPrompt.compactList(from: terms.map { GlossaryPrompt.Term(canonical: $0) })
+        guard !glossary.isEmpty else { return [] }
+        let begin = tokenizer.specialTokens.specialTokenBegin
+        let encoded = tokenizer.encode(text: glossary).filter { $0 < begin }
+        guard encoded.count > maxTokens else { return encoded }
+        // Keep the suffix: the most-relevant terms sit at the end of the glossary, so the tail is the highest priority.
+        return Array(encoded.suffix(maxTokens))
     }
 
     /// Returns the loaded engine, lazily building it when necessary (including download+load).

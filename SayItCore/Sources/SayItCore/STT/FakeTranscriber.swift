@@ -7,16 +7,20 @@ import Foundation
 /// Implemented as an `actor`, so it is `Sendable`, and it internally records the arguments of each call,
 /// for tests to assert that argument passing is correct.
 public actor FakeTranscriber: Transcriber {
-    /// A snapshot of the arguments of one ``transcribe(_:sampleRate:language:)`` call.
+    /// A snapshot of the arguments of one ``transcribe(_:sampleRate:language:options:)`` call.
     public struct Call: Equatable, Sendable {
         public let audio: [Float]
         public let sampleRate: Double
         public let language: String?
+        /// The dictionary biasing terms threaded through the call (empty when no biasing), so tests can assert the
+        /// coordinator wired the dictionary into the transcribe call.
+        public let biasTerms: [String]
 
-        public init(audio: [Float], sampleRate: Double, language: String?) {
+        public init(audio: [Float], sampleRate: Double, language: String?, biasTerms: [String] = []) {
             self.audio = audio
             self.sampleRate = sampleRate
             self.language = language
+            self.biasTerms = biasTerms
         }
     }
 
@@ -45,8 +49,8 @@ public actor FakeTranscriber: Transcriber {
         self.outcome = .failure(error)
     }
 
-    public func transcribe(_ audio: [Float], sampleRate: Double, language: String?) async throws -> TranscriptionResult {
-        calls.append(Call(audio: audio, sampleRate: sampleRate, language: language))
+    public func transcribe(_ audio: [Float], sampleRate: Double, language: String?, options: TranscribeOptions) async throws -> TranscriptionResult {
+        calls.append(Call(audio: audio, sampleRate: sampleRate, language: language, biasTerms: options.biasTerms))
         switch outcome {
         case let .success(result):
             return result
