@@ -568,12 +568,22 @@ final class DictationCoordinator {
             return PolishStep(text: transcript, failed: true)
         }
 
+        // User-dictionary Layer 2: feed a relevant subset of dictionary terms into the polish system prompt so the
+        // model spells canonical forms in context. An empty dictionary / no candidates yields an empty subset, which
+        // keeps the prompt byte-identical to today (zero behavior change). This is the polish-call prep only; the
+        // transcribe-call prep (Layer 1 biasing) is a separate call site.
+        let glossary = DictionaryGlossary.relevantSubset(
+            for: transcript,
+            entries: await dictionaryStore.all()
+        )
+
         let outcome = await polishPipeline.polish(
             transcript,
             context: polishContext(),
             style: config.polishStyle,
             provider: provider,
-            polishEnabled: true
+            polishEnabled: true,
+            glossary: glossary
         )
         // Only .failedFallback counts as failure; .polished / .skipped do not hint.
         let failed: Bool
