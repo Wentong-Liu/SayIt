@@ -264,11 +264,10 @@ public struct RecordingPanelView: View {
     /// on entering the processing state it eases from 0 with ease-out within `processingRampDuration` (~3s) as a single climb to the 90% ceiling and holds,
     /// then snaps to 100% after the final result arrives -- this is one continuous ease spanning the whole run, never stopping at / anchoring to the 50% phase boundary;
     /// the wait always happens near the 90% ceiling. The `progress` argument exists only to carry state completeness and takes no part in the bar position.
-    /// The foreground color switches with the phase (transcribing white / polish green) is a visual color distinction, not a bar position, and anchors no bar value to the phase boundary.
+    /// The foreground fill is a single white across both phases (transcribe + polish), matching the monochrome palette; the phase only selects the copy via ``statusText`` and anchors no bar value.
     private func progressBar(progress: Double, phase: RecordingState.ProcessingPhase) -> some View {
-        let fillColor: Color = (phase == .polishing)
-            ? Color.green.opacity(0.9)   // polish: green
-            : Color.white.opacity(0.9)   // transcribing: white
+        // White in both phases (transcribe + polish) to match the monochrome palette; `phase` no longer affects color.
+        let fillColor = Color.white.opacity(0.9)
         let fill = min(max(displayedProgress, 0), 1)
         return ZStack(alignment: .leading) {
             Capsule()
