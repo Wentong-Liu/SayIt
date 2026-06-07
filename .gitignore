@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Xcode user-specific & build products
+**/xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+**/build/
+
+# XcodeGen 生成的工程文件（project.yml 是唯一真相源，生成产物不提交）
+*.xcodeproj/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# 临时构建产物（/tmp 派生目录等）
+/tmp/sayit-dd/
+
+# 语音模型目录（后续 WhisperKit 等，体积大不入库）
+Models/
+*.mlmodelc
+*.mlpackage
+
+# 本地诊断/临时笔记
+.local-notes/

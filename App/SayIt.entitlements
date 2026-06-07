@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  App Sandbox 关闭：后续核心能力依赖跨进程辅助功能(AX)读写、
+	  CGEvent 注入与全局事件监听，这些在沙箱下不可用。
+	  正式分发走 Developer ID + 公证 + Hardened Runtime（已开启 ENABLE_HARDENED_RUNTIME）。
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<!-- 为 Apple Events 自动化预留入口（Hardened Runtime 下需要） -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>
