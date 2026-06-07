@@ -26,6 +26,40 @@ public enum InteractionMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// 界面显示语言。仅支持英文与简体中文两项（T24 需求）。
+///
+/// `rawValue` 为落盘的 BCP-47 标识，同时用作 `Locale(identifier:)`，**不可随意更名**。
+/// 展示名固定为该语言的自称（`English` / `简体中文`），不参与本地化——这是语言选择器的惯例，
+/// 让用户无论当前界面语言为何都能认出目标语言。
+public enum UILanguage: String, CaseIterable, Identifiable, Sendable {
+    /// 英文。
+    case english = "en"
+    /// 简体中文。
+    case simplifiedChinese = "zh-Hans"
+
+    public var id: String { rawValue }
+
+    /// 默认界面语言：跟随系统首选语言映射到二者之一（中文系→简体中文，其余→英文）。
+    public static let `default`: UILanguage = .english
+
+    /// 按系统首选语言映射到受支持的两项之一：首选语言以 `zh` 开头视为简体中文，否则英文。
+    public static var systemDefault: UILanguage {
+        let preferred = Locale.preferredLanguages.first ?? "en"
+        return preferred.lowercased().hasPrefix("zh") ? .simplifiedChinese : .english
+    }
+
+    /// 展示名：该语言的自称（不本地化）。
+    public var displayName: String {
+        switch self {
+        case .english:           return "English"
+        case .simplifiedChinese: return "简体中文"
+        }
+    }
+
+    /// 对应的 `Locale`，用于 `environment(\.locale:)` 即时重定位 SwiftUI 文案。
+    public var locale: Locale { Locale(identifier: rawValue) }
+}
+
 /// 语音转文字（STT）的运行位置：本地模型 vs 云端 API。
 ///
 /// `rawValue` 为落盘字符串，不可随意更名。

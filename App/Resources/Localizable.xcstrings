@@ -1,0 +1,610 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "%lld%%" : {
+      "comment" : "Percent value (download progress / level)",
+      "shouldTranslate" : false
+    },
+    "general.inputDevice" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Input Device" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "输入设备" } }
+      }
+    },
+    "general.interactionHint.hold" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Hold the trigger key to record, release to stop." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "按住触发键开始录音，松开结束。" } }
+      }
+    },
+    "general.interactionHint.toggle" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tap the trigger key to start, tap again to stop." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "单击触发键开始录音，再次单击结束。" } }
+      }
+    },
+    "general.interactionMode" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Interaction" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "交互方式" } }
+      }
+    },
+    "general.micHint.idle" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tap “Test Microphone” to check the selected device has input." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "点击「测试麦克风」检查所选设备是否有输入。" } }
+      }
+    },
+    "general.micHint.testing" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Speak into the mic — the level bar reacts to volume." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "对着麦克风说话，电平条会随音量跳动。" } }
+      }
+    },
+    "general.micLevel.a11y" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Microphone input level" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "麦克风输入电平" } }
+      }
+    },
+    "general.section.interfaceLanguage" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Interface Language" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "界面语言" } }
+      }
+    },
+    "general.section.microphone" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Microphone" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "麦克风" } }
+      }
+    },
+    "general.section.trigger" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Trigger" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "触发" } }
+      }
+    },
+    "general.stopTest" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stop Test" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "停止测试" } }
+      }
+    },
+    "general.systemDefault" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "System Default" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "系统默认" } }
+      }
+    },
+    "general.systemDefault.named %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "System Default (%@)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "系统默认（%@）" } }
+      }
+    },
+    "general.testMic" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Test Microphone" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "测试麦克风" } }
+      }
+    },
+    "general.triggerKey" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Trigger Key" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "触发键" } }
+      }
+    },
+    "general.uiLanguage" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Language" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "语言" } }
+      }
+    },
+    "general.uiLanguage.footer" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Changes the app’s display language. Speech is always auto-detected." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "更改应用的显示语言。语音识别始终自动检测语言。" } }
+      }
+    },
+    "hud.cannotStartRecording" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cannot start recording" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "无法开始录音" } }
+      }
+    },
+    "hud.copiedPasteManually" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Copied to clipboard, please paste manually" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已复制到剪贴板，请手动粘贴" } }
+      }
+    },
+    "hud.didNotCatchThat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Didn’t catch that, please try again" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "没听清，请再说一次" } }
+      }
+    },
+    "hud.driftedCopiedPasteManually" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Focus changed — text copied, please paste manually" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "焦点已切换，文本已复制，请手动粘贴" } }
+      }
+    },
+    "hud.injectedPolishFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Inserted (polish failed, used original text)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已注入（润色失败，使用原文）" } }
+      }
+    },
+    "hud.needAccessibility" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Accessibility permission required — enable it in System Settings" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要辅助功能权限，请在系统设置中开启" } }
+      }
+    },
+    "hud.needMicrophone" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Microphone permission required" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要麦克风权限" } }
+      }
+    },
+    "hud.pastedToCurrentWindow" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Pasted to the current window" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已粘贴到当前窗口" } }
+      }
+    },
+    "hud.stopRecordingFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Failed to finish recording" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "录音结束失败" } }
+      }
+    },
+    "hud.transcriberNotReady" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Transcription not ready — check model/API key" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "转写未就绪，请检查模型/密钥" } }
+      }
+    },
+    "hud.transcriptionFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Transcription failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "转写失败" } }
+      }
+    },
+    "hud.unsupportedAudioFormat" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported audio format" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "音频格式不受支持" } }
+      }
+    },
+    "login.browserDone" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "SayIt: Login complete. You can close this page and return to the app." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "SayIt：登录完成，可关闭此页面返回 App。" } }
+      }
+    },
+    "login.cancelled" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Login cancelled" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "登录已取消" } }
+      }
+    },
+    "login.exchangeFailed %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Token exchange failed: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "换 token 失败：%@" } }
+      }
+    },
+    "login.keychainWriteFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unable to write to keychain" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "无法写入钥匙串" } }
+      }
+    },
+    "login.noCode" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No authorization code in callback" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "回调里没有授权码" } }
+      }
+    },
+    "login.serverFailed %lld" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local loopback server failed to start (port %lld may be in use)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地回环服务启动失败（端口 %lld 可能被占用）" } }
+      }
+    },
+    "login.stateMismatch" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "State verification failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "state 校验失败" } }
+      }
+    },
+    "login.timedOut" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Login timed out, please try again" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "登录超时，请重试" } }
+      }
+    },
+    "menu.quit" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Quit SayIt" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "退出 SayIt" } }
+      }
+    },
+    "menu.settings" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Settings…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "设置…" } }
+      }
+    },
+    "model.base" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "base (fastest)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "base（最快）" } }
+      }
+    },
+    "model.large-v3" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "large-v3 (highest accuracy)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "large-v3（最高精度）" } }
+      }
+    },
+    "model.large-v3-turbo" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "large-v3-turbo (recommended)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "large-v3-turbo（推荐）" } }
+      }
+    },
+    "model.medium" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "medium (balanced)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "medium（均衡）" } }
+      }
+    },
+    "model.small" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "small (lightweight)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "small（轻量）" } }
+      }
+    },
+    "perm.accessibility" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Accessibility" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "辅助功能" } }
+      }
+    },
+    "perm.accessibility.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Listens for the global trigger key and inserts text into the current app." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "监听全局触发键并把文本注入当前 App。" } }
+      }
+    },
+    "perm.footer" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "After changing permissions in System Settings, return to this page to refresh the status." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "在系统设置中更改授权后，请返回此页面刷新状态。" } }
+      }
+    },
+    "perm.microphone" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Microphone" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "麦克风" } }
+      }
+    },
+    "perm.microphone.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Records your voice for transcription." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "录制语音用于识别。" } }
+      }
+    },
+    "perm.openSettings" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open System Settings" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "去系统设置" } }
+      }
+    },
+    "perm.refresh" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Refresh Status" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "刷新状态" } }
+      }
+    },
+    "perm.requestAccess" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Request Access" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请求授权" } }
+      }
+    },
+    "perm.section.status" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Permission Status" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "授权状态" } }
+      }
+    },
+    "perm.status.denied" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Denied" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已拒绝" } }
+      }
+    },
+    "perm.status.granted" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Granted" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已授权" } }
+      }
+    },
+    "perm.status.notAsked" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not asked" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未询问" } }
+      }
+    },
+    "perm.status.notGranted" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not granted" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未授权" } }
+      }
+    },
+    "perm.status.restricted" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Restricted" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "受限制" } }
+      }
+    },
+    "polish.apiKeyField %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ API Key" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ API Key" } }
+      }
+    },
+    "polish.enable" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Enable AI Polish" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用 AI 润色" } }
+      }
+    },
+    "polish.enable.footer" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "When off, the raw transcription is inserted as-is, without cleanup." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "关闭后直接注入原始识别文本，不做整理。" } }
+      }
+    },
+    "polish.keySaved %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@ key saved" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 密钥已保存" } }
+      }
+    },
+    "polish.keySaveFailed %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Failed to save %@ key" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "%@ 密钥保存失败" } }
+      }
+    },
+    "polish.loggedIn" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Signed in to ChatGPT" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已登录 ChatGPT" } }
+      }
+    },
+    "polish.loginFailed %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "ChatGPT login failed: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "ChatGPT 登录失败：%@" } }
+      }
+    },
+    "polish.loginSucceeded" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "ChatGPT login succeeded" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "ChatGPT 登录成功" } }
+      }
+    },
+    "polish.loggedOut" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Signed out of ChatGPT" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已退出 ChatGPT 登录" } }
+      }
+    },
+    "polish.logoutFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sign-out failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "退出失败" } }
+      }
+    },
+    "polish.model" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Model" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "模型" } }
+      }
+    },
+    "polish.notLoggedIn" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not signed in" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未登录" } }
+      }
+    },
+    "polish.openingBrowser" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Opening browser to authorize ChatGPT…" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在打开浏览器完成 ChatGPT 授权…" } }
+      }
+    },
+    "polish.provider" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Provider" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Provider" } }
+      }
+    },
+    "polish.saveKey" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Save Key" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "保存密钥" } }
+      }
+    },
+    "polish.section.credentials" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Credentials" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "凭据" } }
+      }
+    },
+    "polish.section.model" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Model" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "模型" } }
+      }
+    },
+    "polish.section.style" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Style" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "风格" } }
+      }
+    },
+    "polish.signInWithChatGPT" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sign in with ChatGPT" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "用 ChatGPT 登录" } }
+      }
+    },
+    "polish.signOut" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sign Out" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "退出登录" } }
+      }
+    },
+    "polish.style" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Polish Style" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "润色风格" } }
+      }
+    },
+    "stt.cancel" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "取消" } }
+      }
+    },
+    "stt.download" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Download" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下载" } }
+      }
+    },
+    "stt.downloaded" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Downloaded" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已下载" } }
+      }
+    },
+    "stt.downloadFailed" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Download failed" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下载失败" } }
+      }
+    },
+    "stt.downloadStatus" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Download Status" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下载状态" } }
+      }
+    },
+    "stt.engine" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Recognition" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "识别方式" } }
+      }
+    },
+    "stt.footer.cloud" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cloud APIs need an internet connection and a valid key; speed depends on the network." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "云端 API 需要联网与有效密钥，识别速度依赖网络。" } }
+      }
+    },
+    "stt.footer.local" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local models run offline, privacy-first; the model downloads on first use." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型离线运行，隐私优先，首次使用会下载模型。" } }
+      }
+    },
+    "stt.model" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Model" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "模型" } }
+      }
+    },
+    "stt.notDownloaded" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Not downloaded" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未下载" } }
+      }
+    },
+    "stt.redownload" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Re-download" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重新下载" } }
+      }
+    },
+    "stt.retry" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Retry" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "重试" } }
+      }
+    },
+    "stt.saveKey" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Save Key" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "保存密钥" } }
+      }
+    },
+    "stt.section.cloud" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cloud Transcription" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "云端转写" } }
+      }
+    },
+    "stt.section.engine" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Recognition Engine" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "识别引擎" } }
+      }
+    },
+    "stt.section.localModel" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local Model" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型" } }
+      }
+    },
+    "stt.transcribeModel" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Transcription Model" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "转写模型" } }
+      }
+    },
+    "tab.general" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "General" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "通用" } }
+      }
+    },
+    "tab.permissions" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Permissions" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "权限" } }
+      }
+    },
+    "tab.polish" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Polish" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "润色" } }
+      }
+    },
+    "tab.stt" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Speech" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "语音识别" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}

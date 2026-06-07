@@ -5,6 +5,9 @@ options:
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
+  # 界面本地化：开发语言英文。String Catalog（Localizable/InfoPlist.xcstrings）含 en + zh-Hans，
+  # 已知区域由 Xcode 在构建期据目录自动登记，CFBundleLocalizations 见 App/Info.plist。
+  developmentLanguage: en
 
 packages:
   SayItCore:

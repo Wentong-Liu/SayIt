@@ -8,26 +8,26 @@ struct STTSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("识别方式", selection: $viewModel.sttMode) {
+                Picker("stt.engine", selection: $viewModel.sttMode) {
                     ForEach(STTMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
             } header: {
-                Text("识别引擎")
+                Text("stt.section.engine")
             } footer: {
                 Text(viewModel.sttMode == .local
-                     ? "本地模型离线运行，隐私优先，首次使用会下载模型。"
-                     : "云端 API 需要联网与有效密钥，识别速度依赖网络。")
+                     ? "stt.footer.local"
+                     : "stt.footer.cloud")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
             switch viewModel.sttMode {
             case .local:
-                Section("本地模型") {
-                    Picker("模型", selection: $viewModel.localModel) {
+                Section("stt.section.localModel") {
+                    Picker("stt.model", selection: $viewModel.localModel) {
                         ForEach(viewModel.localModelOptions, id: \.id) { option in
                             Text(option.label).tag(option.id)
                         }
@@ -36,8 +36,8 @@ struct STTSettingsView: View {
                     modelStatusRow
                 }
             case .cloud:
-                Section("云端转写") {
-                    Picker("转写模型", selection: $viewModel.cloudSTTModel) {
+                Section("stt.section.cloud") {
+                    Picker("stt.transcribeModel", selection: $viewModel.cloudSTTModel) {
                         ForEach(viewModel.cloudSTTModelOptions, id: \.id) { option in
                             Text(option.label).tag(option.id)
                         }
@@ -46,7 +46,7 @@ struct STTSettingsView: View {
                     SecureField("OpenAI API Key", text: $viewModel.cloudSTTAPIKey)
                         .onSubmit { viewModel.saveCloudSTTAPIKey() }
 
-                    Button("保存密钥") { viewModel.saveCloudSTTAPIKey() }
+                    Button("stt.saveKey") { viewModel.saveCloudSTTAPIKey() }
                         .disabled(viewModel.cloudSTTAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -73,46 +73,46 @@ struct STTSettingsView: View {
     private var modelStatusRow: some View {
         switch viewModel.localModelState {
         case .notDownloaded:
-            LabeledContent("下载状态") {
+            LabeledContent("stt.downloadStatus") {
                 HStack(spacing: 8) {
-                    Text("未下载").foregroundStyle(.secondary)
-                    Button("下载") {
+                    Text("stt.notDownloaded").foregroundStyle(.secondary)
+                    Button("stt.download") {
                         Task { await viewModel.downloadLocalModel() }
                     }
                 }
             }
 
         case .downloading(let progress):
-            LabeledContent("下载状态") {
+            LabeledContent("stt.downloadStatus") {
                 HStack(spacing: 8) {
                     ProgressView(value: progress)
                         .frame(width: 120)
                     Text("\(Int(progress * 100))%")
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
-                    Button("取消") { viewModel.cancelLocalModelDownload() }
+                    Button("stt.cancel") { viewModel.cancelLocalModelDownload() }
                 }
             }
 
         case .downloaded:
-            LabeledContent("下载状态") {
+            LabeledContent("stt.downloadStatus") {
                 HStack(spacing: 8) {
-                    Label("已下载", systemImage: "checkmark.circle.fill")
+                    Label("stt.downloaded", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .labelStyle(.titleAndIcon)
-                    Button("重新下载") {
+                    Button("stt.redownload") {
                         Task { await viewModel.downloadLocalModel(force: true) }
                     }
                 }
             }
 
         case .failed(let reason):
-            LabeledContent("下载状态") {
+            LabeledContent("stt.downloadStatus") {
                 HStack(spacing: 8) {
-                    Label("下载失败", systemImage: "exclamationmark.triangle.fill")
+                    Label("stt.downloadFailed", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
                         .labelStyle(.titleAndIcon)
-                    Button("重试") {
+                    Button("stt.retry") {
                         Task { await viewModel.downloadLocalModel() }
                     }
                 }

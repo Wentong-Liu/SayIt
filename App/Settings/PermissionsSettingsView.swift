@@ -12,8 +12,8 @@ struct PermissionsSettingsView: View {
         Form {
             Section {
                 permissionRow(
-                    title: "麦克风",
-                    detail: "录制语音用于识别。",
+                    title: String(localized: "perm.microphone", defaultValue: "Microphone"),
+                    detail: String(localized: "perm.microphone.detail", defaultValue: "Records your voice for transcription."),
                     granted: viewModel.microphoneStatus == .authorized,
                     statusText: microphoneStatusText,
                     actionTitle: microphoneActionTitle
@@ -22,24 +22,27 @@ struct PermissionsSettingsView: View {
                 }
 
                 permissionRow(
-                    title: "辅助功能",
-                    detail: "监听全局触发键并把文本注入当前 App。",
+                    title: String(localized: "perm.accessibility", defaultValue: "Accessibility"),
+                    detail: String(localized: "perm.accessibility.detail",
+                                   defaultValue: "Listens for the global trigger key and inserts text into the current app."),
                     granted: viewModel.accessibilityTrusted,
-                    statusText: viewModel.accessibilityTrusted ? "已授权" : "未授权",
-                    actionTitle: "去系统设置"
+                    statusText: viewModel.accessibilityTrusted
+                        ? String(localized: "perm.status.granted", defaultValue: "Granted")
+                        : String(localized: "perm.status.notGranted", defaultValue: "Not granted"),
+                    actionTitle: String(localized: "perm.openSettings", defaultValue: "Open System Settings")
                 ) {
                     viewModel.openAccessibilitySettings()
                 }
             } header: {
-                Text("授权状态")
+                Text("perm.section.status")
             } footer: {
-                Text("在系统设置中更改授权后，请返回此页面刷新状态。")
+                Text("perm.footer")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
             Section {
-                Button("刷新状态") { viewModel.refreshPermissions() }
+                Button("perm.refresh") { viewModel.refreshPermissions() }
             }
         }
         .formStyle(.grouped)
@@ -48,16 +51,18 @@ struct PermissionsSettingsView: View {
 
     private var microphoneStatusText: String {
         switch viewModel.microphoneStatus {
-        case .authorized:    return "已授权"
-        case .denied:        return "已拒绝"
-        case .restricted:    return "受限制"
-        case .notDetermined: return "未询问"
+        case .authorized:    return String(localized: "perm.status.granted", defaultValue: "Granted")
+        case .denied:        return String(localized: "perm.status.denied", defaultValue: "Denied")
+        case .restricted:    return String(localized: "perm.status.restricted", defaultValue: "Restricted")
+        case .notDetermined: return String(localized: "perm.status.notAsked", defaultValue: "Not asked")
         }
     }
 
     /// 未决时按钮发起系统弹窗；否则引导去系统设置。
     private var microphoneActionTitle: String {
-        viewModel.microphoneStatus == .notDetermined ? "请求授权" : "去系统设置"
+        viewModel.microphoneStatus == .notDetermined
+            ? String(localized: "perm.requestAccess", defaultValue: "Request Access")
+            : String(localized: "perm.openSettings", defaultValue: "Open System Settings")
     }
 
     @ViewBuilder

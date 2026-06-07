@@ -245,7 +245,8 @@ final class DictationCoordinator {
         if AccessibilityAuthorization.isTrusted { return true }
         // 未授权：触发系统授权对话框（prompt），并在 HUD 给一句引导。
         AccessibilityAuthorization.ensureTrusted(prompting: true)
-        showTransientError("需要辅助功能权限，请在系统设置中开启")
+        showTransientError(String(localized: "hud.needAccessibility",
+                                  defaultValue: "Accessibility permission required — enable it in System Settings"))
         return false
     }
 
@@ -289,7 +290,8 @@ final class DictationCoordinator {
             isRecording = false
         } catch {
             isRecording = false
-            failToIdle(message: "录音结束失败")
+            failToIdle(message: String(localized: "hud.stopRecordingFailed",
+                                       defaultValue: "Failed to finish recording"))
             return
         }
 
@@ -303,17 +305,18 @@ final class DictationCoordinator {
         let transcript: String
         do {
             let transcriber = try transcriberFactory()
+            // 语音识别恒自动检测语言（T24）：始终传 nil 让后端按语音判断，不再读 AppConfig.language。
             let result = try await transcriber.transcribe(
                 samples,
                 sampleRate: AudioFormat.sampleRate,
-                language: requestedLanguage()
+                language: nil
             )
             transcript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch let error as STTError {
             failToIdle(message: Self.transcriptionFailureMessage(error))
             return
         } catch {
-            failToIdle(message: "转写失败")
+            failToIdle(message: String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed"))
             return
         }
 
@@ -418,13 +421,6 @@ final class DictationCoordinator {
         }
     }
 
-    /// 配置语言映射到转写参数：`"auto"` / 空 → `nil`（让后端自动检测）。
-    private func requestedLanguage() -> String? {
-        let lang = config.language.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !lang.isEmpty, lang.lowercased() != "auto" else { return nil }
-        return lang
-    }
-
     // MARK: 注入
 
     /// 注入最终文本：焦点漂移时仍注入到当前前台（剪贴板回退保证不丢字），结果驱动 HUD。
@@ -439,17 +435,23 @@ final class DictationCoordinator {
         case .success:
             if drifted {
                 // 焦点漂移但仍粘贴成功：给一条短暂中性提示，告知粘到了当前窗口。
-                showTransientInfo("已粘贴到当前窗口")
+                showTransientInfo(String(localized: "hud.pastedToCurrentWindow",
+                                         defaultValue: "Pasted to the current window"))
             } else if polishFailed {
                 // 注入成功但润色失败回退了原文：轻提示（绝不丢字，仅告知）。
-                showTransientInfo("已注入（润色失败，使用原文）")
+                showTransientInfo(String(localized: "hud.injectedPolishFailed",
+                                         defaultValue: "Inserted (polish failed, used original text)"))
             } else {
                 panel.hide()
                 phase = .idle
             }
         case .failedTextLeftInPasteboard:
             // 文本已留剪贴板，提示用户手动粘贴。
-            let hint = drifted ? "焦点已切换，文本已复制，请手动粘贴" : "已复制到剪贴板，请手动粘贴"
+            let hint = drifted
+                ? String(localized: "hud.driftedCopiedPasteManually",
+                         defaultValue: "Focus changed — text copied, please paste manually")
+                : String(localized: "hud.copiedPasteManually",
+                         defaultValue: "Copied to clipboard, please paste manually")
             showTransientError(hint)
         }
     }
@@ -473,7 +475,7 @@ final class DictationCoordinator {
 
     /// 空音频 / 空转写：HUD 短暂提示后回到 idle。
     private func emptyToIdle() {
-        showTransientError("没听清，请再说一次")
+        showTransientError(String(localized: "hud.didNotCatchThat", defaultValue: "Didn’t catch that, please try again"))
     }
 
     /// 失败收敛：HUD 短暂报错后回到 idle，并尽力停掉仍在跑的录音。
@@ -521,24 +523,25 @@ final class DictationCoordinator {
     private static func recordingFailureMessage(_ error: Error) -> String {
         if let audioError = error as? AudioRecordingError,
            case .microphonePermissionDenied = audioError {
-            return "需要麦克风权限"
+            return String(localized: "hud.needMicrophone", defaultValue: "Microphone permission required")
         }
-        return "无法开始录音"
+        return String(localized: "hud.cannotStartRecording", defaultValue: "Cannot start recording")
     }
 
     /// 转写失败的用户文案。
     private static func transcriptionFailureMessage(_ error: STTError) -> String {
         switch error {
         case .notReady:
-            return "转写未就绪，请检查模型/密钥"
+            return String(localized: "hud.transcriberNotReady",
+                          defaultValue: "Transcription not ready — check model/API key")
         case .emptyAudio:
-            return "没听清，请再说一次"
+            return String(localized: "hud.didNotCatchThat", defaultValue: "Didn’t catch that, please try again")
         case .unsupportedFormat:
-            return "音频格式不受支持"
+            return String(localized: "hud.unsupportedAudioFormat", defaultValue: "Unsupported audio format")
         case .transcriptionFailed:
-            return "转写失败"
+            return String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed")
         @unknown default:
-            return "转写失败"
+            return String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed")
         }
     }
 

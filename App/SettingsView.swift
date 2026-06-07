@@ -11,16 +11,16 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             GeneralSettingsView(viewModel: viewModel)
-                .tabItem { Label("通用", systemImage: "gearshape") }
+                .tabItem { Label("tab.general", systemImage: "gearshape") }
 
             STTSettingsView(viewModel: viewModel)
-                .tabItem { Label("语音识别", systemImage: "waveform") }
+                .tabItem { Label("tab.stt", systemImage: "waveform") }
 
             PolishSettingsView(viewModel: viewModel)
-                .tabItem { Label("润色", systemImage: "sparkles") }
+                .tabItem { Label("tab.polish", systemImage: "sparkles") }
 
             PermissionsSettingsView(viewModel: viewModel)
-                .tabItem { Label("权限", systemImage: "lock.shield") }
+                .tabItem { Label("tab.permissions", systemImage: "lock.shield") }
         }
         .frame(width: 480, height: 420)
     }
