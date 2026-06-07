@@ -20,10 +20,14 @@ final class DictationCoordinatorTests: XCTestCase {
     }
 
     /// 组装一个全 Fake 的协调器。accessibilityGate 恒 true 以绕开真实授权环境。
+    /// modelReadiness 默认恒 true：多数测试用注入的 Fake 转写器，应直接走转写而不触发本地模型门禁。
+    /// transcribeTimeout 默认很短，避免任何分支真的等满 90s。
     private func makeCoordinator(
         config: AppConfig,
         recorder: FakeAudioRecorder,
         injector: FakeTextInjector,
+        modelReadiness: @escaping (String) -> Bool = { _ in true },
+        transcribeTimeout: Duration = .seconds(5),
         transcriber: @escaping () throws -> any Transcriber
     ) -> DictationCoordinator {
         DictationCoordinator(
@@ -32,7 +36,9 @@ final class DictationCoordinatorTests: XCTestCase {
             panel: RecordingPanelController(),
             injector: injector,
             transcriberFactory: transcriber,
-            accessibilityGate: { true }
+            accessibilityGate: { true },
+            modelReadiness: modelReadiness,
+            transcribeTimeout: transcribeTimeout
         )
     }
 
@@ -207,5 +213,92 @@ final class DictationCoordinatorTests: XCTestCase {
         coordinator._test_applyHotkeyConfig()
         XCTAssertEqual(manager.triggerKey, keyBefore)
         XCTAssertEqual(manager.mode, modeBefore)
+    }
+
+    // MARK: - 本地模型未就绪：不转写、不注入，且不卡在「识别中」
+
+    /// 回归守卫：本地模式且模型未下载时，绝不调用转写（否则底层会触发下载、HUD 永久卡在
+    /// 「识别中」）。应直接收敛，不构造转写器、不注入、不再标记录音中。
+    func testLocalModelNotReadyDoesNotTranscribeOrHang() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        var transcriberMade = false
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            modelReadiness: { _ in false }  // 模型未下载
+        ) {
+            transcriberMade = true
+            return FakeTranscriber(text: "不应被转写")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertFalse(transcriberMade, "模型未就绪不应构造/调用转写器（避免触发下载与卡死）")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "模型未就绪不应注入")
+        XCTAssertFalse(coordinator._test_isRecording, "应收敛到非录音中")
+        // 录音被停掉以释放设备。
+        let stopCount = await recorder.stopCount
+        XCTAssertEqual(stopCount, 1)
+    }
+
+    /// 云端模式不受本地模型就绪门禁影响：即便 modelReadiness 恒 false（本地模型没下），
+    /// 云端转写仍正常进行并注入。
+    func testCloudModeIgnoresLocalModelReadinessGate() async {
+        let config = makeConfig()
+        config.sttMode = .cloud
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            modelReadiness: { _ in false }  // 本地模型未下载，但云端不该被它挡住
+        ) {
+            FakeTranscriber(text: "云端转写结果")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertEqual(injector.injectedTexts, ["云端转写结果"], "云端模式应正常转写并注入")
+    }
+
+    // MARK: - 转写硬超时：绝不永久卡在「识别中」
+
+    /// 回归守卫：转写迟迟不返回（模拟底层卡在加载/下载）时，硬超时介入、收敛到 idle，不注入、不卡死。
+    func testTranscribeTimeoutDoesNotHang() async {
+        let config = makeConfig()
+        config.sttMode = .cloud  // 绕过本地就绪门禁，确保进入会被超时拦截的转写路径
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            transcribeTimeout: .milliseconds(50)  // 极短超时
+        ) {
+            HangingTranscriber()  // 永不返回
+        }
+
+        // 若无超时保护，下面这步会永久挂起（测试超时失败）。
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "超时不应注入")
+        XCTAssertFalse(coordinator._test_isRecording, "超时后应收敛到非录音中")
+    }
+}
+
+/// 永不返回的转写器：用于验证硬超时保护（其 transcribe 会一直睡到被取消）。
+private actor HangingTranscriber: Transcriber {
+    func transcribe(_ audio: [Float], sampleRate: Double, language: String?) async throws -> TranscriptionResult {
+        // 睡足够久（远超测试注入的超时）；超时分支会取消本任务，CancellationError 由超时逻辑吞掉。
+        try await Task.sleep(for: .seconds(3600))
+        return TranscriptionResult(text: "never")
     }
 }
