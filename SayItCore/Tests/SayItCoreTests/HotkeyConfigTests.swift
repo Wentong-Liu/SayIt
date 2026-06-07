@@ -39,26 +39,32 @@ final class HotkeyConfigTests: XCTestCase {
         }
     }
 
-    func testHotkeyModeHasAllThreeModes() {
+    func testHotkeyModeHasBothModes() {
         XCTAssertTrue(HotkeyMode.allCases.contains(.holdToTalk))
         XCTAssertTrue(HotkeyMode.allCases.contains(.singleTapToggle))
-        XCTAssertTrue(HotkeyMode.allCases.contains(.toggle))
+        XCTAssertEqual(HotkeyMode.allCases.count, 2, "双击 toggle 模式已移除，仅余两种")
     }
 
     func testInteractionModeDefaultIsSingleTap() {
         XCTAssertEqual(InteractionMode.default, .singleTap)
     }
 
-    func testInteractionModeHasAllThreeCases() {
+    func testInteractionModeHasOnlySingleTapAndHold() {
         XCTAssertTrue(InteractionMode.allCases.contains(.singleTap))
         XCTAssertTrue(InteractionMode.allCases.contains(.hold))
-        XCTAssertTrue(InteractionMode.allCases.contains(.toggle))
+        XCTAssertEqual(InteractionMode.allCases.count, 2, "双击切换已移除，仅余单击切换与按住说话")
     }
 
     func testInteractionModeRawValueRoundTrip() {
         for mode in InteractionMode.allCases {
             XCTAssertEqual(InteractionMode(rawValue: mode.rawValue), mode)
         }
+    }
+
+    func testInteractionModeLegacyDoubleTapFallsBackToSingleTap() {
+        // 旧版本曾落盘的 "toggle"（双击切换）已移除，应安全回落到默认（单击切换）。
+        XCTAssertEqual(InteractionMode(rawValue: "toggle"), .singleTap)
+        XCTAssertEqual(InteractionMode(rawValue: "doubleTap"), .singleTap)
     }
 
     func testInteractionModeDisplayNamesNonEmpty() {
