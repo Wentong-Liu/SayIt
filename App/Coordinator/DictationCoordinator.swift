@@ -91,6 +91,15 @@ final class DictationCoordinator {
     /// 测试注入恒 true 以绕开真实授权环境。
     private let accessibilityGateOverride: (() -> Bool)?
 
+    /// 本地模型就绪检测：给定友好模型名，返回该模型是否已在本地缓存且可直接加载。
+    /// 默认只读地复用 ``ModelManager/isDownloaded(model:)``（不联网、不下载）；测试可注入以走通
+    /// 「模型未就绪」分支。**只读**——绝不在此触发下载。
+    private let modelReadiness: (String) -> Bool
+
+    /// 转写硬超时：`transcribe(...)` 必须在此时限内返回，否则视为卡死并收敛到错误提示。
+    /// 默认 90s——足够本地推理在已加载模型上完成，但保证「绝不永久卡在识别中」。测试可注入极短值。
+    private let transcribeTimeout: Duration
+
     /// - Parameters:
     ///   - config: 应用配置；默认 `.shared`。
     ///   - hotkeyManager: 热键管理器；默认按当前配置构造。
@@ -99,13 +108,17 @@ final class DictationCoordinator {
     ///   - injector: 文本注入器；默认 ``TextInjector``。
     ///   - transcriberFactory: 转写器工厂；默认按配置选本地/云端（见 ``makeConfiguredTranscriber(_:)``）。
     ///   - accessibilityGate: 辅助功能门禁；默认按需引导授权（见 ``ensureAccessibilityOrGuide()``）。
+    ///   - modelReadiness: 本地模型就绪检测；默认只读复用 ``ModelManager/isDownloaded(model:)``。
+    ///   - transcribeTimeout: 转写硬超时；默认 90s。
     init(config: AppConfig = .shared,
          hotkeyManager: HotkeyManager? = nil,
          recorder: AudioRecording = AudioRecorder(),
          panel: RecordingPanelController = .shared,
          injector: TextInjecting = TextInjector(),
          transcriberFactory: (() throws -> any Transcriber)? = nil,
-         accessibilityGate: (() -> Bool)? = nil) {
+         accessibilityGate: (() -> Bool)? = nil,
+         modelReadiness: ((String) -> Bool)? = nil,
+         transcribeTimeout: Duration = .seconds(90)) {
         self.config = config
         self.recorder = recorder
         self.panel = panel
@@ -117,6 +130,9 @@ final class DictationCoordinator {
         let cfg = config
         self.transcriberFactory = transcriberFactory ?? { try Self.makeConfiguredTranscriber(cfg) }
         self.accessibilityGateOverride = accessibilityGate
+        // 默认就绪检测只读复用 ModelManager.isDownloaded（不联网、不下载、不修改 ModelManager）。
+        self.modelReadiness = modelReadiness ?? { ModelManager.isDownloaded(model: $0) }
+        self.transcribeTimeout = transcribeTimeout
     }
 
     // MARK: 生命周期
@@ -302,17 +318,33 @@ final class DictationCoordinator {
             return
         }
 
-        // 2) 转写。
+        // 1.5) 本地模型就绪门禁：本地转写依赖 WhisperKit 引擎，而引擎在模型未缓存时会先下载
+        // （可能耗时数分钟），其间 HUD 会一直停在「识别中」，表现为永久卡死。这里在调用 transcribe
+        // 之前**只读**检查模型是否已下载（不联网、不触发下载），未就绪则直接给清晰提示并收敛到 idle，
+        // 绝不进入会触发下载的本地转写路径。云端模式不受此门禁影响。
+        if config.sttMode == .local, !modelReadiness(config.localModel) {
+            modelNotReadyToIdle()
+            return
+        }
+
+        // 2) 转写（包硬超时：transcribe 必须在 transcribeTimeout 内返回，否则视为卡死收敛到错误，
+        //    保证 HUD「绝不永久卡在识别中」——即便上面的就绪检查与真实加载之间出现竞态/边角情况）。
         let transcript: String
         do {
             let transcriber = try transcriberFactory()
             // 语音识别恒自动检测语言（T24）：始终传 nil 让后端按语音判断，不再读 AppConfig.language。
-            let result = try await transcriber.transcribe(
-                samples,
-                sampleRate: AudioFormat.sampleRate,
-                language: nil
-            )
+            let result = try await withTranscribeTimeout {
+                try await transcriber.transcribe(
+                    samples,
+                    sampleRate: AudioFormat.sampleRate,
+                    language: nil
+                )
+            }
             transcript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch is TranscribeTimeout {
+            // 硬超时：转写迟迟不返回（如底层卡在模型加载/下载）。给错误提示并收敛到 idle。
+            failToIdle(message: String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed"))
+            return
         } catch let error as STTError {
             failToIdle(message: Self.transcriptionFailureMessage(error))
             return
@@ -417,6 +449,33 @@ final class DictationCoordinator {
         }
     }
 
+    // MARK: 转写超时
+
+    /// `transcribe(...)` 超过 ``transcribeTimeout`` 仍未返回时抛出的标记错误。
+    private struct TranscribeTimeout: Error {}
+
+    /// 给一段异步转写工作包上硬超时：先返回者胜出，另一个分支被取消。
+    /// 若超时分支先到则抛 ``TranscribeTimeout``（保证「绝不永久卡在识别中」）。
+    /// - Parameter work: 实际转写闭包（返回 ``TranscriptionResult``）。
+    private func withTranscribeTimeout(
+        _ work: @escaping @Sendable () async throws -> TranscriptionResult
+    ) async throws -> TranscriptionResult {
+        let timeout = transcribeTimeout
+        return try await withThrowingTaskGroup(of: TranscriptionResult.self) { group in
+            group.addTask { try await work() }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw TranscribeTimeout()
+            }
+            // 先返回者胜出；随后取消其余分支（取消睡眠分支或仍在跑的转写分支）。
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else {
+                throw TranscribeTimeout()
+            }
+            return result
+        }
+    }
+
     // MARK: 转写器构造
 
     /// 按 ``STTMode`` 选转写器。本地用 ``WhisperKitTranscriber``，云端用 ``CloudTranscriber``。
@@ -496,6 +555,13 @@ final class DictationCoordinator {
     /// 空音频 / 空转写：HUD 短暂提示后回到 idle。
     private func emptyToIdle() {
         showTransientError(String(localized: "hud.didNotCatchThat", defaultValue: "Didn’t catch that, please try again"))
+    }
+
+    /// 本地模型未就绪：HUD 短暂展示「模型仍在下载 / 请切换云端」错误提示后回到 idle，且不进入转写。
+    /// 文案为 ``RecordingState/modelNotReadyMessage`` 的包内本地化（en + zh-Hans）。
+    private func modelNotReadyToIdle() {
+        // 用 .error 态承载本地化文案（不新增枚举 case，避免牵动 RecordingPanelView 的穷举 switch）。
+        showTransientError(RecordingState.modelNotReadyMessage)
     }
 
     /// 失败收敛：HUD 短暂报错后回到 idle，并尽力停掉仍在跑的录音。
