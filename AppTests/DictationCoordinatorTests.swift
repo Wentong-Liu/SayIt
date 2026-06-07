@@ -26,6 +26,7 @@ final class DictationCoordinatorTests: XCTestCase {
         config: AppConfig,
         recorder: FakeAudioRecorder,
         injector: FakeTextInjector,
+        panel: RecordingPanelController = RecordingPanelController(),
         modelReadiness: @escaping (String) -> Bool = { _ in true },
         transcribeTimeout: Duration = .seconds(5),
         transcriber: @escaping () throws -> any Transcriber
@@ -33,7 +34,7 @@ final class DictationCoordinatorTests: XCTestCase {
         DictationCoordinator(
             config: config,
             recorder: recorder,
-            panel: RecordingPanelController(),
+            panel: panel,
             injector: injector,
             transcriberFactory: transcriber,
             accessibilityGate: { true },
@@ -398,6 +399,43 @@ final class DictationCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(injector.injectedTexts.isEmpty, "超时不应注入")
         XCTAssertFalse(coordinator._test_isRecording, "超时后应收敛到非录音中")
+    }
+
+    // MARK: - 电平转发：每会话订阅当前会话的电平流，转发到 HUD 波形
+
+    /// 回归守卫：编排层必须在 `recorder.start()` **成功之后** 订阅本会话的电平流，
+    /// 否则（旧 bug：启动时一次性捕获初始流）会话重建后流早已 finish，转发循环空转、
+    /// HUD `level` 恒为 0、聆听态圆点僵死。本测试模拟 tap 投递一个电平，断言它被转发到 HUD。
+    func testLevelForwardedToPanelAfterStart() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        let panel = RecordingPanelController()
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector, panel: panel
+        ) {
+            FakeTranscriber(text: "x")
+        }
+
+        await coordinator._test_start()
+        XCTAssertTrue(coordinator._test_isRecording, "start 后应在录音中")
+
+        // 模拟真实 tap 在本会话的流上投递一个归一化电平（emitLevel 为 nonisolated，同步调用）。
+        recorder.emitLevel(0.7)
+
+        // 转发任务异步消费电平并切回主线程刷新 HUD；轮询等待其抵达（避免依赖固定睡眠）。
+        let forwarded = await waitForLevel(panel, atLeast: 0.69)
+        XCTAssertTrue(forwarded, "start 后投递的会话电平应被转发到 HUD（level≈0.7），而非恒为 0")
+    }
+
+    /// 轮询等待 HUD 的 `currentLevel` 达到阈值（转发任务异步，需让出主线程多次）。
+    private func waitForLevel(_ panel: RecordingPanelController, atLeast threshold: Double) async -> Bool {
+        for _ in 0..<200 {
+            if panel.currentLevel >= threshold { return true }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return panel.currentLevel >= threshold
     }
 }
 
