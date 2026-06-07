@@ -44,20 +44,27 @@ public actor AudioRecorder: AudioRecording {
     /// 用于查询的统一日志器（`log show --predicate 'subsystem == "com.liuwentong.SayIt"'`）。
     private nonisolated static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "audio")
 
+    /// 每次录音会话的实时电平流持有器（流 + continuation），跨会话可重建。
+    ///
+    /// 关键修复：`AsyncStream` 是「单消费者」流——一旦其消费迭代被取消/结束
+    /// （HUD/MicTest 在 `stopTesting()` 里 `levelTask?.cancel()` 即会令该流 finish），
+    /// 同一个流便永久结束，之后第二次测试读取同一个流只会立刻拿到结束、零电平值，
+    /// 表现为「首测有绿条、复测无绿条」。因此每次 `start()` 都重建一对全新的
+    /// 流 + continuation；消费者在 `start()` 之后读取 `recorder.levels`（MicTest/HUD
+    /// 均如此），拿到的就是本会话的新流。`stop()` 结束本会话的 continuation。
+    private nonisolated let levelStream = LevelStreamHolder()
+
     /// 实时归一化输入电平流（0...1），供 HUD 波形消费。
     ///
-    /// 关键：此流与其 continuation 在整个 `AudioRecorder` 生命周期内保持稳定，
-    /// 跨多次 `start()`/`stop()`（即跨引擎重建）都复用同一个流；每次录音的 tap
-    /// 把电平 yield 进同一个 continuation。绝不在录音会话间重建该流。
-    public nonisolated let levels: AsyncStream<Double>
-    private nonisolated let levelContinuation: AsyncStream<Double>.Continuation
+    /// 每次录音会话（`start()`）重建一个全新的流；务必在 `start()` 之后读取，
+    /// 才能拿到当前会话的流。停止录音后该流结束，下一次 `start()` 会再给一个新流。
+    public nonisolated var levels: AsyncStream<Double> {
+        levelStream.currentStream
+    }
 
     /// 初始化。`tapBufferSize` 为 inputNode tap 的缓冲帧数，默认 4096。
     public init(tapBufferSize: AVAudioFrameCount = 4096) {
         self.tapBufferSize = tapBufferSize
-        var continuation: AsyncStream<Double>.Continuation!
-        self.levels = AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation = $0 }
-        self.levelContinuation = continuation
         // 目标格式：标准 Float32、给定采样率与单声道。非交错对单声道无差别。
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -72,11 +79,30 @@ public actor AudioRecorder: AudioRecording {
     }
 
     deinit {
-        levelContinuation.finish()
+        levelStream.finishCurrent()
     }
 
     public var isRecording: Bool {
         recording
+    }
+
+    // MARK: - Test seams（仅 @testable 可见，公共 API 不变）
+
+    /// 测试用：模拟一次录音会话开始时对电平流的重建（与 `start()` 内 `beginSession()` 同源）。
+    /// 让单测无需麦克风权限/硬件即可复现「会话间流复用」的真实生命周期。
+    nonisolated func beginLevelSessionForTesting() {
+        levelStream.beginSession()
+    }
+
+    /// 测试用：模拟 tap 把一个归一化电平投递进当前会话的流（与真实 tap 的 `yield` 同源，
+    /// 真实 tap 也运行在 actor 之外的音频实时线程）。
+    nonisolated func emitLevelForTesting(_ level: Double) {
+        levelStream.currentContinuation.yield(level)
+    }
+
+    /// 测试用：模拟一次录音会话结束对电平流的收尾（与 `stop()` 内 `endSession()` 同源）。
+    nonisolated func endLevelSessionForTesting() {
+        levelStream.endSession()
     }
 
     public func start(deviceUID: String? = nil) async throws {
@@ -99,6 +125,12 @@ public actor AudioRecorder: AudioRecording {
 
         accumulator.reset()
         capturedFrames = 0
+
+        // 1.5) 关键修复：为本次会话重建一对全新的电平流 + continuation。
+        //      `AsyncStream` 单消费者——上次会话的消费任务被取消会令旧流永久结束，
+        //      复用旧流会导致「复测无绿条」。消费者在 `start()` 之后读取 `levels`，
+        //      此处先重建，确保它们拿到的是本会话的新流。
+        levelStream.beginSession()
 
         // 2) 关键：创建一个全新的 AVAudioEngine。绝不复用旧引擎（避免缓存的坏 inputFormat）。
         let engine = AVAudioEngine()
@@ -158,7 +190,9 @@ public actor AudioRecorder: AudioRecording {
     ) throws {
         let targetFormat = self.targetFormat
         let tapBufferSize = self.tapBufferSize
-        let levelContinuation = self.levelContinuation
+        // 捕获本会话的 continuation 快照：tap 始终把电平投递进「本次 start() 重建」的流，
+        // 即便之后又 start() 重建出新流，旧 tap 也不会误投到新会话。
+        let levelContinuation = levelStream.currentContinuation
 
         // 构建从硬件格式到目标格式的转换器（处理采样率 + 声道下混 + 量化）。
         guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
@@ -215,8 +249,9 @@ public actor AudioRecorder: AudioRecording {
         engine = nil
         recording = false
         Self.log.notice("stop(): totalCapturedFrames=\(self.capturedFrames, privacy: .public) accumulatedSamples=\(self.accumulator.count, privacy: .public)")
-        // 录音结束：把电平归零，让 HUD 波形平复（流本身保持有效以供下一次录音）。
-        levelContinuation.yield(0)
+        // 录音结束：先把电平归零让 HUD 波形平复，再结束本会话的流。
+        // 下一次 `start()` 会重建一个全新的流；消费者届时重新读取 `levels` 即可。
+        levelStream.endSession()
         return accumulator.drain()
     }
 
@@ -324,5 +359,67 @@ private final class TapCounter {
     func next() -> UInt64 {
         count += 1
         return count
+    }
+}
+
+/// 「每会话可重建」的电平流持有器。
+///
+/// 为什么需要它：`AudioRecorder.levels` 在协议中是 `nonisolated` 的同步只读属性，
+/// 必须能在不进入 actor 的情况下读取「当前会话的流」；而该流又要能在每次 `start()`
+/// 时整体替换为一对全新的 `AsyncStream` + `Continuation`。本持有器用
+/// `OSAllocatedUnfairLock`（`Sendable`）守护这对值，供 `nonisolated` 上下文安全读写。
+///
+/// 修复的根因：`AsyncStream` 是单消费者流——一旦其唯一消费迭代被取消/结束，整条流
+/// 永久 finish；复用同一条流，第二次测试便拿不到任何电平（绿条不再出现）。每次
+/// `beginSession()` 都换上全新的一对流，彻底规避该陷阱。
+private final class LevelStreamHolder: Sendable {
+    private struct Pair {
+        var stream: AsyncStream<Double>
+        var continuation: AsyncStream<Double>.Continuation
+    }
+
+    private let lock: OSAllocatedUnfairLock<Pair>
+
+    init() {
+        lock = OSAllocatedUnfairLock(initialState: Self.makePair())
+    }
+
+    /// 构造一对全新的「仅保留最新值」的电平流 + continuation。
+    private static func makePair() -> Pair {
+        var continuation: AsyncStream<Double>.Continuation!
+        let stream = AsyncStream<Double>(bufferingPolicy: .bufferingNewest(1)) { continuation = $0 }
+        return Pair(stream: stream, continuation: continuation)
+    }
+
+    /// 当前会话的电平流（供 `AudioRecorder.levels` 在 `start()` 之后读取）。
+    var currentStream: AsyncStream<Double> {
+        lock.withLock { $0.stream }
+    }
+
+    /// 当前会话的 continuation（供 tap 投递电平）。
+    var currentContinuation: AsyncStream<Double>.Continuation {
+        lock.withLock { $0.continuation }
+    }
+
+    /// 开始一个新会话：结束旧流并换上一对全新的流 + continuation。
+    /// `start()` 在重建引擎前调用；消费者随后读取 `levels` 即拿到新流。
+    func beginSession() {
+        lock.withLock { pair in
+            pair.continuation.finish()
+            pair = Self.makePair()
+        }
+    }
+
+    /// 结束当前会话：先归零电平让波形平复，再结束本会话的流。
+    func endSession() {
+        lock.withLock { pair in
+            pair.continuation.yield(0)
+            pair.continuation.finish()
+        }
+    }
+
+    /// 结束当前会话的流（用于 `deinit`）。
+    func finishCurrent() {
+        lock.withLock { $0.continuation.finish() }
     }
 }
