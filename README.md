@@ -70,6 +70,25 @@ turn it on and power it with a ChatGPT / Codex subscription you may already have
 — no per-token API bill — or with your own API key. Either way, you never pay
 SayIt anything.
 
+## Why Mac-only (built natively in Swift)
+
+SayIt's cost story and its platform story are the same story:
+
+- **Free follows from local.** Because transcription runs on a local,
+  on-device model, there is no server to pay for and no per-use cost — that is
+  the core reason SayIt can be completely free.
+- **Local is practical because of Apple Silicon.** Running a full-size speech
+  model on-device fast enough for live dictation needs real machine-learning
+  hardware. Apple Silicon Macs ship with the **Apple Neural Engine (ANE)**, and
+  SayIt reaches it through **Core ML**: WhisperKit runs OpenAI's Whisper
+  `large-v3-turbo` on the Neural Engine, and the turbo variant's small decoder
+  keeps it quick.
+- **Native Swift is what unlocks that.** SayIt is a native Swift + SwiftUI app,
+  not a cross-platform or Electron wrapper. Being native is exactly what lets it
+  tap Core ML and the Neural Engine directly — an edge cross-platform tools
+  can't match, and the reason SayIt is Mac-only (macOS 14+) by design, as well
+  as fast, efficient, and free.
+
 ## Requirements
 
 - macOS 14 or later.
