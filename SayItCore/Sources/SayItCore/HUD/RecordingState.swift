@@ -39,13 +39,13 @@ public enum RecordingState: Equatable, Sendable {
         case .transcribing:
             return Self.localized("hud.transcribing", fallback: "Transcribing…")
         case .processing(_, let phase):
-            // The processing copy switches with the phase: transcribing reuses the already-localized hud.transcribing;
-            // the polish copy hud.polishing is not in the in-bundle xcstrings (limited by the change scope), so it falls back bilingually in place per UI language.
+            // The processing copy switches with the phase; both phases resolve through the shared
+            // in-bundle localized helper (en + zh-Hans), so no phase diverges from the catalog path.
             switch phase {
             case .transcribing:
                 return Self.localized("hud.transcribing", fallback: "Transcribing…")
             case .polishing:
-                return Self.polishingLabel
+                return Self.localized("hud.polishing", fallback: "Polishing…")
             }
         case .info(let message):
             // Neutral hint: an empty message falls back to a generic hint, avoiding a blank HUD.
@@ -62,13 +62,6 @@ public enum RecordingState: Equatable, Sendable {
     private static func localized(_ key: String, fallback: String) -> String {
         String(localized: String.LocalizationValue(key), bundle: .module, comment: "Recording HUD state text")
             .nonKeyOr(fallback, key: key)
-    }
-
-    /// Polish-phase copy. `hud.polishing` is not yet in the in-bundle xcstrings (limited by the change scope),
-    /// so it falls back bilingually in place per the current UI language: Chinese returns the polish-in-progress copy, others return English.
-    private static var polishingLabel: String {
-        let preferred = Locale.preferredLanguages.first ?? "en"
-        return preferred.hasPrefix("zh") ? "润色中…" : "Polishing…"
     }
 
     /// Processing progress (0...1). Only `.processing` returns a carried value, others are `nil`, for the view to bind directly.
