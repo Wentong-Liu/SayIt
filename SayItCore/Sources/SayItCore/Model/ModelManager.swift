@@ -12,8 +12,14 @@ import WhisperKit
 /// WhisperKit 下载与加载都以一个 `downloadBase` 为根：
 /// 缓存布局为 `downloadBase/models/<repo>/<variantFolder>/`，其中 repo 为
 /// `argmaxinc/whisperkit-coreml`，`variantFolder` 是诸如 `openai_whisper-large-v3_turbo`
-/// 这类仓库内文件夹名。WhisperKit 的默认 `downloadBase` 是 `~/Documents/huggingface`
-/// （见 `HubApi.init`）。
+/// 这类仓库内文件夹名（`models/<repo>` 这层由 `HubApi.localRepoLocation` 自动拼接，
+/// 仅取决于 `downloadBase` 这一根）。
+///
+/// WhisperKit 的**默认** `downloadBase` 是 `~/Documents/huggingface`（见 `HubApi.init`），
+/// 但 `~/Documents` 受 macOS TCC 保护：本 App 为已签名、启用 hardened-runtime 且**非沙盒**，
+/// 无法在该目录创建/写入，导致目录从未被建立、本地模型下载必然失败。
+/// 因此本类型把根目录改为不受 TCC 限制的 `Application Support/SayIt/models`，
+/// 并在首次访问时创建（缺失则建），从而修复下载失败问题。
 ///
 /// 为保证「下了就用得上」，本类型把该 `downloadBase` 抽成**单一真相源** ``Self/downloadBase``：
 /// - ``download(model:)`` 把它显式传给 `WhisperKit.download(variant:downloadBase:)`；
@@ -54,13 +60,36 @@ public final class ModelManager {
 
     // MARK: - 下载根目录（单一真相源）
 
-    /// WhisperKit 模型缓存根目录。与 WhisperKit 默认行为一致：`~/Documents/huggingface`。
+    /// WhisperKit 模型缓存根目录：`Application Support/SayIt/models`。
+    ///
+    /// 不使用 WhisperKit 默认的 `~/Documents/huggingface`：`~/Documents` 受 macOS TCC 保护，
+    /// 已签名 hardened-runtime 非沙盒 App 无法在其下创建/写入，会导致本地模型下载失败。
+    /// 改用不受 TCC 限制的 Application Support，并在此处确保目录存在（缺失则创建）。
     ///
     /// `WhisperKitTranscriber` 与 ``download(model:)`` 都引用此常量作为 `downloadBase`，
     /// 从而保证下载落盘与加载读取指向同一处。
     nonisolated public static let downloadBase: URL = {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        return documents.appending(component: "huggingface")
+        let fm = FileManager.default
+        let base: URL
+        if let appSupport = try? fm.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) {
+            base = appSupport
+                .appending(component: "SayIt")
+                .appending(component: "models")
+        } else {
+            // 极端情况下取不到 Application Support：回退到缓存目录，仍避开受 TCC 保护的 Documents。
+            let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            base = caches
+                .appending(component: "SayIt")
+                .appending(component: "models")
+        }
+        // 确保根目录存在，使 WhisperKit/HubApi 能直接在其下写入缓存。
+        try? fm.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
     }()
 
     /// WhisperKit 官方模型仓库 id。
