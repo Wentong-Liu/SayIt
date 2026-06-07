@@ -189,6 +189,25 @@ final class DictionaryStoreTests: XCTestCase {
         XCTAssertEqual(onDisk, replacement)
     }
 
+    /// 回归：replaceAll 作为全新 store 上的**首个**操作（此前无任何 all/add/update/remove
+    /// 触发懒加载建目录）时，也必须建目录并真正落盘——否则数据只留内存、下个进程静默丢失。
+    func testReplaceAllAsFirstOpPersistsOnFreshStore() async throws {
+        let store = makeStore()
+        let entries = [sampleEntry(canonical: "First")]
+        await store.replaceAll(entries)
+
+        // 盘上文件必须存在且为合法 JSON。
+        let fileURL = tempDir.appending(component: "dictionary.json")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: fileURL.path),
+            "replaceAll 作为首个操作时应建目录并落盘")
+        XCTAssertEqual(try decodeOnDisk().entries, entries)
+
+        // 指向同一目录的全新 store 必须从盘里重读出内容（而非读到空）。
+        let reloaded = await makeStore().all()
+        XCTAssertEqual(reloaded, entries)
+    }
+
     // MARK: - 容错：缺失 / 损坏文件以空词典起步，绝不崩溃
 
     func testMissingFileStartsEmpty() async {

@@ -103,6 +103,9 @@ public actor DictionaryStore {
 
     /// 用给定词条整体替换词典；落盘并发变更通知（无条件视作一次变更）。
     public func replaceAll(_ entries: [DictionaryEntry]) {
+        // 先 ensureLoaded() 以保证基目录已建（它是唯一建目录处）；否则当 replaceAll 是
+        // 全新 store 上的首个操作时，目录缺失会导致原子写盘失败、数据只留在内存而静默丢失。
+        ensureLoaded()
         commit(UserDictionary(entries: entries))
     }
 
