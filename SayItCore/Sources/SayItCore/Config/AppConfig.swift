@@ -43,6 +43,7 @@ public final class AppConfig {
         static let providerKind = "provider.kind"
         static let model = "provider.model"
         static let language = "language"
+        static let inputDeviceUID = "audio.inputDeviceUID"
     }
 
     // MARK: 触发 / 交互
@@ -122,6 +123,17 @@ public final class AppConfig {
         set { setString(newValue, forKey: Key.language) }
     }
 
+    // MARK: 音频输入设备
+
+    /// 选定的麦克风输入设备 UID；`nil` 表示跟随系统默认输入设备。
+    ///
+    /// 存盘的是 CoreAudio 的设备 UID（``AudioInputDevice/uid``）。设备被拔出后 UID
+    /// 解析不到时，``AudioRecorder`` 会自动回落到系统默认设备，故此处无需校验有效性。
+    public var inputDeviceUID: String? {
+        get { defaults.string(forKey: Key.inputDeviceUID) }
+        set { setOptionalString(newValue, forKey: Key.inputDeviceUID) }
+    }
+
     // MARK: 默认常量（单一真相源）
 
     static let defaultLocalModel = "large-v3-turbo"
@@ -156,6 +168,18 @@ public final class AppConfig {
     private func setString(_ newValue: String, forKey key: String) {
         guard defaults.string(forKey: key) != newValue else { return }
         defaults.set(newValue, forKey: key)
+        postChange()
+    }
+
+    /// 写可空字符串：`nil` 时移除键（表达「未设置/跟随默认」），值未变则不发通知。
+    private func setOptionalString(_ newValue: String?, forKey key: String) {
+        let old = defaults.string(forKey: key)
+        guard old != newValue else { return }
+        if let newValue {
+            defaults.set(newValue, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
         postChange()
     }
 
