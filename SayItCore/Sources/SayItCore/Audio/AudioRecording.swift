@@ -38,9 +38,17 @@ extension AudioRecordingError: CustomStringConvertible {
 ///
 /// 约定：`stop()` 返回的样本即为 `AudioFormat`（16kHz / 单声道 / Float32）。
 public protocol AudioRecording: Sendable {
-    /// 开始录音。若未授权会先尝试请求权限；仍未授权则抛 `.microphonePermissionDenied`。
-    /// 已在录音时抛 `.alreadyRecording`。
+    /// 开始录音（用系统默认输入设备）。若未授权会先尝试请求权限；仍未授权则抛
+    /// `.microphonePermissionDenied`。已在录音时抛 `.alreadyRecording`。
     func start() async throws
+
+    /// 用指定输入设备开始录音。
+    ///
+    /// - Parameter deviceUID: 目标输入设备 UID（``AudioInputDevice/uid``）；
+    ///   传 `nil` 等价于 ``start()``（系统默认设备）。
+    ///   若 UID 解析不到设备（已拔出/失效），自动回落到系统默认设备。
+    /// 其余行为与 ``start()`` 一致（权限、16kHz/mono/Float32、levels 流）。
+    func start(deviceUID: String?) async throws
 
     /// 停止录音并返回本次累积的全部样本（16kHz / 单声道 / Float32）。
     /// 未在录音时抛 `.notRecording`。
@@ -56,4 +64,12 @@ public protocol AudioRecording: Sendable {
     /// 录音停止后不再产出新值；跨多次录音持续有效（同一长生命周期流）。
     /// 0 表示静音，1 表示接近满量程。具体映射由实现决定（可含对数压缩以贴合听感）。
     var levels: AsyncStream<Double> { get }
+}
+
+public extension AudioRecording {
+    /// 默认实现：用系统默认输入设备开始录音（转发到 `start(deviceUID: nil)`）。
+    /// 既保证既有调用方 `start()` 不变，也让仅实现 `start(deviceUID:)` 的类型自动获得它。
+    func start() async throws {
+        try await start(deviceUID: nil)
+    }
 }

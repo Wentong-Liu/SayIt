@@ -100,6 +100,40 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(AppConfig(defaults: defaults).language, "zh")
     }
 
+    // MARK: 输入设备 UID（可空）
+
+    func testInputDeviceUIDDefaultsToNil() {
+        XCTAssertNil(config.inputDeviceUID)
+    }
+
+    func testInputDeviceUIDRoundTrip() {
+        config.inputDeviceUID = "BuiltInMicrophoneDevice"
+        XCTAssertEqual(config.inputDeviceUID, "BuiltInMicrophoneDevice")
+        XCTAssertEqual(AppConfig(defaults: defaults).inputDeviceUID, "BuiltInMicrophoneDevice")
+    }
+
+    func testInputDeviceUIDSetNilRemovesKey() {
+        config.inputDeviceUID = "SomeDevice"
+        XCTAssertNotNil(config.inputDeviceUID)
+        config.inputDeviceUID = nil
+        XCTAssertNil(config.inputDeviceUID)
+        XCTAssertNil(AppConfig(defaults: defaults).inputDeviceUID)
+    }
+
+    func testInputDeviceUIDChangePostsNotification() {
+        let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config)
+        config.inputDeviceUID = "DeviceX"
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    func testInputDeviceUIDUnchangedDoesNotPost() {
+        config.inputDeviceUID = "DeviceX"
+        let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config)
+        exp.isInverted = true
+        config.inputDeviceUID = "DeviceX"
+        wait(for: [exp], timeout: 0.3)
+    }
+
     // MARK: providerKind / model 的耦合行为
 
     func testProviderKindRoundTrip() {
