@@ -40,6 +40,7 @@ public final class AppConfig {
         static let cloudSTTModel = "stt.cloudModel"
         static let polishEnabled = "polish.enabled"
         static let polishStyle = "polish.style"
+        static let soundCuesEnabled = "sound.cuesEnabled"
         static let providerKind = "provider.kind"
         static let model = "provider.model"
         static let language = "language"
@@ -93,6 +94,14 @@ public final class AppConfig {
     public var polishStyle: PolishStyle {
         get { enumValue(Key.polishStyle, default: .default) }
         set { setEnum(newValue, forKey: Key.polishStyle) }
+    }
+
+    // MARK: Sound cues
+
+    /// Whether to play the start/stop chime cues on dictation (ascending when recording begins, descending when it ends). Defaults to on.
+    public var soundCuesEnabled: Bool {
+        get { boolValue(Key.soundCuesEnabled, default: Self.defaultSoundCuesEnabled) }
+        set { setBool(newValue, forKey: Key.soundCuesEnabled) }
     }
 
     // MARK: Polish Provider / model
@@ -153,6 +162,7 @@ public final class AppConfig {
     static let defaultLocalModel = "large-v3-turbo"
     static let defaultCloudSTTModel = "gpt-4o-mini-transcribe"
     static let defaultPolishEnabled = true
+    static let defaultSoundCuesEnabled = true
     static let defaultLanguage = "auto"
 
     // MARK: Generic read/write + change notification
