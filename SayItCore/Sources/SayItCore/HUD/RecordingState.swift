@@ -97,6 +97,15 @@ public enum RecordingState: Equatable, Sendable {
         localized("hud.modelNotReady",
                   fallback: "Local model still downloading — please wait or switch to cloud")
     }
+
+    /// 润色（`.polishing`）阶段耗时超过预期、进度条已贴住 90% 上限并保持时的本地化文案
+    /// （en + zh-Hans，走包内 `Bundle.module`）。
+    ///
+    /// 由 ``RecordingPanelView`` 在客户端计时（润色起算超过 `expectedPolishDuration`）后就地替换主文案，
+    /// 提示「比往常要长」。不新增枚举 case / 阶段，保持类型与穷举 switch 不变（与并行任务可干净 rebase）。
+    public static var takingLongerMessage: String {
+        localized("hud.takingLonger", fallback: "Taking longer than usual…")
+    }
 }
 
 private extension String {
