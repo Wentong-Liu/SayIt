@@ -70,6 +70,17 @@ final class DictationCoordinator {
     /// its completion, ensuring `stop()` does not execute on the actor before `start()` and trigger `.notRecording`.
     private var startTask: Task<Void, Never>?
 
+    /// The in-flight recorder `stop()` kicked off by ``cancel()`` (and ``failToIdle(message:)``). ``cancel()`` returns immediately and resets the
+    /// HUD/phase to idle, but the AVAudioEngine teardown inside `recorder.stop()` is still running afterwards. The NEXT recording start
+    /// (``handleStart()``) must `await` this pending stop BEFORE calling `recorder.start()`, otherwise the new start collides with the
+    /// not-yet-finished stop (the recorder is still `recording`, the device still busy) and fails with `.alreadyRecording` or stalls.
+    /// Awaiting it makes a fresh start reliable IMMEDIATELY after cancel. Cleared when the stop wraps up.
+    private var pendingStopTask: Task<Void, Never>?
+
+    /// Monotonic id stamped on each ``beginPendingStop()``. ``awaitPendingStop()`` uses it to clear ``pendingStopTask`` only when it has not
+    /// been replaced by a newer stop while suspended (`Task` is not `Equatable`, so an id is the way to detect replacement).
+    private var pendingStopGeneration = 0
+
     /// Whether recording has started successfully (set by the start Task after `recorder.start()` succeeds).
     private var isRecording = false
 
@@ -216,6 +227,8 @@ final class DictationCoordinator {
         startTask = nil
         processingTask?.cancel()
         processingTask = nil
+        pendingStopTask?.cancel()
+        pendingStopTask = nil
         preloadTask?.cancel()
         preloadTask = nil
         if let configObserver {
@@ -313,6 +326,10 @@ final class DictationCoordinator {
             guard let self else { return }
             defer { self.startTask = nil }
             do {
+                // Wait out any in-flight recorder stop from a just-cancelled session (ESC) before starting a new one. Without this the
+                // new start races the cancel's not-yet-finished AVAudioEngine teardown: the recorder is still `recording` / the device
+                // still busy, so recorder.start() throws `.alreadyRecording` or stalls — the exact "can't restart right after ESC" bug.
+                await self.awaitPendingStop()
                 // Start recording with the persisted input device: read config.inputDeviceUID fresh on each press,
                 // letting the microphone selected in the settings page take effect immediately for the next dictation (no App restart needed).
                 // nil = follow the system default (equivalent to start()); when the UID is invalid, AudioRecorder automatically falls back to the system default.
@@ -374,10 +391,39 @@ final class DictationCoordinator {
         // Stop level forwarding and best-effort stop the recorder to release the device (same pattern as failToIdle).
         isRecording = false
         stopLevelForwarding()
-        Task { [recorder] in _ = try? await recorder.stop() }
+        // Track this best-effort stop so the NEXT start awaits it before recorder.start() — otherwise the new start races the
+        // not-yet-finished engine teardown and fails with `.alreadyRecording`/stalls (the "can't restart right after ESC" bug).
+        beginPendingStop()
         // Reset the HUD to idle. Inject NOTHING.
         panel.hide()
         phase = .idle
+    }
+
+    /// Best-effort stops the recorder in a stored ``pendingStopTask`` (instead of a fire-and-forget detached Task), so a subsequent
+    /// ``handleStart()`` can `await` it via ``awaitPendingStop()`` before `recorder.start()`. Replacing any prior pending stop is safe:
+    /// only one recorder exists and `stop()` is idempotent on the actor; the most recent stop is the one a later start must wait out.
+    private func beginPendingStop() {
+        pendingStopGeneration += 1
+        let generation = pendingStopGeneration
+        pendingStopTask = Task { [recorder] in
+            _ = try? await recorder.stop()
+            // Self-clear once done, but only if no newer stop has superseded this one (so a later start does not await an already-finished stop).
+            await MainActor.run { [weak self] in
+                guard let self, self.pendingStopGeneration == generation else { return }
+                self.pendingStopTask = nil
+            }
+        }
+    }
+
+    /// Awaits any in-flight stop kicked off by ``cancel()`` / ``failToIdle(message:)``, so the recorder's teardown is fully finished before the
+    /// caller starts a new recording. No-op when there is no pending stop. Clears the handle only if it was not superseded while suspended.
+    private func awaitPendingStop() async {
+        guard let pending = pendingStopTask else { return }
+        let generation = pendingStopGeneration
+        await pending.value
+        if pendingStopGeneration == generation {
+            pendingStopTask = nil
+        }
     }
 
     /// The complete pipeline: stop recording -> transcribe -> (optional) polish -> inject. Runs in a background task, switching back to the main thread for UI calls.
@@ -743,7 +789,8 @@ final class DictationCoordinator {
         // Recording may still be in progress (e.g. a corner case of erroring immediately after start), best-effort stop it to release the device.
         isRecording = false
         stopLevelForwarding()
-        Task { [recorder] in _ = try? await recorder.stop() }
+        // Track this best-effort stop (same reasoning as cancel()): a restart immediately after a failure must await the teardown before recorder.start().
+        beginPendingStop()
         showTransientError(message)
     }
 
@@ -816,6 +863,13 @@ final class DictationCoordinator {
         handleStart()
         await startTask?.value
     }
+
+    /// Directly triggers one "start" but does NOT await the start Task (so a test can interleave releasing a gated cancel-stop while the
+    /// restart is mid-flight). Pair with ``_test_awaitStart()``.
+    func _test_handleStart() { handleStart() }
+
+    /// Awaits the in-flight start Task's completion (no-op if none).
+    func _test_awaitStart() async { await startTask?.value }
 
     /// Directly triggers one "stop" and waits for the whole pipeline (transcribe -> polish -> inject) to finish (equivalent to receiving a `.stop`).
     func _test_stop() async {
