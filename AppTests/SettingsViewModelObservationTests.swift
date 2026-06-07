@@ -86,6 +86,17 @@ final class SettingsViewModelObservationTests: XCTestCase {
         XCTAssertEqual(config.uiLanguage, next)
     }
 
+    func testSoundCuesEnabledChangeFiresObservationAndPersists() {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+        let original = vm.soundCuesEnabled
+
+        assertObservationFires(read: { _ = vm.soundCuesEnabled }, mutate: { vm.soundCuesEnabled = !original },
+                               "soundCuesEnabled change should invalidate the view")
+        XCTAssertEqual(vm.soundCuesEnabled, !original)
+        XCTAssertEqual(config.soundCuesEnabled, !original)
+    }
+
     // MARK: - STT
 
     func testSTTModeChangeFiresObservationAndPersists() {

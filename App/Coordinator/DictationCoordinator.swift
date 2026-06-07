@@ -34,6 +34,8 @@ final class DictationCoordinator {
     /// User-dictionary store (Layer 3): its entries drive deterministic rewriting (exact case / spacing) after polish, before injection.
     /// Reuses the ``DictionaryStore`` actor from PR-1; injectable so tests can pass an empty dictionary backed by a temp directory to verify "zero behavior change".
     private let dictionaryStore: DictionaryStore
+    /// The start/stop chime cue player. Fire-and-forget and non-blocking; gated by ``AppConfig/soundCuesEnabled``.
+    private let soundCues: SoundCuePlaying
     /// The polish pipeline: injects a failure-log callback for debugging (never loses characters, only observes).
     private let polishPipeline = PolishPipeline(logFailure: { reason in
         NSLog("[SayIt] 润色失败回退原文: %@", reason)
@@ -139,6 +141,7 @@ final class DictationCoordinator {
     ///   - accessibilityGate: the accessibility gate; defaults to guiding authorization on demand (see ``ensureAccessibilityOrGuide()``).
     ///   - modelReadiness: local model readiness detection; defaults to read-only reuse of ``ModelManager/isDownloaded(model:)``.
     ///   - transcribeTimeout: the transcription hard timeout; defaults to 90s.
+    ///   - soundCues: the start/stop chime player; defaults to the real ``SoundCuePlayer``. Tests can inject a no-op double.
     init(config: AppConfig = .shared,
          hotkeyManager: HotkeyManager? = nil,
          recorder: AudioRecording = AudioRecorder(),
@@ -148,12 +151,14 @@ final class DictationCoordinator {
          transcriberFactory: (() throws -> any Transcriber)? = nil,
          accessibilityGate: (() -> Bool)? = nil,
          modelReadiness: ((String) -> Bool)? = nil,
-         transcribeTimeout: Duration = .seconds(90)) {
+         transcribeTimeout: Duration = .seconds(90),
+         soundCues: SoundCuePlaying = SoundCuePlayer()) {
         self.config = config
         self.recorder = recorder
         self.panel = panel
         self.injector = injector
         self.dictionaryStore = dictionaryStore
+        self.soundCues = soundCues
         self.hotkeyManager = hotkeyManager
             ?? HotkeyManager(triggerKey: config.triggerKey,
                              mode: Self.hotkeyMode(for: config.interactionMode))
@@ -256,6 +261,14 @@ final class DictationCoordinator {
         levelTask = nil
     }
 
+    /// Plays a dictation chime cue if the user has them enabled. The single place both the start and stop hooks gate on
+    /// ``AppConfig/soundCuesEnabled`` (read live, so flipping the setting takes effect on the next dictation).
+    /// Fire-and-forget and non-blocking (see ``SoundCuePlayer``), so it never stalls the recording pipeline.
+    private func playCueIfEnabled(_ cue: SoundCue) {
+        guard config.soundCuesEnabled else { return }
+        soundCues.play(cue)
+    }
+
     /// Consumes the hotkey event stream: `.start` begins recording, `.stop` begins the transcription pipeline.
     private func startEventLoop() {
         let events = hotkeyManager.events
@@ -290,6 +303,8 @@ final class DictationCoordinator {
 
         panel.show(state: .listening)
         phase = .listening
+        // Recording has begun (guards + accessibility gate passed): fire the ascending start chime for immediate feedback.
+        playCueIfEnabled(.start)
 
         startTask = Task { [weak self] in
             guard let self else { return }
@@ -361,6 +376,8 @@ final class DictationCoordinator {
             samples = try await recorder.stop()
             isRecording = false
             stopLevelForwarding()
+            // Recording actually stopped (success branch only, no double-cue on stop failure): fire the descending stop chime.
+            playCueIfEnabled(.stop)
         } catch {
             isRecording = false
             failToIdle(message: String(localized: "hud.stopRecordingFailed",
