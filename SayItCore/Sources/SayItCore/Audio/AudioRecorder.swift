@@ -1,4 +1,6 @@
+import AudioToolbox
 import AVFoundation
+import CoreAudio
 import Foundation
 
 /// 基于 `AVAudioEngine` 的麦克风录音实现。
@@ -59,7 +61,7 @@ public actor AudioRecorder: AudioRecording {
         recording
     }
 
-    public func start() async throws {
+    public func start(deviceUID: String? = nil) async throws {
         guard !recording else { throw AudioRecordingError.alreadyRecording }
 
         // 1) 权限：已授权直接过；未决定则请求；被拒/受限则报错。
@@ -77,6 +79,12 @@ public actor AudioRecorder: AudioRecording {
         accumulator.reset()
 
         let inputNode = engine.inputNode
+        // 1.5) 选定设备：把 inputNode 底层 AudioUnit 绑定到该设备。
+        //      deviceUID 为 nil（或解析不到设备）时不改动，沿用系统默认输入设备。
+        //      必须在读取 inputFormat / 安装 tap 前完成——设备变了原始格式也可能变。
+        if let deviceUID, let deviceID = AudioInputDeviceManager.deviceID(forUID: deviceUID) {
+            Self.setCurrentInputDevice(deviceID, on: inputNode)
+        }
         let inputFormat = inputNode.inputFormat(forBus: 0)
 
         // 2) 构建从硬件格式到目标格式的转换器（处理采样率 + 声道下混 + 量化）。
@@ -118,6 +126,19 @@ public actor AudioRecorder: AudioRecording {
         // 录音结束：把电平归零，让 HUD 波形平复（流本身保持有效以供下一次录音）。
         levelContinuation.yield(0)
         return accumulator.drain()
+    }
+
+    /// 把 `inputNode` 底层的输入 AudioUnit 当前设备设为给定 `AudioDeviceID`。
+    ///
+    /// 通过 `AVAudioInputNode.auAudioUnit.deviceID` 设置（等价于对底层 AudioUnit 写
+    /// `kAudioOutputUnitProperty_CurrentDevice`，但走 AVAudioEngine 的封装，更稳妥）。
+    /// 失败（抛错）时静默忽略：保持使用系统默认设备，不阻断录音启动。
+    private nonisolated static func setCurrentInputDevice(_ deviceID: AudioDeviceID, on inputNode: AVAudioInputNode) {
+        do {
+            try inputNode.auAudioUnit.setDeviceID(deviceID)
+        } catch {
+            // 绑定失败（设备忙/不兼容）：回落系统默认，录音仍可进行。
+        }
     }
 
     /// 由一段 Float 样本算出归一化输入电平（0...1）。
