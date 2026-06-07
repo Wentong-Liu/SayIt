@@ -87,6 +87,27 @@ final class WhisperKitTranscriberTests: XCTestCase {
         XCTAssertNil(result.duration)
     }
 
+    func testMapResultCollapsesInternalDoubleSpaces() {
+        // 分块拼接（各段自带首尾空格、以 " " 连接）会产出双空格；mapResult 应折叠为单空格。
+        let result = WhisperKitTranscriber.mapResult(
+            joinedText: "hello   world  again",
+            segments: []
+        )
+        XCTAssertEqual(result.text, "hello world again")
+    }
+
+    func testMapResultCollapsesNewlinesAndTabs() {
+        let result = WhisperKitTranscriber.mapResult(
+            joinedText: "  foo\t\tbar\n\nbaz  ",
+            segments: []
+        )
+        XCTAssertEqual(result.text, "foo bar baz")
+    }
+
+    func testCollapseWhitespaceLeavesSingleSpacedTextUnchanged() {
+        XCTAssertEqual(WhisperKitTranscriber.collapseWhitespace("a b c"), "a b c")
+    }
+
     // MARK: - 协议一致性
 
     func testUsableThroughTranscriberExistential() {
