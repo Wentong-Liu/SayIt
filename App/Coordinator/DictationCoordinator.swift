@@ -516,7 +516,6 @@ final class DictationCoordinator {
         switch mode {
         case .singleTap: return .singleTapToggle
         case .hold:      return .holdToTalk
-        case .toggle:    return .toggle
         }
     }
 
