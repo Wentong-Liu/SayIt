@@ -17,19 +17,14 @@
 //
 // Usage:
 //   swift scripts/make-appicon.swift <outputDir>
-// Writes icon_1024.png plus icon_16/32/64/128/256/512.png into <outputDir>.
+//     Writes icon_1024.png plus icon_16/32/64/128/256/512.png into <outputDir>.
+//   swift scripts/make-appicon.swift menubar <outputDir>
+//     Writes menubar_18.png (@1x) and menubar_36.png (@2x): the SAME speech
+//     mark in solid opaque black on a transparent canvas, for use as a
+//     monochrome macOS menu-bar template image.
 //
 import AppKit
 import CoreGraphics
-
-// MARK: - Arguments
-
-let args = CommandLine.arguments
-guard args.count >= 2 else {
-    FileHandle.standardError.write("Usage: make-appicon.swift <outputDir>\n".data(using: .utf8)!)
-    exit(2)
-}
-let outDir = args[1]
 
 // MARK: - Colors (sRGB — restrained monochrome: dark ink on off-white)
 
@@ -42,64 +37,20 @@ let ink      = srgb(22, 24, 29)      // near-black mark
 
 let colorSpace = CGColorSpaceCreateDeviceRGB()
 
-// MARK: - Drawing
+// MARK: - Geometry
 
-/// Render the full icon at the given pixel size into a fresh bitmap and
-/// return the resulting CGImage. Everything is expressed as a ratio of
-/// `size` so it scales crisply to any resolution.
-func renderIcon(size: CGFloat) -> CGImage {
-    guard let ctx = CGContext(
-        data: nil,
-        width: Int(size),
-        height: Int(size),
-        bitsPerComponent: 8,
-        bytesPerRow: 0,
-        space: colorSpace,
-        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-    ) else {
-        FileHandle.standardError.write("Failed to create bitmap context\n".data(using: .utf8)!)
-        exit(1)
-    }
-
-    ctx.setAllowsAntialiasing(true)
-    ctx.setShouldAntialias(true)
-    ctx.interpolationQuality = .high
-
-    // Rounded-square field (macOS-style squircle approximation). Content
-    // occupies ~84% of the canvas with a transparent margin, matching the
-    // system icon template proportions.
-    let margin = size * 0.08
-    let rect = CGRect(x: margin, y: margin, width: size - margin * 2, height: size - margin * 2)
-    let corner = rect.width * 0.2237   // Apple squircle corner ratio approximation
-    let roundedPath = CGPath(roundedRect: rect, cornerWidth: corner, cornerHeight: corner, transform: nil)
-
-    ctx.saveGState()
-    ctx.addPath(roundedPath)
-    ctx.clip()
-
-    // Soft vertical gradient on the off-white field for a non-flat feel.
-    let bgGradient = CGGradient(
-        colorsSpace: colorSpace,
-        colors: [bgTop, bgBottom] as CFArray,
-        locations: [0.0, 1.0]
-    )!
-    ctx.drawLinearGradient(
-        bgGradient,
-        start: CGPoint(x: rect.midX, y: rect.maxY),
-        end: CGPoint(x: rect.midX, y: rect.minY),
-        options: []
-    )
-    ctx.restoreGState()
-
-    // The mark: a bold abstract speech-blob with carved soundwave bars.
-    // We build the solid blob path, then SUBTRACT three rounded bars using
-    // the even-odd fill rule so the bars read as crisp negative space.
-    let cx = rect.midX
-    let cy = rect.midY
-    let markYOffset = rect.height * 0.045   // nudge the optical center down a touch
-
-    let blobW = rect.width * 0.62
-    let blobH = blobW * 0.86
+/// Build the combined "speech mark" path (the bold speech-blob with three
+/// negative-space soundwave bars) ready for even-odd filling.
+///
+/// This is the single source of truth for the mark geometry shared by the
+/// full app icon and the monochrome menu-bar template. Given a center and
+/// the blob's box dimensions, it reproduces the exact blob + bars built by
+/// the original inline code, so callers must fill it with `.evenOdd`.
+func speechMarkPath(centerX cx: CGFloat,
+                    centerY cy: CGFloat,
+                    blobW: CGFloat,
+                    blobH: CGFloat,
+                    markYOffset: CGFloat) -> CGPath {
     let blobRect = CGRect(x: cx - blobW / 2,
                           y: cy - blobH / 2 + markYOffset,
                           width: blobW,
@@ -164,6 +115,73 @@ func renderIcon(size: CGFloat) -> CGImage {
     let combined = CGMutablePath()
     combined.addPath(blob)
     combined.addPath(bars)
+    return combined
+}
+
+// MARK: - Drawing
+
+/// Render the full icon at the given pixel size into a fresh bitmap and
+/// return the resulting CGImage. Everything is expressed as a ratio of
+/// `size` so it scales crisply to any resolution.
+func renderIcon(size: CGFloat) -> CGImage {
+    guard let ctx = CGContext(
+        data: nil,
+        width: Int(size),
+        height: Int(size),
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        FileHandle.standardError.write("Failed to create bitmap context\n".data(using: .utf8)!)
+        exit(1)
+    }
+
+    ctx.setAllowsAntialiasing(true)
+    ctx.setShouldAntialias(true)
+    ctx.interpolationQuality = .high
+
+    // Rounded-square field (macOS-style squircle approximation). Content
+    // occupies ~84% of the canvas with a transparent margin, matching the
+    // system icon template proportions.
+    let margin = size * 0.08
+    let rect = CGRect(x: margin, y: margin, width: size - margin * 2, height: size - margin * 2)
+    let corner = rect.width * 0.2237   // Apple squircle corner ratio approximation
+    let roundedPath = CGPath(roundedRect: rect, cornerWidth: corner, cornerHeight: corner, transform: nil)
+
+    ctx.saveGState()
+    ctx.addPath(roundedPath)
+    ctx.clip()
+
+    // Soft vertical gradient on the off-white field for a non-flat feel.
+    let bgGradient = CGGradient(
+        colorsSpace: colorSpace,
+        colors: [bgTop, bgBottom] as CFArray,
+        locations: [0.0, 1.0]
+    )!
+    ctx.drawLinearGradient(
+        bgGradient,
+        start: CGPoint(x: rect.midX, y: rect.maxY),
+        end: CGPoint(x: rect.midX, y: rect.minY),
+        options: []
+    )
+    ctx.restoreGState()
+
+    // The mark: a bold abstract speech-blob with carved soundwave bars.
+    // The blob + bars path is built by the shared `speechMarkPath` helper and
+    // filled with the even-odd rule so the bars read as crisp negative space.
+    let cx = rect.midX
+    let cy = rect.midY
+    let markYOffset = rect.height * 0.045   // nudge the optical center down a touch
+
+    let blobW = rect.width * 0.62
+    let blobH = blobW * 0.86
+
+    let combined = speechMarkPath(centerX: cx,
+                                  centerY: cy,
+                                  blobW: blobW,
+                                  blobH: blobH,
+                                  markYOffset: markYOffset)
 
     ctx.saveGState()
     ctx.setFillColor(ink)
@@ -173,6 +191,66 @@ func renderIcon(size: CGFloat) -> CGImage {
 
     guard let image = ctx.makeImage() else {
         FileHandle.standardError.write("Failed to render image at \(Int(size))px\n".data(using: .utf8)!)
+        exit(1)
+    }
+    return image
+}
+
+/// Render JUST the speech mark in solid opaque black on a transparent canvas,
+/// sized `pointSize * scale` square. This is a macOS menu-bar *template*
+/// image: only the alpha channel matters, so AppKit recolors it to fit a
+/// light or dark menu bar. No squircle, no gradient, no clip.
+func renderMenuBarMark(pointSize: CGFloat, scale: CGFloat) -> CGImage {
+    let size = pointSize * scale
+    guard let ctx = CGContext(
+        data: nil,
+        width: Int(size),
+        height: Int(size),
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        FileHandle.standardError.write("Failed to create bitmap context\n".data(using: .utf8)!)
+        exit(1)
+    }
+
+    ctx.setAllowsAntialiasing(true)
+    ctx.setShouldAntialias(true)
+    ctx.interpolationQuality = .high
+
+    // Content rect with a small breathing margin (~1pt at 18pt) so the tail —
+    // which extends down-left of the blob box — never clips. The blob box is
+    // sized to the app-icon proportion (0.62) of this inset content rect, and
+    // re-centered so the overflowing tail stays on-canvas.
+    let margin = size * 0.07
+    let content = CGRect(x: margin, y: margin, width: size - margin * 2, height: size - margin * 2)
+
+    let blobW = content.width * 0.62
+    let blobH = blobW * 0.86
+    // markYOffset mirrors the app icon's optical-center nudge, scaled to the
+    // content rect rather than the full canvas.
+    let markYOffset = content.height * 0.045
+
+    // The mark's drawn extent runs from (cx - blobW/2 - blobW*0.16) on the
+    // left (the tail reach) to (cx + blobW/2) on the right, so its midpoint is
+    // (cx - blobW*0.08). Shift cx right by blobW*0.08 to center that extent in
+    // the content rect, keeping a margin on both the tail and the right edge.
+    let cx = content.midX + blobW * 0.08
+    let cy = content.midY
+
+    let mark = speechMarkPath(centerX: cx,
+                              centerY: cy,
+                              blobW: blobW,
+                              blobH: blobH,
+                              markYOffset: markYOffset)
+
+    ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1))
+    ctx.addPath(mark)
+    ctx.fillPath(using: .evenOdd)
+
+    guard let image = ctx.makeImage() else {
+        FileHandle.standardError.write("Failed to render menu-bar mark at \(Int(size))px\n".data(using: .utf8)!)
         exit(1)
     }
     return image
@@ -195,12 +273,38 @@ func writePNG(_ image: CGImage, to path: String) {
     }
 }
 
-// All pixel sizes referenced by AppIcon.appiconset/Contents.json.
-let pixelSizes: [Int] = [16, 32, 64, 128, 256, 512, 1024]
-for px in pixelSizes {
-    // Render each size natively (rather than downsampling one master) so
-    // every PNG gets crisp, hinted antialiasing at its target resolution.
-    let image = renderIcon(size: CGFloat(px))
-    let outPath = (outDir as NSString).appendingPathComponent("icon_\(px).png")
-    writePNG(image, to: outPath)
+// MARK: - Command dispatch
+
+let args = CommandLine.arguments
+
+if args.count >= 3 && args[1] == "menubar" {
+    // Menu-bar template mode: write the monochrome glyph at @1x (18pt) and
+    // @2x (36pt) into the given output directory.
+    let outDir = args[2]
+    let menuBarSizes: [(name: String, point: CGFloat, scale: CGFloat)] = [
+        ("menubar_18.png", 18, 1),
+        ("menubar_36.png", 18, 2),
+    ]
+    for spec in menuBarSizes {
+        let image = renderMenuBarMark(pointSize: spec.point, scale: spec.scale)
+        let outPath = (outDir as NSString).appendingPathComponent(spec.name)
+        writePNG(image, to: outPath)
+    }
+} else if args.count >= 2 {
+    // Default mode: render the full app icon at every appiconset size.
+    let outDir = args[1]
+    // All pixel sizes referenced by AppIcon.appiconset/Contents.json.
+    let pixelSizes: [Int] = [16, 32, 64, 128, 256, 512, 1024]
+    for px in pixelSizes {
+        // Render each size natively (rather than downsampling one master) so
+        // every PNG gets crisp, hinted antialiasing at its target resolution.
+        let image = renderIcon(size: CGFloat(px))
+        let outPath = (outDir as NSString).appendingPathComponent("icon_\(px).png")
+        writePNG(image, to: outPath)
+    }
+} else {
+    FileHandle.standardError.write(
+        "Usage: make-appicon.swift <outputDir>\n       make-appicon.swift menubar <outputDir>\n"
+            .data(using: .utf8)!)
+    exit(2)
 }
