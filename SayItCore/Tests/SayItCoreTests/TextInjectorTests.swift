@@ -171,9 +171,11 @@ final class TextInjectorTests: XCTestCase {
         XCTAssertEqual(result, .success(method: .pasteboard))
         XCTAssertEqual(keystroke.postCount, 1, "应模拟一次 ⌘V")
 
-        // 让延迟还原的 Task 跑完。
-        await Task.yield()
-        await Task.yield()
+        // 还原在单独的 @MainActor Task 里延迟执行；确定性地等它真正跑完，
+        // 而不是假设几次 yield 就够（整套测试并发调度下会偶发未完成）。
+        for _ in 0..<1000 where pb.restoreCount == 0 {
+            await Task.yield()
+        }
         XCTAssertEqual(pb.string(), "clipboard-original", "粘贴后应还原原剪贴板")
         XCTAssertGreaterThanOrEqual(pb.restoreCount, 1)
     }
@@ -236,8 +238,10 @@ final class TextInjectorTests: XCTestCase {
         XCTAssertEqual(ax.insertCount, 1, "应先尝试 AX")
         XCTAssertEqual(keystroke.postCount, 1, "AX 失败后应回退剪贴板粘贴")
 
-        await Task.yield()
-        await Task.yield()
+        // 确定性等待延迟还原 Task 跑完（见上一测试说明）。
+        for _ in 0..<1000 where pb.restoreCount == 0 {
+            await Task.yield()
+        }
         XCTAssertEqual(pb.string(), "clipboard-original")
     }
 }
