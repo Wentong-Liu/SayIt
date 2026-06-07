@@ -16,9 +16,15 @@ final class SettingsViewModel {
     /// 共享配置（生产用 `AppConfig.shared`）。非 observable：每个属性 get/set 直接转发到它。
     @ObservationIgnored private let config: AppConfig
 
-    /// - Parameter config: 注入的配置；默认 `.shared`，单测/预览可传独立实例。
-    init(config: AppConfig = .shared) {
+    /// 本地模型下载/状态管理器。其 `state` 为 `@Observable`，UI 可直接观察其属性驱动刷新。
+    let modelManager: ModelManager
+
+    /// - Parameters:
+    ///   - config: 注入的配置；默认 `.shared`，单测/预览可传独立实例。
+    ///   - modelManager: 注入的本地模型管理器；默认按当前 `localModel` 新建。
+    init(config: AppConfig = .shared, modelManager: ModelManager? = nil) {
         self.config = config
+        self.modelManager = modelManager ?? ModelManager(model: config.localModel)
         // 初次进入面板时同步一次密钥与权限状态。
         reloadCredentials()
         refreshPermissions()
@@ -61,10 +67,35 @@ final class SettingsViewModel {
         set { config.sttMode = newValue }
     }
 
-    /// 本地 STT 模型标识。
+    /// 本地 STT 模型标识。写入时同步让 ``modelManager`` 切到该模型并按本地缓存刷新状态。
     var localModel: String {
         get { config.localModel }
-        set { config.localModel = newValue }
+        set {
+            config.localModel = newValue
+            modelManager.setModel(newValue)
+        }
+    }
+
+    // MARK: 本地模型下载
+
+    /// 当前本地模型的下载/缓存状态（由 ``ModelManager`` 实时维护，供 UI 观察）。
+    var localModelState: ModelManager.State { modelManager.state }
+
+    /// 进入设置页时按当前模型的本地缓存实况刷新下载状态（不联网、不下载）。
+    func refreshLocalModelState() {
+        modelManager.setModel(config.localModel)
+        modelManager.refreshState()
+    }
+
+    /// 触发下载当前本地模型。
+    /// - Parameter force: 为 `true` 时即便已缓存也重新下载（「重新下载/重试」用）。
+    func downloadLocalModel(force: Bool = false) async {
+        await modelManager.download(force: force)
+    }
+
+    /// 取消进行中的本地模型下载。
+    func cancelLocalModelDownload() {
+        modelManager.cancelDownload()
     }
 
     /// 云端 STT 模型标识。
