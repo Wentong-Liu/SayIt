@@ -75,8 +75,21 @@ final class MicTestViewModel {
         guard !isTesting else { return }
         isTesting = true
         let deviceUID = config.inputDeviceUID
-        levelTask = Task { [weak self] in
+        levelTask = makeLevelTask(deviceUID: deviceUID, stopFirst: false)
+    }
+
+    /// 构造采集任务：可选地先 `stop()`（切设备重启用），再 `start(deviceUID:)`，
+    /// 然后在同一任务里串行消费电平流——保证 stop 一定先于 start 抵达 actor。
+    ///
+    /// 注：``AudioRecorder/levels`` 是单消费者流（single-consumer），
+    /// 同一时刻只应有一个任务 `for await` 它；这里靠取消旧任务再建新任务来保证。
+    private func makeLevelTask(deviceUID: String?, stopFirst: Bool) -> Task<Void, Never> {
+        Task { [weak self] in
             guard let self else { return }
+            if stopFirst {
+                // 先停旧采集：未在录音时会抛 .notRecording，切设备场景下忽略即可。
+                _ = try? await self.recorder.stop()
+            }
             do {
                 try await self.recorder.start(deviceUID: deviceUID)
             } catch {
@@ -109,9 +122,17 @@ final class MicTestViewModel {
     }
 
     /// 用当前选定设备重启测试采集（切设备时调用）。
+    ///
+    /// 取消旧的电平消费任务（释放单消费者 `levels` 流），随后在 **同一个** 任务里
+    /// 先 `await recorder.stop()` 再 `await recorder.start(deviceUID:)`——确保 start
+    /// 绝不会先于 stop 抵达 actor（否则 start 会抛 `.alreadyRecording` 并静默中断测试）。
     private func restartTesting() {
-        stopTesting()
-        startTesting()
+        guard isTesting else { return }
+        level = 0
+        // 取消旧的 for-await，让出单消费者 levels 流；stop/start 由下面的新任务串行执行。
+        levelTask?.cancel()
+        let deviceUID = config.inputDeviceUID
+        levelTask = makeLevelTask(deviceUID: deviceUID, stopFirst: true)
     }
 
     /// 离开页面时调用：确保停止采集，避免后台一直占用麦克风。

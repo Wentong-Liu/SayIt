@@ -26,6 +26,12 @@ actor FakeAudioRecorder: AudioRecording {
     }
 
     func start() async throws {
+        try await start(deviceUID: nil)
+    }
+
+    /// 与 `start()` 共用同一套录音逻辑（仅忽略设备选择，假实现不接真实硬件）。
+    /// 让本 fake 重新满足 `AudioRecording`（协议要求 `start(deviceUID:)`）。
+    func start(deviceUID: String?) async throws {
         startCount += 1
         switch startBehavior {
         case .succeeds:
