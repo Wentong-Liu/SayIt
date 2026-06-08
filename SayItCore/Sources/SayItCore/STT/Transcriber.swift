@@ -40,9 +40,37 @@ public protocol Transcriber: Sendable {
     /// - Returns: the transcription result ``TranscriptionResult``.
     /// - Throws: ``STTError`` on transcription failure.
     func transcribe(_ audio: [Float], sampleRate: Double, language: String?, options: TranscribeOptions) async throws -> TranscriptionResult
+
+    /// Whether the backend's engine is already loaded into memory and a transcribe call would NOT block on a cold load.
+    ///
+    /// Only the local ``WhisperKitTranscriber`` has a meaningful cold-start window (the CoreML engine is `nil` right after
+    /// launch — before opportunistic prewarm finishes — or right after a model switch), so it overrides this. Every other
+    /// conformer (cloud, test doubles) inherits the default `true`: they have no in-memory engine to preload, so a transcribe
+    /// call never blocks on loading and the coordinator's "preparing model" gate is skipped for them. See the default below.
+    ///
+    /// `async` so an `actor` conformer (``WhisperKitTranscriber``, ``FakeTranscriber``) can satisfy it from its own isolation
+    /// without crossing into a data race — a synchronous `get` requirement would be `nonisolated` and an actor's isolated
+    /// stored state could not satisfy it under Swift 6 strict concurrency. Callers read it with `await transcriber.isReady`.
+    var isReady: Bool { get async }
+
+    /// Loads the backend's engine into memory if it is not already, so a subsequent transcribe call is warm.
+    ///
+    /// Idempotent: a second call (or a call while the in-flight background prewarm is already running) is a cheap no-op /
+    /// join. Only ``WhisperKitTranscriber`` does real work (loads the CoreML engine and maps any failure to
+    /// ``STTError/transcriptionFailed(reason:)``); every other conformer inherits the default no-op (nothing to load). See
+    /// the default below.
+    func preload() async throws
 }
 
 public extension Transcriber {
+    /// Default: ready. Backends with no in-memory engine (cloud, test doubles) are always warm, so they skip the
+    /// coordinator's "preparing model" gate. ``WhisperKitTranscriber`` overrides this with `engine != nil`.
+    var isReady: Bool { get async { true } }
+
+    /// Default: no-op. Backends with no in-memory engine have nothing to preload. ``WhisperKitTranscriber`` overrides this
+    /// to load (and download if needed) the CoreML engine.
+    func preload() async throws {}
+
     /// Backward-compatible convenience: transcribe with no biasing options. Forwards to the 4-argument requirement.
     ///
     /// This keeps all existing 3-argument callers and tests working without change. There is intentionally NO default

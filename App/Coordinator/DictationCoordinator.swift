@@ -686,6 +686,23 @@ final class DictationCoordinator {
         let transcript: String
         do {
             let transcriber = try currentTranscriber()
+            // 1.75) Local model cold-start gate: the WhisperKit engine may be DOWNLOADED (passed the 1.5 gate above) yet not
+            // yet LOADED INTO MEMORY — right after launch (before opportunistic prewarm finishes) or right after a model
+            // switch (currentTranscriber() rebuilds + kicks a background preload, so isReady is briefly false). In that case a
+            // transcribe call blocks on the CoreML load for several seconds while the HUD shows "Transcribing…", looking
+            // frozen. So when the local model is NOT ready, first show a "Preparing model…" HUD state, then AWAIT the load
+            // (joining the in-flight background prewarm; idempotent) before switching to the normal transcribing phase. When
+            // the model is already warm (the common post-prewarm case) this is skipped entirely — zero "preparing" flash,
+            // byte-identical to before. Cloud mode never enters this branch (CloudTranscriber.isReady defaults to true).
+            // The preload is wrapped in the SAME timeout envelope as transcribe, and a load failure throws STTError, so both
+            // fall through to the existing TranscribeTimeout / STTError catch arms below — the preparing state can never hang.
+            if config.sttMode == .local, await transcriber.isReady == false {
+                updateProcessing(0.0, .preparingModel)
+                _ = try await withTranscribeTimeout {
+                    try await transcriber.preload()
+                }
+                updateProcessing(0.0, .transcribing)
+            }
             // User-dictionary Layer 1 biasing: order the enabled entries' canonical terms by usageCount ascending
             // (most-used LAST, see GlossaryPrompt) and pass them as biasing options so STT is steered toward the user's
             // dictionary words (best-effort recall boost). Ordering happens HERE, at the single source, so the documented
@@ -844,12 +861,16 @@ final class DictationCoordinator {
 
     /// Wraps a piece of async transcription work with a hard timeout: whoever returns first wins, the other branch is cancelled.
     /// If the timeout branch arrives first, throws ``TranscribeTimeout`` (guaranteeing "never permanently stuck transcribing").
-    /// - Parameter work: the actual transcription closure (returns ``TranscriptionResult``).
-    private func withTranscribeTimeout(
-        _ work: @escaping @Sendable () async throws -> TranscriptionResult
-    ) async throws -> TranscriptionResult {
+    ///
+    /// Generic over the work's result so the SAME timeout envelope (and its ``TranscribeTimeout`` -> idle catch arm in
+    /// ``runPipeline``) also bounds the cold-start model `preload()` (returning `Void`): the preparing-model gate can never
+    /// hang. The marker error + `group.cancelAll()` + cancellation semantics are unchanged for the existing transcribe call.
+    /// - Parameter work: the actual async work closure (transcribe -> ``TranscriptionResult``, or preload -> `Void`).
+    private func withTranscribeTimeout<T: Sendable>(
+        _ work: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
         let timeout = transcribeTimeout
-        return try await withThrowingTaskGroup(of: TranscriptionResult.self) { group in
+        return try await withThrowingTaskGroup(of: T.self) { group in
             group.addTask { try await work() }
             group.addTask {
                 try await Task.sleep(for: timeout)

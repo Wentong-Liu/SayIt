@@ -463,6 +463,94 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["云端转写结果"], "cloud mode should transcribe and inject normally")
     }
 
+    // MARK: - Cold-start "Preparing model…" HUD state while the local model loads into memory
+
+    /// On a COLD local-model start (model downloaded — the download gate passes — but the CoreML engine not yet loaded into
+    /// memory), the pipeline must FIRST show the "preparing model" HUD phase and AWAIT the load, THEN transcribe. Without this,
+    /// transcribe blocks on the load for several seconds while the HUD shows "Transcribing…", looking frozen.
+    ///
+    /// Determinism (no scheduling luck): the fake transcriber reports `isReady=false` and its `preload()` is GATED — it
+    /// suspends until the test releases it, pinning the "preparing model" window so the test can observe the HUD state before
+    /// the load completes (mirrors the recorder stop/start gates). After release the load finishes, `isReady` flips true, and
+    /// the pipeline transcribes + injects.
+    func testColdLocalModelShowsPreparingThenTranscribes() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let panel = RecordingPanelController(headless: true)
+        // Not yet loaded into memory: isReady=false until the gated preload() completes.
+        let transcriber = FakeTranscriber(text: "冷启动转写结果", ready: false)
+        await transcriber.gatePreload()
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in true }  // download gate passes; the cold-start (in-memory load) gate is what we exercise
+        ) {
+            transcriber
+        }
+
+        await coordinator._test_start()
+        // Drive stop WITHOUT awaiting the pipeline, so we can observe the preparing-model HUD state while preload() is gated.
+        coordinator._test_handleStop()
+
+        // The pipeline reaches the cold-start gate and pushes the preparing-model state; poll until the panel shows it.
+        var sawPreparing = false
+        for _ in 0..<200 {
+            if panel.currentState == .processing(progress: 0.0, phase: .preparingModel) {
+                sawPreparing = true
+                break
+            }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(sawPreparing, "a cold local-model start should show the 'preparing model' HUD phase before transcribing")
+        // The copy follows the UI language via the same localized helper as every other HUD state: compare against the
+        // resolver's output for the current persisted language (rather than hardcoding a locale) so this holds in en or zh.
+        let expectedCopy = UILanguageLocalizer.string("hud.preparingModel", defaultValue: "Preparing model…", bundle: .module)
+        XCTAssertEqual(panel.currentState.displayText, expectedCopy,
+                       "the preparing-model phase copy should be the UI-language-localized hud.preparingModel string")
+        XCTAssertNotEqual(expectedCopy, "Transcribing…", "the preparing copy must be distinct from the transcribing copy")
+
+        // Release the gated load: the model finishes loading, the pipeline flips to transcribing, transcribes, and injects.
+        await transcriber.releasePreload()
+        await coordinator._test_awaitProcessing()
+
+        let preloaded = await transcriber.preloadCalled
+        XCTAssertTrue(preloaded, "the cold-start gate should have awaited preload() before transcribing")
+        XCTAssertEqual(injector.injectedTexts, ["冷启动转写结果"],
+                       "after the model loads the pipeline should transcribe and inject normally")
+    }
+
+    /// When the local model is already WARM (isReady=true — the common case after opportunistic prewarm), the cold-start gate
+    /// is skipped entirely: preload() is NOT called and no "preparing model" flash is shown — behavior is byte-identical to
+    /// before this feature. (A warm transcriber whose preload() would record a call lets us assert it was never invoked.)
+    func testWarmLocalModelSkipsPreparingAndDoesNotPreload() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        // Already loaded into memory: isReady=true from the start, so the cold-start gate must be skipped.
+        let transcriber = FakeTranscriber(text: "热启动转写结果", ready: true)
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            modelReadiness: { _ in true }
+        ) {
+            transcriber
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        let preloaded = await transcriber.preloadCalled
+        XCTAssertFalse(preloaded, "a warm model must skip the cold-start gate — preload() should never be called (no preparing flash)")
+        XCTAssertEqual(injector.injectedTexts, ["热启动转写结果"], "a warm model should transcribe and inject normally")
+    }
+
     // MARK: - Input device takes effect in real time: end-to-end dictation uses the persisted inputDeviceUID
 
     /// Regression guard: the microphone selected in the settings page must take effect immediately for the **next** dictation (no App restart needed).

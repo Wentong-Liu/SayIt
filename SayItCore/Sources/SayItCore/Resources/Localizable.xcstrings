@@ -199,6 +199,24 @@
         }
       }
     },
+    "hud.preparingModel" : {
+      "comment" : "Recording HUD: the local model is being loaded into memory (cold start) before transcription can begin",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preparing model…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "准备模型中…"
+          }
+        }
+      }
+    },
     "hud.takingLonger" : {
       "comment" : "Recording HUD: polish phase is taking longer than usual (held at 90% cap)",
       "extractionState" : "manual",
