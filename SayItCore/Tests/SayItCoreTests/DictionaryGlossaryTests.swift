@@ -27,7 +27,7 @@ final class DictionaryGlossaryTests: XCTestCase {
         let entries = [entry("useEffect"), entry("kubectl"), entry("SwiftUI")]
         let subset = DictionaryGlossary.relevantSubset(for: "完全无关的中文转写", entries: entries)
         XCTAssertEqual(Set(canonicals(subset)), Set(["useEffect", "kubectl", "SwiftUI"]),
-                       "小词典应全部纳入，即使转写中没有任何词典词")
+                       "a small dictionary should include all entries even when the transcript contains no dictionary terms")
     }
 
     // MARK: - Disabled entries excluded
@@ -35,18 +35,18 @@ final class DictionaryGlossaryTests: XCTestCase {
     func testDisabledEntriesAreExcluded() {
         let entries = [entry("useEffect"), entry("kubectl", enabled: false)]
         let subset = DictionaryGlossary.relevantSubset(for: "随便", entries: entries)
-        XCTAssertEqual(canonicals(subset), ["useEffect"], "禁用条目不应纳入")
+        XCTAssertEqual(canonicals(subset), ["useEffect"], "disabled entries should not be included")
     }
 
     func testBlankCanonicalExcluded() {
         let entries = [entry("useEffect"), entry("   ")]
         let subset = DictionaryGlossary.relevantSubset(for: "随便", entries: entries)
-        XCTAssertEqual(canonicals(subset), ["useEffect"], "空白 canonical 不应纳入")
+        XCTAssertEqual(canonicals(subset), ["useEffect"], "a blank canonical should not be included")
     }
 
     func testEmptyDictionaryReturnsEmpty() {
         XCTAssertTrue(DictionaryGlossary.relevantSubset(for: "随便", entries: []).isEmpty,
-                      "空词典应返回空子集")
+                      "an empty dictionary should return an empty subset")
     }
 
     // MARK: - Candidate matching (large dictionary path)
@@ -64,7 +64,7 @@ final class DictionaryGlossaryTests: XCTestCase {
         // "use effect" is the de-camelCased spoken form of useEffect.
         let subset = DictionaryGlossary.relevantSubset(for: "我们要在这里加一个 use effect 钩子", entries: dict, cap: cap)
         XCTAssertTrue(canonicals(subset).contains("useEffect"),
-                      "听成 'use effect' 时应命中 useEffect")
+                      "should match useEffect when heard as 'use effect'")
     }
 
     func testCamelCaseTermMatchedFromDifferentCasing() {
@@ -72,28 +72,28 @@ final class DictionaryGlossaryTests: XCTestCase {
         let dict = largeDictionary(including: [entry("useEffect")], cap: cap)
         let subset = DictionaryGlossary.relevantSubset(for: "调用 UseEffect 试试", entries: dict, cap: cap)
         XCTAssertTrue(canonicals(subset).contains("useEffect"),
-                      "不同大小写 'UseEffect' 时应命中 useEffect")
+                      "should match useEffect for a different casing 'UseEffect'")
     }
 
     func testHyphenAndUnderscoreVariantsMatched() {
         let cap = 3
         let dict = largeDictionary(including: [entry("useEffect")], cap: cap)
         let viaHyphen = DictionaryGlossary.relevantSubset(for: "用 use-effect 处理", entries: dict, cap: cap)
-        XCTAssertTrue(canonicals(viaHyphen).contains("useEffect"), "连字符变体应命中（splitSeparators）")
+        XCTAssertTrue(canonicals(viaHyphen).contains("useEffect"), "the hyphenated variant should match (splitSeparators)")
     }
 
     func testUnrelatedTranscriptSelectsNothingFromLargeDictionary() {
         let cap = 3
         let dict = largeDictionary(including: [entry("useEffect"), entry("kubectl")], cap: cap)
         let subset = DictionaryGlossary.relevantSubset(for: "今天天气真不错我们去公园散步", entries: dict, cap: cap)
-        XCTAssertTrue(subset.isEmpty, "大词典中无相关词时应返回空")
+        XCTAssertTrue(subset.isEmpty, "should return empty when the large dictionary has no relevant term")
     }
 
     func testDeclaredVariantMatched() {
         let cap = 3
         let dict = largeDictionary(including: [entry("kubectl", variants: ["cube cuddle"])], cap: cap)
         let subset = DictionaryGlossary.relevantSubset(for: "我跑了 cube cuddle 命令", entries: dict, cap: cap)
-        XCTAssertTrue(canonicals(subset).contains("kubectl"), "声明的变体应命中")
+        XCTAssertTrue(canonicals(subset).contains("kubectl"), "a declared variant should match")
     }
 
     // MARK: - Short-form noise suppression
@@ -104,10 +104,10 @@ final class DictionaryGlossaryTests: XCTestCase {
         // "good" contains "go" as a substring but not as a token -> must NOT match.
         let noMatch = DictionaryGlossary.relevantSubset(for: "this looks good to me", entries: dict, cap: cap)
         XCTAssertFalse(canonicals(noMatch).contains("go"),
-                       "<=2 字符的词需整词命中，substring 'good' 中的 'go' 不应命中")
+                       "a term of <=2 chars must match as a whole token; the 'go' inside substring 'good' must not match")
         // Standalone "go" token -> matches.
         let match = DictionaryGlossary.relevantSubset(for: "let us go now", entries: dict, cap: cap)
-        XCTAssertTrue(canonicals(match).contains("go"), "独立 token 'go' 应命中")
+        XCTAssertTrue(canonicals(match).contains("go"), "a standalone token 'go' should match")
     }
 
     // MARK: - Cap respected + ordering
@@ -124,10 +124,10 @@ final class DictionaryGlossaryTests: XCTestCase {
         let dict = largeDictionary(including: matching, cap: cap)
         let transcript = "alpha beta gamma delta all present"
         let subset = DictionaryGlossary.relevantSubset(for: transcript, entries: dict, cap: cap)
-        XCTAssertEqual(subset.count, cap, "应被裁剪到 cap 上限")
+        XCTAssertEqual(subset.count, cap, "should be trimmed to the cap limit")
         // Highest usageCount preferred: delta(10) then beta(5).
         XCTAssertEqual(canonicals(subset), ["delta", "beta"],
-                       "应按 usageCount 降序优先纳入")
+                       "should prefer inclusion by descending usageCount")
     }
 
     func testDeterministicOrderingTieBreaksByCreatedAtThenCanonical() {
@@ -142,13 +142,13 @@ final class DictionaryGlossaryTests: XCTestCase {
         let subset = DictionaryGlossary.relevantSubset(for: "alpha beta", entries: dict, cap: cap)
         // Same usageCount -> most recent createdAt first (beta).
         XCTAssertEqual(canonicals(subset), ["beta", "alpha"],
-                       "usageCount 相同时按 createdAt 降序（新在前）")
+                       "when usageCount is equal, order by createdAt descending (newest first)")
     }
 
     func testDedupeByCanonical() {
         let entries = [entry("useEffect"), entry("useEffect", variants: ["dup"])]
         let subset = DictionaryGlossary.relevantSubset(for: "随便", entries: entries)
-        XCTAssertEqual(canonicals(subset), ["useEffect"], "应按 canonical 去重")
+        XCTAssertEqual(canonicals(subset), ["useEffect"], "should dedupe by canonical")
     }
 
     // MARK: - String helpers

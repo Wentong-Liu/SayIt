@@ -87,7 +87,7 @@ final class RecordingStateTests: XCTestCase {
             "本地模型仍在下载，请稍候或切换到云端",
         ]
         let message = RecordingState.modelNotReadyMessage
-        XCTAssertNotEqual(message, "hud.modelNotReady", "不应回退成原始 key：本地化资源未命中")
+        XCTAssertNotEqual(message, "hud.modelNotReady", "must not fall back to the raw key: localization resource not found")
         XCTAssertTrue(supported.contains(message), "got \(message)")
     }
 
@@ -98,7 +98,7 @@ final class RecordingStateTests: XCTestCase {
             "转写时间比往常要长",
         ]
         let message = RecordingState.takingLongerMessage
-        XCTAssertNotEqual(message, "hud.takingLonger", "不应回退成原始 key：本地化资源未命中")
+        XCTAssertNotEqual(message, "hud.takingLonger", "must not fall back to the raw key: localization resource not found")
         XCTAssertTrue(supported.contains(message), "got \(message)")
     }
 
@@ -126,7 +126,7 @@ final class RecordingStateTests: XCTestCase {
         let t0 = RecordingState.processing(progress: 0.0, phase: .transcribing).displayText
         let p0 = RecordingState.processing(progress: 0.0, phase: .polishing).displayText
         // The polish copy resolves through the in-bundle catalog (hud.polishing), not a raw key fallback.
-        XCTAssertNotEqual(p0, "hud.polishing", "不应回退成原始 key：本地化资源未命中")
+        XCTAssertNotEqual(p0, "hud.polishing", "must not fall back to the raw key: localization resource not found")
         XCTAssertTrue(transcribing.contains(t0), "got \(t0)")
         XCTAssertTrue(polishing.contains(p0), "got \(p0)")
         XCTAssertNotEqual(t0, p0, "switching the phase must change the copy")

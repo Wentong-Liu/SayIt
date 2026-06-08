@@ -110,7 +110,7 @@ final class PolishPipelineTests: XCTestCase {
         if case .failedFallback = outcome.resolution {
             XCTAssertNotNil(outcome.failureReason)
         } else {
-            XCTFail("抛错应为 .failedFallback，实际: \(outcome.resolution)")
+            XCTFail("a thrown error should be .failedFallback, actual: \(outcome.resolution)")
         }
     }
 
@@ -123,7 +123,7 @@ final class PolishPipelineTests: XCTestCase {
 
         _ = await pipeline.polish("不能丢的口述", context: PolishContext(), style: .smart, provider: provider)
 
-        XCTAssertEqual(box.reasons.count, 1, "失败回退应记录一次原因")
+        XCTAssertEqual(box.reasons.count, 1, "a failure fallback should log the reason exactly once")
     }
 
     func testSkippedAndPolishedDoNotInvokeFailureLogger() async {
@@ -137,7 +137,7 @@ final class PolishPipelineTests: XCTestCase {
         _ = await pipeline.polish("原文", context: PolishContext(), style: .smart,
                                   provider: FakeLLMProvider(.returns("x")), polishEnabled: false)
 
-        XCTAssertEqual(box.count, 0, "成功/跳过不应记录失败")
+        XCTAssertEqual(box.count, 0, "success/skip should not log a failure")
     }
 
     func testProviderErrorFallbackTrimsRawText() async {
@@ -155,7 +155,7 @@ final class PolishPipelineTests: XCTestCase {
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
         if case .failedFallback = outcome.resolution {} else {
-            XCTFail("抛错应为 .failedFallback，实际: \(outcome.resolution)")
+            XCTFail("a thrown error should be .failedFallback, actual: \(outcome.resolution)")
         }
     }
 
@@ -178,7 +178,7 @@ final class PolishPipelineTests: XCTestCase {
         XCTAssertTrue(outcome.usedFallback)
         // An empty response is a "failure fallback" (the model was called but no usable result was obtained).
         if case .failedFallback = outcome.resolution {} else {
-            XCTFail("空响应应为 .failedFallback，实际: \(outcome.resolution)")
+            XCTFail("an empty response should be .failedFallback, actual: \(outcome.resolution)")
         }
     }
 
@@ -199,7 +199,7 @@ final class PolishPipelineTests: XCTestCase {
         XCTAssertEqual(outcome.resolution, .skipped(.emptyInput))
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
-        XCTAssertEqual(provider.callCount, 0, "空输入不应调用 provider")
+        XCTAssertEqual(provider.callCount, 0, "empty input should not call the provider")
     }
 
     func testWhitespaceOnlyInputReturnsTrimmedWithoutCallingProvider() async {
@@ -239,7 +239,7 @@ final class PolishPipelineTests: XCTestCase {
         XCTAssertEqual(outcome.resolution, .skipped(.disabled))
         XCTAssertFalse(outcome.polished)
         XCTAssertTrue(outcome.usedFallback)
-        XCTAssertEqual(provider.callCount, 0, "关闭润色时不应调用 provider")
+        XCTAssertEqual(provider.callCount, 0, "the provider should not be called when polishing is disabled")
     }
 
     // MARK: - PolishOutcome construction
