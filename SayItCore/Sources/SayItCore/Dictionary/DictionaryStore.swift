@@ -113,7 +113,7 @@ public actor DictionaryStore {
     /// Lazy-load once: on first access, create the directory and read+decode from disk.
     ///
     /// Tolerance / data-safety policy (a single bad entry must never wipe the whole user dictionary):
-    /// - **Per-entry lossy decode**: the `entries` array is decoded element by element through ``LossyEntry``, so one
+    /// - **Per-entry lossy decode**: the `entries` array is decoded element by element through ``FailableEntry`` (wrapped by the top-level ``LossyUserDictionary``), so one
     ///   malformed entry (missing field, unknown `source`, empty `canonical`) is skipped and the good entries survive.
     /// - **File-level corruption**: if the top-level JSON is unreadable/undecodable (so we cannot even reach the
     ///   array), the original bytes are **backed up to `dictionary.json.corrupt` before** starting empty, so the next
