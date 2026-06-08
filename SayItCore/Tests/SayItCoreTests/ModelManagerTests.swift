@@ -46,7 +46,7 @@ final class ModelManagerTests: XCTestCase {
             .appending(component: "SayIt")
             .appending(component: "models")
         XCTAssertEqual(ModelManager.downloadBase, expected,
-                       "downloadBase 必须位于 Application Support/SayIt/models（避开 TCC 保护的 Documents）")
+                       "downloadBase must be under Application Support/SayIt/models (avoiding TCC-protected Documents)")
     }
 
     func testDownloadBaseDirectoryExists() {
@@ -55,7 +55,7 @@ final class ModelManagerTests: XCTestCase {
         let exists = FileManager.default.fileExists(
             atPath: ModelManager.downloadBase.path, isDirectory: &isDir)
         XCTAssertTrue(exists && isDir.boolValue,
-                      "downloadBase 目录应在首次访问后存在")
+                      "the downloadBase directory should exist after first access")
     }
 
     func testRepoCacheDirectoryLayoutMatchesHubApi() {
@@ -83,7 +83,7 @@ final class ModelManagerTests: XCTestCase {
         let folderKey = ModelManager.normalizedVariantKey("openai_whisper-large-v3-v20240930_turbo")
         let variantKey = ModelManager.normalizedVariantKey(ModelManager.variant(for: "large-v3-turbo"))
         XCTAssertEqual(folderKey, variantKey,
-                       "归一化后仓库文件夹名应等于归一化后的 variant")
+                       "after normalization the repo folder name should equal the normalized variant")
     }
 
     // MARK: - Weight detection (constructing a fake cache with a temp directory)
@@ -98,7 +98,7 @@ final class ModelManagerTests: XCTestCase {
         let folder = try makeTempModelFolder(present: ["MelSpectrogram", "AudioEncoder"])
         defer { try? FileManager.default.removeItem(at: folder) }
         XCTAssertFalse(ModelManager.hasRequiredModelFiles(in: folder),
-                       "缺少 TextDecoder 时应判定权重不齐")
+                       "when TextDecoder is missing it should judge the weights incomplete")
     }
 
     func testHasRequiredModelFilesFalseForEmptyFolder() throws {

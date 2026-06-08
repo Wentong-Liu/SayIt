@@ -9,7 +9,7 @@ final class HotkeyManagerTests: XCTestCase {
     func testDefaultConfiguration() {
         let manager = HotkeyManager()
         XCTAssertEqual(manager.triggerKey, .rightCommand)
-        XCTAssertEqual(manager.mode, .singleTapToggle, "默认应为单击切换（孤立轻点）")
+        XCTAssertEqual(manager.mode, .singleTapToggle, "the default should be single-tap toggle (isolated tap)")
         XCTAssertEqual(manager.singleTapWindow, 0.3, accuracy: 0.0001)
         XCTAssertFalse(manager.isRunning)
     }
@@ -70,7 +70,7 @@ final class HotkeyManagerTests: XCTestCase {
         // If the platform refuses to build the synthetic NSEvent (returns nil), skip — the wiring is still asserted by the
         // forward-delete test on any platform that can build one.
         guard manager._test_emitKeyDown(keyCode: 51) != nil else { return }
-        XCTAssertEqual(fired, 1, "Backspace(51) 应触发 onEditKey 恰好一次")
+        XCTAssertEqual(fired, 1, "Backspace(51) should fire onEditKey exactly once")
     }
 
     /// A Forward-Delete (keyCode 117) keyDown fires ``onEditKey`` exactly once.
@@ -79,7 +79,7 @@ final class HotkeyManagerTests: XCTestCase {
         var fired = 0
         manager.onEditKey = { fired += 1 }
         guard manager._test_emitKeyDown(keyCode: 117) != nil else { return }
-        XCTAssertEqual(fired, 1, "Forward-Delete(117) 应触发 onEditKey 恰好一次")
+        XCTAssertEqual(fired, 1, "Forward-Delete(117) should fire onEditKey exactly once")
     }
 
     /// An ordinary, non-edit key (e.g. 'A' = keyCode 0) must NOT fire ``onEditKey``: only Backspace/Forward-Delete are edit signals.
@@ -88,7 +88,7 @@ final class HotkeyManagerTests: XCTestCase {
         var fired = 0
         manager.onEditKey = { fired += 1 }
         guard manager._test_emitKeyDown(keyCode: 0) != nil else { return }
-        XCTAssertEqual(fired, 0, "普通按键不应触发 onEditKey")
+        XCTAssertEqual(fired, 0, "an ordinary key should not fire onEditKey")
     }
 
     /// An edit key must NOT disturb the single-tap candidate: it returns early (like ESC) before otherKeyDown(), so a tap
@@ -98,7 +98,7 @@ final class HotkeyManagerTests: XCTestCase {
         // Synthesize an edit key between a modifier down and up is not feasible via the state-machine seam, so instead assert
         // the negative: after an edit key, a fresh isolated tap still emits .start (the candidate logic is untouched).
         guard manager._test_emitKeyDown(keyCode: 51) != nil else { return }
-        XCTAssertEqual(manager._test_emitSingleTap(), .start, "编辑键不应污染单击候选：之后的孤立轻点仍应 .start")
+        XCTAssertEqual(manager._test_emitSingleTap(), .start, "an edit key should not taint the single-tap candidate: a later isolated tap should still .start")
     }
 
     /// `sessionDidEndExternally()` is safe to call in both modes and at any time (idle / running). The single-tap-toggle

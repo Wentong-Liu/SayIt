@@ -136,7 +136,7 @@ final class TextInjectorTests: XCTestCase {
         )
         let result = injector.inject("")
         XCTAssertTrue(result.isSuccess)
-        XCTAssertEqual(pb.writeCount, 0, "空文本不应写剪贴板")
+        XCTAssertEqual(pb.writeCount, 0, "empty text should not write to the clipboard")
     }
 
     func testNoFrontmostAppLeavesTextInPasteboardAndFails() {
@@ -150,9 +150,9 @@ final class TextInjectorTests: XCTestCase {
         )
         let result = injector.inject("hello")
         guard case .failedTextLeftInPasteboard = result else {
-            return XCTFail("无前台 App 应返回 failedTextLeftInPasteboard，实得 \(result)")
+            return XCTFail("no frontmost app should return failedTextLeftInPasteboard, got \(result)")
         }
-        XCTAssertEqual(pb.string(), "hello", "失败时文本应保留在剪贴板")
+        XCTAssertEqual(pb.string(), "hello", "on failure the text should remain in the clipboard")
     }
 
     func testPasteboardPathSavesWritesPastesAndRestores() async {
@@ -169,14 +169,14 @@ final class TextInjectorTests: XCTestCase {
 
         let result = injector.inject("dictated text")
         XCTAssertEqual(result, .success(method: .pasteboard))
-        XCTAssertEqual(keystroke.postCount, 1, "应模拟一次 ⌘V")
+        XCTAssertEqual(keystroke.postCount, 1, "should simulate one ⌘V paste")
 
         // The restore runs with a delay in a separate @MainActor Task; deterministically wait for it to actually finish,
         // rather than assuming a few yields are enough (under the whole suite's concurrent scheduling it would occasionally not complete).
         for _ in 0..<1000 where pb.restoreCount == 0 {
             await Task.yield()
         }
-        XCTAssertEqual(pb.string(), "clipboard-original", "粘贴后应还原原剪贴板")
+        XCTAssertEqual(pb.string(), "clipboard-original", "after pasting, the original clipboard should be restored")
         XCTAssertGreaterThanOrEqual(pb.restoreCount, 1)
     }
 
@@ -193,10 +193,10 @@ final class TextInjectorTests: XCTestCase {
 
         let result = injector.inject("dictated text")
         guard case .failedTextLeftInPasteboard = result else {
-            return XCTFail("⌘V 失败应返回 failedTextLeftInPasteboard，实得 \(result)")
+            return XCTFail("a failed ⌘V should return failedTextLeftInPasteboard, got \(result)")
         }
-        XCTAssertEqual(pb.string(), "dictated text", "⌘V 失败时注入文本应留在剪贴板")
-        XCTAssertEqual(pb.restoreCount, 0, "⌘V 失败时不应还原（否则会盖掉留给用户的文本）")
+        XCTAssertEqual(pb.string(), "dictated text", "when ⌘V fails, the injected text should remain in the clipboard")
+        XCTAssertEqual(pb.restoreCount, 0, "when ⌘V fails it must not restore (otherwise it would overwrite the text left for the user)")
     }
 
     func testAccessibilityPathPreferredAndSucceedsWithoutTouchingPasteboard() {
@@ -215,8 +215,8 @@ final class TextInjectorTests: XCTestCase {
         let result = injector.inject("via ax")
         XCTAssertEqual(result, .success(method: .accessibility))
         XCTAssertEqual(ax.insertCount, 1)
-        XCTAssertEqual(pb.writeCount, 0, "AX 成功时不应碰剪贴板")
-        XCTAssertEqual(pb.string(), "clipboard-original", "AX 成功时剪贴板原内容不变")
+        XCTAssertEqual(pb.writeCount, 0, "on AX success the clipboard must not be touched")
+        XCTAssertEqual(pb.string(), "clipboard-original", "on AX success the clipboard's original content is unchanged")
     }
 
     func testAccessibilityFailureFallsBackToPasteboard() async {
@@ -235,8 +235,8 @@ final class TextInjectorTests: XCTestCase {
 
         let result = injector.inject("fallback text")
         XCTAssertEqual(result, .success(method: .pasteboard))
-        XCTAssertEqual(ax.insertCount, 1, "应先尝试 AX")
-        XCTAssertEqual(keystroke.postCount, 1, "AX 失败后应回退剪贴板粘贴")
+        XCTAssertEqual(ax.insertCount, 1, "should try AX first")
+        XCTAssertEqual(keystroke.postCount, 1, "after AX fails it should fall back to clipboard paste")
 
         // Deterministically wait for the delayed restore Task to finish (see the previous test's note).
         for _ in 0..<1000 where pb.restoreCount == 0 {

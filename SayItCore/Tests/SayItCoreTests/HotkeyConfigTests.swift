@@ -11,7 +11,7 @@ final class HotkeyConfigTests: XCTestCase {
 
     func testTriggerKeyKeyCodesAreDistinct() {
         let codes = TriggerKey.allCases.map(\.keyCode)
-        XCTAssertEqual(Set(codes).count, codes.count, "每个触发键的 keyCode 必须唯一")
+        XCTAssertEqual(Set(codes).count, codes.count, "each trigger key's keyCode must be unique")
     }
 
     func testModifierTriggerKeysExposeModifierFlag() {
@@ -29,7 +29,7 @@ final class HotkeyConfigTests: XCTestCase {
 
     func testEveryTriggerKeyHasNonEmptyLabel() {
         for key in TriggerKey.allCases {
-            XCTAssertFalse(key.label.isEmpty, "\(key) 缺少 label")
+            XCTAssertFalse(key.label.isEmpty, "\(key) is missing a label")
         }
     }
 
@@ -42,7 +42,7 @@ final class HotkeyConfigTests: XCTestCase {
     func testHotkeyModeHasBothModes() {
         XCTAssertTrue(HotkeyMode.allCases.contains(.holdToTalk))
         XCTAssertTrue(HotkeyMode.allCases.contains(.singleTapToggle))
-        XCTAssertEqual(HotkeyMode.allCases.count, 2, "双击 toggle 模式已移除，仅余两种")
+        XCTAssertEqual(HotkeyMode.allCases.count, 2, "the double-tap toggle mode has been removed; only two remain")
     }
 
     func testInteractionModeDefaultIsSingleTap() {
@@ -52,7 +52,7 @@ final class HotkeyConfigTests: XCTestCase {
     func testInteractionModeHasOnlySingleTapAndHold() {
         XCTAssertTrue(InteractionMode.allCases.contains(.singleTap))
         XCTAssertTrue(InteractionMode.allCases.contains(.hold))
-        XCTAssertEqual(InteractionMode.allCases.count, 2, "双击切换已移除，仅余单击切换与按住说话")
+        XCTAssertEqual(InteractionMode.allCases.count, 2, "double-tap toggle has been removed; only single-tap toggle and hold-to-talk remain")
     }
 
     func testInteractionModeRawValueRoundTrip() {
@@ -69,7 +69,7 @@ final class HotkeyConfigTests: XCTestCase {
 
     func testInteractionModeDisplayNamesNonEmpty() {
         for mode in InteractionMode.allCases {
-            XCTAssertFalse(mode.displayName.isEmpty, "\(mode) 缺少 displayName")
+            XCTAssertFalse(mode.displayName.isEmpty, "\(mode) is missing a displayName")
         }
     }
 }
