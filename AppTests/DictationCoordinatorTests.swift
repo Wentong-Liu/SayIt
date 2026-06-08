@@ -627,6 +627,199 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertFalse(stillRecording, "录音器最终应处于已停止状态")
     }
 
+    // MARK: - ESC cancel mid-start: must NOT resurrect the session (startTask resurrection bug)
+
+    /// Regression guard (startTask resurrection): when ESC-cancel lands while the recording-start Task is suspended
+    /// inside `recorder.start()`, neither `awaitPendingStop()` nor `recorder.start()` throws on cancel, so without an
+    /// explicit `Task.isCancelled` guard the start closure resumes after the cancel and (wrongly) sets isRecording=true
+    /// + starts level forwarding while phase is already .idle — a resurrected, unstoppable session whose recorder is
+    /// left running.
+    ///
+    /// To make the race deterministic the fake recorder's `start()` is GATED: it suspends mid-start (before flipping
+    /// `recording`) exactly the window the cancel lands in. Then:
+    /// - Unfixed code: the resumed closure sets isRecording=true and starts level forwarding while phase==.idle, and the
+    ///   recorder is left `recording` (these assertions fail -> bug reproduced).
+    /// - Fixed code: the `Task.isCancelled` guards after each await early-return; if start already succeeded the recorder
+    ///   is stopped via the pending-stop path, so the device is released.
+    func testCancelMidStartDoesNotResurrectSession() async {
+        let config = makeConfig()
+        config.sttMode = .cloud  // irrelevant here (no stop pipeline runs), keeps it off the local-readiness gate
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            FakeTranscriber(text: "should never be reached")
+        }
+
+        // 1) Arm the start gate, then kick off start WITHOUT awaiting: the start Task suspends inside recorder.start().
+        await recorder.gateStart()
+        coordinator._test_handleStart()
+        XCTAssertEqual(coordinator.phase, .listening, "start 触发后先进入 listening")
+        await recorder.waitUntilStartGated()  // ensure the start Task is pinned in the "start in flight, suspended" window
+        // Capture the start Task handle BEFORE cancel nils it out, so we can deterministically await the cancelled
+        // (orphaned) closure to completion after releasing the gate (otherwise _test_awaitStart is a no-op post-cancel).
+        let captured = coordinator._test_startTask
+        XCTAssertNotNil(captured, "handleStart 应建立 start Task")
+
+        // 2) ESC-cancel lands while the start is suspended.
+        coordinator._test_cancel()
+        XCTAssertEqual(coordinator.phase, .idle, "取消后应立即复位到 idle")
+        XCTAssertFalse(coordinator._test_isRecording, "取消后不应标记为录音中")
+
+        // 3) Release the gated start, then let the (cancelled) start Task run to completion.
+        await recorder.releaseStart()
+        await captured?.value
+
+        // The cancelled start must NOT have resurrected the session.
+        XCTAssertEqual(coordinator.phase, .idle, "取消后被恢复的 start 闭包不应把会话拉回来")
+        XCTAssertFalse(coordinator._test_isRecording, "被取消的 start 不应把 isRecording 置为 true（复活会话）")
+        XCTAssertFalse(coordinator._test_hasLevelTask, "被取消的 start 不应启动电平转发（复活会话）")
+
+        // The device must be released: if recorder.start() already succeeded before the cancel was observed, the recorder
+        // must be stopped (via the pending-stop path) rather than left recording.
+        let recorderRecording = await recorder.isRecording
+        XCTAssertFalse(recorderRecording, "取消后录音器必须被释放（已停止），而非被遗留在录音中")
+
+        // Nothing was injected (cancel injects nothing).
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "取消绝不应注入任何文本")
+    }
+
+    /// Companion to the resurrection guard: a cancel landing while the start Task is suspended at `awaitPendingStop()`
+    /// (BEFORE recorder.start() is even called) must also early-return — no recorder start, no recording mark, no level
+    /// forwarding. This exercises the FIRST `Task.isCancelled` guard (after awaitPendingStop) independently.
+    func testCancelMidStartBeforeRecorderStartNeverStartsRecorder() async {
+        let config = makeConfig()
+        // Seed a pending stop that the start Task will await: begin then immediately cancel a prior session, then
+        // gate the NEXT stop so awaitPendingStop suspends. Simpler: gate the stop, run a session, cancel it (stop
+        // suspends), then drive a fresh start whose awaitPendingStop blocks on that gated stop, and cancel mid-await.
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+            FakeTranscriber(text: "unused")
+        }
+
+        // 1) Begin and gate-cancel a session so a pending stop is in flight (suspended on the gate).
+        await coordinator._test_start()
+        await recorder.gateStop()
+        coordinator._test_cancel()
+        await recorder.waitUntilStopGated()
+
+        // 2) Start again: its awaitPendingStop() suspends on the still-gated cancel-stop (before recorder.start()).
+        coordinator._test_handleStart()
+        XCTAssertEqual(coordinator.phase, .listening)
+        for _ in 0..<20 { await Task.yield() }  // let the restart reach the awaitPendingStop suspension
+
+        // 3) Cancel the restart while it is suspended at awaitPendingStop (before recorder.start()).
+        coordinator._test_cancel()
+        XCTAssertEqual(coordinator.phase, .idle)
+
+        // 4) Release the original cancel-stop and let the (cancelled) restart Task finish.
+        await recorder.releaseStop()
+        await coordinator._test_awaitStart()
+
+        XCTAssertEqual(coordinator.phase, .idle, "取消后被恢复的 start 闭包不应拉回会话")
+        XCTAssertFalse(coordinator._test_isRecording, "在 awaitPendingStop 处被取消不应起录音")
+        XCTAssertFalse(coordinator._test_hasLevelTask, "在 awaitPendingStop 处被取消不应启动电平转发")
+        // The restart's recorder.start() must never have run: only the first session's one start happened.
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 1, "在 recorder.start() 之前被取消，不应再次调用 recorder.start()")
+        let recorderRecording = await recorder.isRecording
+        XCTAssertFalse(recorderRecording, "录音器最终应处于已停止状态")
+    }
+
+    // MARK: - Single-tap toggle resync: cancel / start-failure resets the hotkey toggle (no wasted next tap)
+
+    /// Regression guard (single-tap toggle desync): in single-tap-toggle mode the hotkey state machine's `isActive`
+    /// toggle is the SOLE start/stop driver. After ESC-cancel the coordinator must call
+    /// `HotkeyManager.sessionDidEndExternally()` so the toggle returns to inactive — otherwise the user's NEXT tap would
+    /// emit a phantom `.stop` against the now-idle coordinator and be silently wasted (forcing a double tap to resume).
+    func testCancelResetsSingleTapToggleSoNextTapStarts() async {
+        let config = makeConfig()
+        config.interactionMode = .singleTap
+        let manager = HotkeyManager(mode: .singleTapToggle)
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeToggleCoordinator(config: config, hotkeyManager: manager,
+                                                recorder: recorder, injector: injector)
+
+        // First isolated tap activates the toggle (-> would emit .start) and the coordinator begins a session.
+        XCTAssertEqual(manager._test_emitSingleTap(), .start, "首个孤立轻点应 .start 并激活切换状态")
+        XCTAssertTrue(manager._test_singleTapSessionActive, "首个轻点后切换状态应为激活")
+        await coordinator._test_start()
+
+        // ESC-cancel: the coordinator must resync the toggle back to inactive.
+        coordinator._test_cancel()
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertFalse(manager._test_singleTapSessionActive,
+                       "取消后协调器应重置单击切换状态机，使下一次轻点重新 .start 而非被吞")
+        // Proof of resync: the NEXT tap emits .start again (not a wasted phantom .stop).
+        XCTAssertEqual(manager._test_emitSingleTap(), .start, "取消后下一次轻点应重新 .start，而非被吞成无效的 .stop")
+    }
+
+    /// Start-failure (microphone denied) in single-tap mode: the first tap flipped the toggle active, but recording
+    /// never began. The coordinator's failToIdle path must resync the toggle back to inactive so the next tap starts.
+    func testStartFailureResetsSingleTapToggle() async {
+        let config = makeConfig()
+        config.interactionMode = .singleTap
+        let manager = HotkeyManager(mode: .singleTapToggle)
+        let recorder = FakeAudioRecorder(samples: [0.1], startBehavior: .throwsDenied)
+        let injector = FakeTextInjector()
+        let coordinator = makeToggleCoordinator(config: config, hotkeyManager: manager,
+                                                recorder: recorder, injector: injector)
+
+        XCTAssertEqual(manager._test_emitSingleTap(), .start)
+        XCTAssertTrue(manager._test_singleTapSessionActive)
+
+        // The start fails (mic denied) -> failToIdle -> must resync the toggle.
+        await coordinator._test_start()
+        XCTAssertFalse(coordinator._test_isRecording, "启动失败不应标记录音中")
+        XCTAssertFalse(manager._test_singleTapSessionActive,
+                       "启动失败后应重置单击切换状态机（下一次轻点重新开始）")
+        XCTAssertEqual(manager._test_emitSingleTap(), .start, "启动失败后下一次轻点应重新 .start")
+    }
+
+    /// Hold mode must be unaffected: cancel() calling sessionDidEndExternally() is a no-op for the hold machine, so a
+    /// subsequent hold (keyDown -> .start) still works. Proven via the manager's hold path staying functional after cancel.
+    func testCancelInHoldModeDoesNotDisturbHoldMachine() async {
+        let config = makeConfig()
+        config.interactionMode = .hold
+        let manager = HotkeyManager(mode: .holdToTalk)
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeToggleCoordinator(config: config, hotkeyManager: manager,
+                                                recorder: recorder, injector: injector)
+
+        await coordinator._test_start()
+        coordinator._test_cancel()
+        // sessionDidEndExternally() only touches the single-tap machine; the single-tap toggle stays inactive (default),
+        // confirming hold mode's cancel does not flip any toggle state. (Hold start/stop is driven by physical key edges.)
+        XCTAssertFalse(manager._test_singleTapSessionActive)
+        XCTAssertEqual(manager.mode, .holdToTalk, "hold 模式不应被取消逻辑改动")
+    }
+
+    /// Builds a coordinator wired to a caller-supplied real HotkeyManager (for the single-tap-toggle resync tests),
+    /// otherwise all-Fake and gates bypassed (same conventions as ``makeCoordinator``).
+    private func makeToggleCoordinator(
+        config: AppConfig,
+        hotkeyManager: HotkeyManager,
+        recorder: FakeAudioRecorder,
+        injector: FakeTextInjector
+    ) -> DictationCoordinator {
+        DictationCoordinator(
+            config: config,
+            hotkeyManager: hotkeyManager,
+            recorder: recorder,
+            panel: RecordingPanelController(),
+            injector: injector,
+            dictionaryStore: DictionaryStore(
+                baseDirectory: FileManager.default.temporaryDirectory
+                    .appending(component: "sayit-coord-toggle-\(UUID().uuidString)")),
+            transcriberFactory: { FakeTranscriber(text: "x") },
+            accessibilityGate: { true },
+            modelReadiness: { _ in true },
+            transcribeTimeout: .seconds(5)
+        )
+    }
+
     // MARK: - ESC cancel when idle is a no-op
 
     /// Cancelling on a fresh (idle) coordinator does nothing: no injection, no recorder churn, phase stays idle.

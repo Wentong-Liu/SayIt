@@ -122,6 +122,10 @@ public struct SingleTapToggleStateMachine: Sendable {
     /// Whether the session is in the active (recording) state.
     private var isActive = false
 
+    /// Whether the toggle currently considers a session active (the next isolated tap would emit `.stop`). Read-only;
+    /// exposed so the hotkey manager / tests can verify the toggle was resynced after an external session end.
+    public var isSessionActive: Bool { isActive }
+
     /// - Parameter window: the tap time window (seconds), defaults to 0.3s.
     public init(window: TimeInterval = 0.3) {
         self.detector = IsolatedTapDetector(window: window)
@@ -148,5 +152,16 @@ public struct SingleTapToggleStateMachine: Sendable {
     /// Resets the in-progress candidate tap; does not change the session active state.
     public mutating func reset() {
         detector.reset()
+    }
+
+    /// Forces the session toggle back to **inactive** (and voids any in-progress candidate tap).
+    ///
+    /// Use when the dictation session ends WITHOUT a second tap — e.g. ESC-cancel or a recording start-failure. Unlike
+    /// ``reset()`` (which only voids the candidate, leaving `isActive` intact for the next stop tap), this resynchronizes
+    /// the toggle with the now-idle coordinator so the user's NEXT tap is treated as a fresh `.start` rather than being
+    /// silently wasted as a phantom `.stop` against an already-stopped session.
+    public mutating func deactivate() {
+        detector.reset()
+        isActive = false
     }
 }

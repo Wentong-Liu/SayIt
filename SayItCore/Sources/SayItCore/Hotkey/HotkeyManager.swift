@@ -145,6 +145,32 @@ public final class HotkeyManager {
         resetStateMachines()
     }
 
+    // MARK: External session lifecycle
+
+    /// Notifies the manager that the dictation session ended **externally** — i.e. without a second trigger tap — such as an
+    /// ESC-cancel or a recording start-failure. In single-tap-toggle mode this resynchronizes the toggle: the state machine's
+    /// `isActive` flag is the SOLE start/stop driver, and if it is left `active` after such an end the user's NEXT tap emits a
+    /// phantom `.stop` against an already-idle coordinator and is silently wasted (forcing a double tap to resume). Forcing it
+    /// back to inactive makes the next tap a clean `.start`.
+    ///
+    /// Hold-to-talk mode has no toggle (start/stop are driven by the physical key down/up), so this is a no-op there.
+    public func sessionDidEndExternally() {
+        singleTapMachine.deactivate()
+    }
+
+    /// Whether the single-tap-toggle state machine currently considers a session active (so its next isolated tap would
+    /// emit `.stop`). Exposed for tests to assert ``sessionDidEndExternally()`` resynced the toggle after an external end.
+    public var _test_singleTapSessionActive: Bool { singleTapMachine.isSessionActive }
+
+    /// Drives one isolated tap through the single-tap-toggle state machine, flipping its toggle (returns the emitted
+    /// event). Tests use this to put the toggle in the "active" state a real first `.start` tap would produce, since
+    /// NSEvent global monitoring cannot be synthesized in unit tests.
+    @discardableResult
+    public func _test_emitSingleTap() -> HotkeyEvent? {
+        singleTapMachine.modifierDown(at: 0)
+        return singleTapMachine.modifierUp(at: 0)
+    }
+
     // MARK: Event handling (shell layer -> pure state machine)
 
     private func handleFlagsChanged(_ event: NSEvent) {

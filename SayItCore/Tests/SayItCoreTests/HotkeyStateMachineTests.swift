@@ -154,4 +154,48 @@ final class HotkeyStateMachineTests: XCTestCase {
         machine.modifierDown(at: 2.0)
         XCTAssertEqual(machine.modifierUp(at: 2.1), .stop)
     }
+
+    // MARK: - SingleTapToggle deactivate (session ended externally: ESC-cancel / start-failure)
+
+    /// Regression guard (single-tap toggle desync on external session end): in single-tap-toggle mode the `isActive`
+    /// flag is the SOLE start/stop driver. When the session ends WITHOUT a second tap (ESC-cancel or a start-failure),
+    /// `isActive` must be forced back to inactive — otherwise the user's NEXT tap emits `.stop` against an already-idle
+    /// coordinator (isRecording==false) and is silently wasted, forcing a double tap to resume.
+    /// After `deactivate()`, the next clean tap must emit `.start` (a new session), NOT `.stop`.
+    func testSingleTapToggleDeactivateResetsActiveSoNextTapStarts() {
+        var machine = SingleTapToggleStateMachine(window: 0.3)
+        // 1) First isolated tap activates the session (-> .start).
+        machine.modifierDown(at: 0.0)
+        XCTAssertEqual(machine.modifierUp(at: 0.1), .start)
+        // 2) Session ends externally (ESC-cancel / start-failure): force the toggle back to inactive.
+        machine.deactivate()
+        // 3) The NEXT clean tap must START a fresh session again (not be wasted as a phantom .stop).
+        machine.modifierDown(at: 1.0)
+        XCTAssertEqual(machine.modifierUp(at: 1.1), .start,
+                       "外部结束会话后下一次轻点应重新 .start（而非被吞成无效的 .stop）")
+    }
+
+    /// `deactivate()` on an already-inactive machine is a harmless no-op: the first tap still starts as normal.
+    func testSingleTapToggleDeactivateWhenInactiveIsNoOp() {
+        var machine = SingleTapToggleStateMachine(window: 0.3)
+        machine.deactivate()
+        machine.modifierDown(at: 0.0)
+        XCTAssertEqual(machine.modifierUp(at: 0.1), .start, "未激活时 deactivate 应为无操作，首次轻点正常开始")
+    }
+
+    /// `deactivate()` also voids any in-progress candidate tap (consistent with `reset()`), so a half-completed tap
+    /// straddling the external end does not later resolve into a stray event.
+    func testSingleTapToggleDeactivateVoidsInProgressCandidate() {
+        var machine = SingleTapToggleStateMachine(window: 0.3)
+        machine.modifierDown(at: 0.0)
+        XCTAssertEqual(machine.modifierUp(at: 0.1), .start)
+        // A new candidate tap begins, then the session ends externally before release.
+        machine.modifierDown(at: 1.0)
+        machine.deactivate()
+        // The straddling release must NOT trigger (the candidate was voided).
+        XCTAssertNil(machine.modifierUp(at: 1.05), "deactivate 应作废在途候选轻点")
+        // And the next clean tap starts a fresh session.
+        machine.modifierDown(at: 2.0)
+        XCTAssertEqual(machine.modifierUp(at: 2.1), .start)
+    }
 }

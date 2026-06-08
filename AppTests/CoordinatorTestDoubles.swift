@@ -20,6 +20,12 @@ actor FakeAudioRecorder: AudioRecording {
     private var stopGate: CheckedContinuation<Void, Never>?
     private var stopGateArmed = false
 
+    /// Optional manual gate: when armed via ``gateStart()``, `start()` suspends after incrementing its count but BEFORE flipping `recording`
+    /// to true (and before rebuilding the level stream), until ``releaseStart()`` is called. This deterministically pins the recorder in the
+    /// "start in flight, suspended" window so a test can land a `cancel()` mid-start (the startTask-resurrection bug) with no scheduling luck.
+    private var startGate: CheckedContinuation<Void, Never>?
+    private var startGateArmed = false
+
     private(set) var startCount = 0
     private(set) var stopCount = 0
     /// The device UID received by the most recent `start(deviceUID:)` (for tests to assert that end-to-end dictation carried the persisted microphone selection).
@@ -51,6 +57,13 @@ actor FakeAudioRecorder: AudioRecording {
     func start(deviceUID: String?) async throws {
         startCount += 1
         lastStartDeviceUID = deviceUID
+        // Manual gate (if armed): suspend here BEFORE flipping `recording`, pinning the "start in flight, suspended"
+        // window until the test releases it — lets a cancel() be landed deterministically mid-start (the resurrection bug).
+        if startGateArmed {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                startGate = continuation
+            }
+        }
         switch startBehavior {
         case .succeeds:
             recording = true
@@ -101,6 +114,24 @@ actor FakeAudioRecorder: AudioRecording {
     /// the recorder is sitting in the "stop in flight, still recording" window before it drives the racing start.
     func waitUntilStopGated() async {
         while stopGate == nil {
+            await Task.yield()
+        }
+    }
+
+    /// Arms the start gate: the NEXT `start()` will suspend (before flipping `recording`) until ``releaseStart()`` is called.
+    func gateStart() { startGateArmed = true }
+
+    /// Releases a gated `start()` (if currently suspended) and disarms the gate, letting the start finish normally.
+    func releaseStart() {
+        startGateArmed = false
+        startGate?.resume()
+        startGate = nil
+    }
+
+    /// Polls until a gated `start()` has actually entered the suspend point (the continuation is captured), so the test can be
+    /// sure the recorder is sitting in the "start in flight, suspended" window before it lands the cancel.
+    func waitUntilStartGated() async {
+        while startGate == nil {
             await Task.yield()
         }
     }
