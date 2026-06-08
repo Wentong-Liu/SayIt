@@ -84,6 +84,13 @@ public final class HotkeyManager {
     /// candidate (same discipline as ESC). Harmless when nothing is armed (the coordinator ignores it then).
     public var onCommitKey: (() -> Void)?
 
+    /// Fired (main thread) on a Backspace / Forward-Delete keyDown — a "the user actually EDITED the text" signal for the
+    /// learn-from-edits feature. The coordinator uses this to require that a real correction happened before a compare can
+    /// fire (the commit / focus-loss / idle signals still decide WHEN). Observe-only: the key is NEVER consumed (the
+    /// foreground app still receives the delete), and it returns early so it does not taint the single-tap candidate (same
+    /// discipline as ESC). Harmless when nothing is armed (the coordinator ignores it then).
+    public var onEditKey: (() -> Void)?
+
     /// Event async sequence, convenient for `for await event in manager.events { ... }`.
     public let events: AsyncStream<HotkeyEvent>
     private let eventContinuation: AsyncStream<HotkeyEvent>.Continuation
@@ -294,9 +301,11 @@ public final class HotkeyManager {
         }
 
         if event.keyCode == backspaceKeyCode || event.keyCode == forwardDeleteKeyCode {
-            // Edit keys stay observe-only: notify nothing of substance (the idle-timer reset above already fired via
-            // onUserKeystroke), and return early so they do not taint the single-tap candidate (same reasoning as ESC).
-            // They no longer drive a compare — the compare is commit/idle/focus-loss triggered.
+            // Edit keys are observe-only: notify "a real edit happened" (the necessary signal that the user corrected
+            // something) but NEVER consume, then return early so they do not taint the single-tap candidate (same reasoning
+            // as ESC). They do not drive a compare directly — they only flip the coordinator's didEdit gate; the compare is
+            // still commit/idle/focus-loss triggered. Harmless when nothing is armed (the coordinator ignores it then).
+            onEditKey?()
             return
         }
 

@@ -1081,6 +1081,8 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["我之前用过Type+和闪电书。"], "should inject the transcribed text")
         XCTAssertTrue(coordinator._test_injectionRecordArmed, "a successful inject should arm one injection record")
 
+        // A real edit (Backspace) is the necessary gate before a compare can fire.
+        coordinator._test_handleEditKey()
         // Commit (Return) -> the compare fires, the extractor runs, the suggestion shows the SINGLE term.
         await coordinator._test_handleCommitKey()
         XCTAssertEqual(extractor.callCount, 1, "the commit trigger should call the extractor once")
@@ -1119,6 +1121,8 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
         XCTAssertTrue(coordinator._test_injectionRecordArmed)
 
+        // A real edit (Backspace) is the necessary gate before a compare can fire.
+        coordinator._test_handleEditKey()
         // The idle timer (~1ms) fires on its own; await it + the extraction it kicks off.
         await coordinator._test_awaitIdleCompare()
         XCTAssertEqual(extractor.callCount, 1, "the idle trigger should call the extractor once")
@@ -1146,9 +1150,95 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
         XCTAssertTrue(coordinator._test_injectionRecordArmed)
 
+        // A real edit (Backspace) is the necessary gate before a compare can fire.
+        coordinator._test_handleEditKey()
         await coordinator._test_handleFocusLoss()
         XCTAssertEqual(extractor.callCount, 1, "the focus-loss trigger should call the extractor once")
         XCTAssertTrue(suggestionPanel._test_isShown, "the focus-loss-triggered compare should show a suggestion")
+    }
+
+    /// EDIT-REQUIRED GATE (COMMIT): dictate + commit with NO edit key (no Backspace) -> the compare drops BEFORE any AX
+    /// read or LLM call. A real correction must involve a delete, so without one there is nothing to learn.
+    func testLearnFromEditsCommitWithoutEditKeyDropsNoCompare() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let reader = learnReader(armed: "I met jon today", edited: "I met John today")
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertTrue(coordinator._test_injectionRecordArmed)
+
+        // NO edit key -> the commit trigger must drop before reading AX / calling the LLM.
+        await coordinator._test_handleCommitKey()
+        XCTAssertEqual(extractor.callCount, 0, "with no edit key the extractor must not be called")
+        XCTAssertFalse(suggestionPanel._test_isShown, "with no edit key no suggestion should appear")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "the record is still consumed once on the trigger")
+    }
+
+    /// EDIT-REQUIRED GATE (IDLE): the idle timer fires with NO edit key -> the compare drops, no extractor, no suggestion.
+    func testLearnFromEditsIdleWithoutEditKeyDropsNoCompare() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let reader = learnReader(armed: "I met jon today", edited: "I met John today")
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnIdleAfter: .milliseconds(1),
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertTrue(coordinator._test_injectionRecordArmed)
+
+        // NO edit key -> the idle-fired compare must drop.
+        await coordinator._test_awaitIdleCompare()
+        XCTAssertEqual(extractor.callCount, 0, "with no edit key the idle trigger must not call the extractor")
+        XCTAssertFalse(suggestionPanel._test_isShown, "with no edit key the idle trigger should show no suggestion")
+    }
+
+    /// EDIT-REQUIRED GATE (FOCUS LOSS): focus loss with NO edit key -> the compare drops, no extractor, no suggestion.
+    func testLearnFromEditsFocusLossWithoutEditKeyDropsNoCompare() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let reader = learnReader(armed: "I use sequoia", edited: "I use Sequoia")
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "sequoia", corrected: "Sequoia"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "I use sequoia")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertTrue(coordinator._test_injectionRecordArmed)
+
+        // NO edit key -> the focus-loss compare must drop.
+        await coordinator._test_handleFocusLoss()
+        XCTAssertEqual(extractor.callCount, 0, "with no edit key the focus-loss trigger must not call the extractor")
+        XCTAssertFalse(suggestionPanel._test_isShown, "with no edit key the focus-loss trigger should show no suggestion")
     }
 
     /// NEXT DICTATION drops the prior armed record: a new dictation start clears the record so it never carries over.
@@ -1204,6 +1294,7 @@ final class DictationCoordinatorTests: XCTestCase {
 
         await coordinator._test_start()
         await coordinator._test_stop()
+        coordinator._test_handleEditKey()
         await coordinator._test_handleCommitKey()
 
         XCTAssertEqual(extractor.callCount, 1, "the extractor is still consulted")
@@ -1231,6 +1322,7 @@ final class DictationCoordinatorTests: XCTestCase {
 
         await coordinator._test_start()
         await coordinator._test_stop()
+        coordinator._test_handleEditKey()
         await coordinator._test_handleCommitKey()
 
         XCTAssertFalse(suggestionPanel._test_isShown, "the hard single-term guard must reject a sentence-like corrected term")
@@ -1255,6 +1347,8 @@ final class DictationCoordinatorTests: XCTestCase {
 
         await coordinator._test_start()
         await coordinator._test_stop()
+        // Edit so the didEdit gate passes — the DROP under test here is the missing provider, not the no-edit gate.
+        coordinator._test_handleEditKey()
         await coordinator._test_handleCommitKey()
 
         XCTAssertEqual(extractor.callCount, 0, "with no provider configured the extractor is never called")
@@ -1282,6 +1376,9 @@ final class DictationCoordinatorTests: XCTestCase {
 
         await coordinator._test_start()
         await coordinator._test_stop()
+        // Edit so the didEdit gate passes — the DROP under test here is final==injected, not the no-edit gate. (A user can
+        // delete then retype the same characters, leaving identical text yet having pressed Backspace.)
+        coordinator._test_handleEditKey()
         await coordinator._test_handleCommitKey()
 
         XCTAssertEqual(extractor.callCount, 0, "an identical final text must NOT call the LLM")
@@ -1310,6 +1407,7 @@ final class DictationCoordinatorTests: XCTestCase {
 
         await coordinator._test_start()
         await coordinator._test_stop()
+        coordinator._test_handleEditKey()
         await coordinator._test_handleCommitKey()
         XCTAssertTrue(suggestionPanel._test_isShown)
 
@@ -1371,6 +1469,8 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
         XCTAssertTrue(coordinator._test_injectionRecordArmed, "a successful ARM read should arm")
 
+        // Edit so the didEdit gate passes — the DROP under test here is the unreadable read-back, not the no-edit gate.
+        coordinator._test_handleEditKey()
         await coordinator._test_handleCommitKey()
         XCTAssertEqual(extractor.callCount, 0, "an unreadable final text must NOT call the LLM")
         XCTAssertFalse(suggestionPanel._test_isShown, "an AX nil on read-back should be silently dropped, no suggestion")
