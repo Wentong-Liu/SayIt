@@ -547,8 +547,8 @@ final class DictationCoordinator {
         if AccessibilityAuthorization.isTrusted { return true }
         // Unauthorized: trigger the system authorization dialog (prompt), and give a guiding line in the HUD.
         AccessibilityAuthorization.ensureTrusted(prompting: true)
-        showTransientError(String(localized: "hud.needAccessibility",
-                                  defaultValue: "Accessibility permission required — enable it in System Settings"))
+        showTransientError(uiLanguageLocalized("hud.needAccessibility",
+                                               defaultValue: "Accessibility permission required — enable it in System Settings"))
         return false
     }
 
@@ -655,8 +655,8 @@ final class DictationCoordinator {
             playCueIfEnabled(.stop)
         } catch {
             isRecording = false
-            failToIdle(message: String(localized: "hud.stopRecordingFailed",
-                                       defaultValue: "Failed to finish recording"))
+            failToIdle(message: uiLanguageLocalized("hud.stopRecordingFailed",
+                                                    defaultValue: "Failed to finish recording"))
             return
         }
 
@@ -708,13 +708,13 @@ final class DictationCoordinator {
             return
         } catch is TranscribeTimeout {
             // Hard timeout: transcription does not return in time (e.g. the underlying layer stuck loading/downloading the model). Give an error hint and converge to idle.
-            failToIdle(message: String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed"))
+            failToIdle(message: uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed"))
             return
         } catch let error as STTError {
             failToIdle(message: Self.transcriptionFailureMessage(error))
             return
         } catch {
-            failToIdle(message: String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed"))
+            failToIdle(message: uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed"))
             return
         }
 
@@ -994,12 +994,12 @@ final class DictationCoordinator {
         case .success:
             if drifted {
                 // Focus drifted but the paste still succeeded: give a brief neutral hint, informing it was pasted into the current window.
-                showTransientInfo(String(localized: "hud.pastedToCurrentWindow",
-                                         defaultValue: "Pasted to the current window"))
+                showTransientInfo(uiLanguageLocalized("hud.pastedToCurrentWindow",
+                                                      defaultValue: "Pasted to the current window"))
             } else if polishFailed {
                 // Injection succeeded but polish failed and fell back to the original: a light hint (never losing characters, only informing).
-                showTransientInfo(String(localized: "hud.injectedPolishFailed",
-                                         defaultValue: "Inserted (polish failed, used original text)"))
+                showTransientInfo(uiLanguageLocalized("hud.injectedPolishFailed",
+                                                      defaultValue: "Inserted (polish failed, used original text)"))
             } else {
                 panel.hide()
                 phase = .idle
@@ -1015,10 +1015,10 @@ final class DictationCoordinator {
         case .failedTextLeftInPasteboard:
             // The text is left in the clipboard, hinting the user to paste manually.
             let hint = drifted
-                ? String(localized: "hud.driftedCopiedPasteManually",
-                         defaultValue: "Focus changed — text copied, please paste manually")
-                : String(localized: "hud.copiedPasteManually",
-                         defaultValue: "Copied to clipboard, please paste manually")
+                ? uiLanguageLocalized("hud.driftedCopiedPasteManually",
+                                      defaultValue: "Focus changed — text copied, please paste manually")
+                : uiLanguageLocalized("hud.copiedPasteManually",
+                                      defaultValue: "Copied to clipboard, please paste manually")
             showTransientError(hint)
         }
     }
@@ -1253,7 +1253,7 @@ final class DictationCoordinator {
 
     /// Empty audio / empty transcription: the HUD briefly hints then returns to idle.
     private func emptyToIdle() {
-        showTransientError(String(localized: "hud.didNotCatchThat", defaultValue: "Didn’t catch that, please try again"))
+        showTransientError(uiLanguageLocalized("hud.didNotCatchThat", defaultValue: "Didn’t catch that, please try again"))
     }
 
     /// Local model not ready: the HUD briefly shows a "model still downloading / please switch to cloud" error hint then returns to idle, and does not enter transcription.
@@ -1326,25 +1326,25 @@ final class DictationCoordinator {
     private static func recordingFailureMessage(_ error: Error) -> String {
         if let audioError = error as? AudioRecordingError,
            case .microphonePermissionDenied = audioError {
-            return String(localized: "hud.needMicrophone", defaultValue: "Microphone permission required")
+            return uiLanguageLocalized("hud.needMicrophone", defaultValue: "Microphone permission required")
         }
-        return String(localized: "hud.cannotStartRecording", defaultValue: "Cannot start recording")
+        return uiLanguageLocalized("hud.cannotStartRecording", defaultValue: "Cannot start recording")
     }
 
     /// The user-facing copy for transcription failure.
     private static func transcriptionFailureMessage(_ error: STTError) -> String {
         switch error {
         case .notReady:
-            return String(localized: "hud.transcriberNotReady",
-                          defaultValue: "Transcription not ready — check model/API key")
+            return uiLanguageLocalized("hud.transcriberNotReady",
+                                       defaultValue: "Transcription not ready — check model/API key")
         case .emptyAudio:
-            return String(localized: "hud.didNotCatchThat", defaultValue: "Didn’t catch that, please try again")
+            return uiLanguageLocalized("hud.didNotCatchThat", defaultValue: "Didn’t catch that, please try again")
         case .unsupportedFormat:
-            return String(localized: "hud.unsupportedAudioFormat", defaultValue: "Unsupported audio format")
+            return uiLanguageLocalized("hud.unsupportedAudioFormat", defaultValue: "Unsupported audio format")
         case .transcriptionFailed:
-            return String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed")
+            return uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed")
         @unknown default:
-            return String(localized: "hud.transcriptionFailed", defaultValue: "Transcription failed")
+            return uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed")
         }
     }
 

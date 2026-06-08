@@ -48,6 +48,21 @@ public final class AppConfig {
         static let inputDeviceUID = "audio.inputDeviceUID"
     }
 
+    /// The persisted UI language, read **nonisolated** straight from `UserDefaults` (the store is
+    /// thread-safe), so code that is not on the main actor — e.g. the dictation HUD's nonisolated
+    /// `RecordingState.displayText` — can resolve copy in the selected language without hopping to the
+    /// `@MainActor` ``shared`` instance. Reuses ``Key/uiLanguage`` and the same default mapping as the
+    /// instance ``uiLanguage`` getter, so they never diverge.
+    ///
+    /// - Parameter defaults: the backing store (defaults to `.standard`, matching ``shared``).
+    public nonisolated static func persistedUILanguage(_ defaults: UserDefaults = .standard) -> UILanguage {
+        guard let raw = defaults.string(forKey: Key.uiLanguage),
+              let value = UILanguage(rawValue: raw) else {
+            return UILanguage.systemDefault
+        }
+        return value
+    }
+
     // MARK: Trigger / interaction
 
     /// The modifier key that triggers dictation. Defaults to the right Option; the listener reads it live, changes take effect immediately.
