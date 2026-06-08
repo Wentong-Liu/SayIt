@@ -35,7 +35,7 @@ no matter how long you spoke: measured on an **Apple M4 Pro** with the recommend
 short phrase finishes just as fast. Exact speed depends on your Mac, but the work
 always runs on-device, fully offline, and your audio never leaves your machine.
 
-### ♻️ Reuses the AI subscription you already have
+### ♻️ Uses your Codex subscription
 
 If you vibe-code, you almost certainly already pay for **ChatGPT / Codex** or
 **Claude**. SayIt polishes your dictation through that same account — cleaning up
