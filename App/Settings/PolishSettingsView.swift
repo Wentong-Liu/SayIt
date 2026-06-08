@@ -91,7 +91,8 @@ struct PolishSettingsView: View {
     /// API Key entry for ordinary Providers.
     @ViewBuilder
     private var apiKeyCredentialView: some View {
-        SecureField(String(localized: "polish.apiKeyField \(viewModel.providerKind.displayName)"),
+        SecureField(uiLanguageLocalized(format: "polish.apiKeyField %@",
+                                        defaultValue: "%@ API Key", viewModel.providerKind.displayName),
                     text: $viewModel.polishAPIKey)
             .onSubmit { viewModel.savePolishAPIKey() }
 

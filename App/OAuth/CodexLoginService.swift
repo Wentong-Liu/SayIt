@@ -18,20 +18,26 @@ final class CodexLoginService {
 
     enum LoginError: Error, CustomStringConvertible {
         case serverFailed, stateMismatch, noCode, exchangeFailed(String), cancelled, timedOut
+        // These descriptions surface to the user as the polish-pane status message (via
+        // SettingsViewModel.loginWithChatGPT's failure path), so they must follow the selected UI
+        // language, not the system locale — same root cause / fix pattern as PR #67.
         var description: String {
             switch self {
             case .serverFailed:
-                return String(localized: "login.serverFailed \(ChatGPTOAuth.callbackPort)")
+                return uiLanguageLocalized(format: "login.serverFailed %lld",
+                                           defaultValue: "Local loopback server failed to start (port %lld may be in use)",
+                                           Int(ChatGPTOAuth.callbackPort))
             case .stateMismatch:
-                return String(localized: "login.stateMismatch", defaultValue: "State verification failed")
+                return uiLanguageLocalized("login.stateMismatch", defaultValue: "State verification failed")
             case .noCode:
-                return String(localized: "login.noCode", defaultValue: "No authorization code in callback")
+                return uiLanguageLocalized("login.noCode", defaultValue: "No authorization code in callback")
             case .exchangeFailed(let m):
-                return String(localized: "login.exchangeFailed \(m)")
+                return uiLanguageLocalized(format: "login.exchangeFailed %@",
+                                           defaultValue: "Token exchange failed: %@", m)
             case .cancelled:
-                return String(localized: "login.cancelled", defaultValue: "Login cancelled")
+                return uiLanguageLocalized("login.cancelled", defaultValue: "Login cancelled")
             case .timedOut:
-                return String(localized: "login.timedOut", defaultValue: "Login timed out, please try again")
+                return uiLanguageLocalized("login.timedOut", defaultValue: "Login timed out, please try again")
             }
         }
     }
@@ -83,8 +89,9 @@ final class CodexLoginService {
             // Of the form "GET /auth/callback?code=...&state=... HTTP/1.1"
             let firstLine = reqText.split(separator: "\r\n").first.map(String.init) ?? ""
             let path = firstLine.split(separator: " ").dropFirst().first.map(String.init) ?? ""
-            let doneText = String(localized: "login.browserDone",
-                                  defaultValue: "SayIt: Login complete. You can close this page and return to the app.")
+            // Shown in the user's browser when the OAuth callback lands — follow the selected UI language.
+            let doneText = uiLanguageLocalized("login.browserDone",
+                                               defaultValue: "SayIt: Login complete. You can close this page and return to the app.")
             let html = "<html><body><h3>\(doneText)</h3></body></html>"
             let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n\(html)"
             conn.send(content: Data(resp.utf8), completion: .contentProcessed { _ in conn.cancel() })
@@ -117,7 +124,7 @@ final class CodexLoginService {
                     self.finish(.success(tokens))
                 } else {
                     self.finish(.failure(LoginError.exchangeFailed(
-                        String(localized: "login.keychainWriteFailed", defaultValue: "Unable to write to keychain"))))
+                        uiLanguageLocalized("login.keychainWriteFailed", defaultValue: "Unable to write to keychain"))))
                 }
             } catch {
                 self.finish(.failure(LoginError.exchangeFailed(error.localizedDescription)))
