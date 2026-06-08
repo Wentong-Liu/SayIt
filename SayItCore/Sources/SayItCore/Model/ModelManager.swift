@@ -53,7 +53,17 @@ public final class ModelManager {
     public private(set) var model: String
 
     /// The in-progress download task; used for cancellation and re-entrancy prevention.
-    @ObservationIgnored private var downloadTask: Task<Void, Never>?
+    /// `internal` (not `private`) so `@testable` tests can drive/observe the task-identity
+    /// cleanup race; it is not part of the public API.
+    @ObservationIgnored var downloadTask: Task<Void, Never>?
+
+    /// Monotonic generation token identifying the current ``downloadTask``.
+    ///
+    /// `Task` is a value type, so it cannot be compared with `===`; instead each launched
+    /// task captures the generation it was assigned, and its trailing cleanup clears the
+    /// handle only if that generation is still current. This is the task-identity guard
+    /// that stops a cancelled older task from nulling out a newer task's handle.
+    @ObservationIgnored private var downloadGeneration: UInt64 = 0
 
     // MARK: - Download-speed tracking (MainActor-isolated)
     //
@@ -324,7 +334,11 @@ public final class ModelManager {
         let base = Self.downloadBase
         let repo = Self.modelRepo
 
-        let task = Task { [weak self] in
+        // Launch the download work behind the shared task-lifecycle wrapper. The wrapper
+        // stores the created task into `downloadTask` and clears it on completion ONLY if
+        // it is still the current task (see `launchDownloadTask`), so a cancelled older
+        // task's trailing cleanup can no longer null out a newer task's handle.
+        let task = launchDownloadTask { [weak self] in
             // Pin the weak reference ahead into a local constant capturable by the @Sendable progress callback, to avoid the callback strongly referencing self.
             let weakSelf = WeakBox(self)
             do {
@@ -356,12 +370,45 @@ public final class ModelManager {
                     self.state = .failed(reason: String(describing: error))
                 }
             }
+        }
+        await task.value
+    }
+
+    /// Wraps `operation` in a `Task`, stores it as the current ``downloadTask``, and on
+    /// completion clears ``downloadTask`` **only if it is still the current task**.
+    ///
+    /// ## Why the task-identity guard
+    /// `download(model:)` can run a cancel+restart sequence: a cancelled older `taskA`
+    /// may not finish its trailing cleanup until AFTER a newer `taskB` has already been
+    /// created and stored. If the cleanup unconditionally ran `downloadTask = nil`, it
+    /// would null out `taskB`'s handle, and a subsequent ``cancelDownload()`` — which
+    /// reads ``downloadTask`` to cancel it — would see `nil` and silently do nothing,
+    /// turning the cancel button into a no-op. `Task` is a value type and cannot be
+    /// compared with `===`, so each task captures the ``downloadGeneration`` it was
+    /// assigned and only clears the handle when that generation is still current. This
+    /// stops an outgoing task from clobbering its successor.
+    ///
+    /// - Parameter operation: the actual download work; runs inside the returned task.
+    /// - Returns: the created task, so the caller can `await` it.
+    ///
+    /// `internal` (not `private`) so `@testable` tests can reproduce the cancel+restart
+    /// cleanup race directly; it is not part of the public API.
+    func launchDownloadTask(
+        operation: @escaping @Sendable () async -> Void
+    ) -> Task<Void, Never> {
+        downloadGeneration &+= 1
+        let myGeneration = downloadGeneration
+        let createdTask = Task { [weak self] in
+            await operation()
             await MainActor.run { [weak self] in
-                self?.downloadTask = nil
+                // Only clear the handle if this is still the current task; a newer task
+                // (started after a cancel+restart) must not be clobbered by this one.
+                guard let self, self.downloadGeneration == myGeneration else { return }
+                self.downloadTask = nil
             }
         }
-        downloadTask = task
-        await task.value
+        downloadTask = createdTask
+        return createdTask
     }
 
     /// Cancels the in-progress download (if any). The state falls back to the local actual state.
