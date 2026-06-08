@@ -130,6 +130,13 @@ final class DictationCoordinator {
     /// and at the start of a new dictation. Clearing it makes any later trigger for the same inject a no-op (compare runs once).
     private var injectionRecord: InjectionRecord?
 
+    /// Whether the user has actually EDITED (pressed Backspace / Forward-Delete) since the current record was armed. A real
+    /// correction must involve a delete, so this is the necessary signal that an edit happened; the commit / focus-loss /
+    /// idle triggers only decide WHEN to compare. Reset to false on each arm; set true by ``handleEditKey()`` while armed.
+    /// ``fireCompare()`` drops without reading AX / calling the LLM when this is still false. (A stale value can never cause
+    /// a spurious compare: a re-arm resets it, and `fireCompare`'s `guard let record` short-circuits when nothing is armed.)
+    private var didEdit = false
+
     /// The in-flight idle timer: started on arm and reset (cancel + reschedule) on every keystroke while armed; when it
     /// fires (the user paused ~`idleAfter`) the compare runs. Cancelled on teardown / cancel / first compare / next dictation.
     private var idleTimerTask: Task<Void, Never>?
@@ -352,6 +359,9 @@ final class DictationCoordinator {
         // record is armed, so wiring them is harmless when nothing is pending.
         hotkeyManager.onUserKeystroke = { [weak self] in self?.handleUserKeystroke() }
         hotkeyManager.onCommitKey = { [weak self] in self?.handleCommitKey() }
+        // A Backspace / Forward-Delete marks that a real edit happened (the necessary signal a correction occurred): the
+        // compare drops unless the user actually edited. Observe-only and a no-op unless a fresh record is armed.
+        hotkeyManager.onEditKey = { [weak self] in self?.handleEditKey() }
         // Learn-from-edits focus-loss trigger: when the armed app deactivates (the user switched / clicked away) the edit
         // is treated as committed, so fire the compare once. Removed in stop().
         focusLossObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -1035,6 +1045,9 @@ final class DictationCoordinator {
     /// record (the latest inject is the only one worth learning from), captures a lightweight focus identity + a generous
     /// freshness expiry, and starts the idle timer (so a long pause after the inject still triggers a compare).
     private func armLearnFromEdits(injected: String) {
+        // Every arm attempt starts clean: no edit has happened yet for this (re)arm. Reset BEFORE the AX guard so even an
+        // arm that bails on an unreadable field leaves no stale "edited" signal behind.
+        didEdit = false
         // Drop any prior idle timer / in-flight extraction: a new inject supersedes an older pending one.
         idleTimerTask?.cancel()
         idleTimerTask = nil
@@ -1078,6 +1091,15 @@ final class DictationCoordinator {
         startIdleTimer()
     }
 
+    /// EDIT KEY (Backspace / Forward-Delete): a real correction must involve a delete, so this is the necessary signal that
+    /// the user actually edited the inject. Flips ``didEdit`` only while armed (symmetric with ``handleUserKeystroke``); a
+    /// no-op when nothing is armed, so a stray delete from an earlier moment never leaks into a later arm.
+    private func handleEditKey() {
+        guard injectionRecord != nil else { return }
+        didEdit = true
+        Self.log.notice("editKey (armed=\(self.injectionRecord != nil, privacy: .public))")
+    }
+
     /// COMMIT (Return / keypad-Enter): the edit is done — fire the compare immediately. A no-op when nothing is armed.
     private func handleCommitKey() {
         Self.log.notice("trigger=commit (armed=\(self.injectionRecord != nil, privacy: .public))")
@@ -1111,6 +1133,13 @@ final class DictationCoordinator {
         // Expired -> the user moved on long ago; drop without reading.
         guard record.expiresAt > Date() else {
             Self.log.notice("compare: expired")
+            return
+        }
+
+        // Require a real edit: a correction must involve a delete (Backspace / Forward-Delete). With no edit key seen since
+        // arming, the user did not correct anything (e.g. dictate + Enter), so drop WITHOUT reading AX or calling the LLM.
+        guard didEdit else {
+            Self.log.notice("compare: no edit key seen -> drop")
             return
         }
 
@@ -1417,6 +1446,10 @@ final class DictationCoordinator {
     /// Directly drives one keystroke (equivalent to a keyDown while armed): resets the idle timer. For tests asserting the
     /// idle-timer reset path.
     func _test_handleUserKeystroke() { handleUserKeystroke() }
+
+    /// Directly drives one edit key (equivalent to a Backspace / Forward-Delete keyDown while armed): flips the didEdit gate
+    /// so a subsequent commit / idle / focus-loss trigger can fire the compare. For tests of the edit-required gate.
+    func _test_handleEditKey() { handleEditKey() }
 
     /// Awaits the idle-timer fire AND the extraction it kicks off, so a test using a tiny `learnIdleAfter` can
     /// deterministically observe the idle-triggered compare. No-op if nothing is armed / no idle timer is running.

@@ -127,4 +127,15 @@ final class LearnedTermExtractorTests: XCTestCase {
         XCTAssertTrue(combined.contains("FINAL_TEXT"), "the prompt should carry the final text")
         XCTAssertTrue(provider.receivedMessages.contains { $0.role == .system }, "should include a system prompt")
     }
+
+    /// The system prompt must tell the model the ORIGINAL is speech-recognizer output so its errors are PHONETIC (the core
+    /// of the fix): without that framing the model returns a null pair on sound-alike mishears.
+    func testSystemPromptMentionsSpeechAndPhonetic() async {
+        let provider = FakeProvider(.returns(#"{"heard": null, "corrected": null}"#))
+        let extractor = LearnedTermExtractor(provider: provider)
+        _ = await extractor.extract(injected: "a", final: "b")
+        let system = provider.receivedMessages.first { $0.role == .system }?.content ?? ""
+        XCTAssertTrue(system.uppercased().contains("PHONETIC"), "the system prompt should name PHONETIC errors")
+        XCTAssertTrue(system.lowercased().contains("speech"), "the system prompt should say the ORIGINAL is speech output")
+    }
 }
