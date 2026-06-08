@@ -27,6 +27,12 @@ struct STTSettingsView: View {
             switch viewModel.sttMode {
             case .local:
                 Section {
+                    // Persistent in-pane setup CTA: while the local model is not yet usable
+                    // (.notDownloaded / .failed) make the required next step obvious. The existing
+                    // Download/Retry button below is the action; this just states the requirement.
+                    // Hidden once downloading (the progress row already conveys state) or downloaded.
+                    setupCTA
+
                     // The local model is fixed to large-v3-turbo (the recommended sweet spot); there is no
                     // longer a picker. Show it as a static labeled line so the user knows which model the
                     // Download/Re-download row below acts on. The localized `model.large-v3-turbo` value
@@ -86,6 +92,23 @@ struct STTSettingsView: View {
         return formatter
     }()
 
+    /// Persistent in-pane setup CTA for the local engine: shown only while the model is not yet usable
+    /// (.notDownloaded / .failed), telling the user the required next step. The Download/Retry button in
+    /// ``modelStatusRow`` performs the action; this just makes the requirement obvious. It disappears once
+    /// the model is downloading (the progress row covers that) or downloaded. Styled prominently (an amber
+    /// warning Label) but consistent with the pane.
+    @ViewBuilder
+    private var setupCTA: some View {
+        switch viewModel.localModelState {
+        case .notDownloaded, .failed:
+            Label("stt.setupCTA.download", systemImage: "arrow.down.circle.fill")
+                .foregroundStyle(.orange)
+                .labelStyle(.titleAndIcon)
+        case .downloading, .downloaded:
+            EmptyView()
+        }
+    }
+
     /// The local model "download state" row: not downloaded / downloading (progress + speed + cancel) / downloaded (re-download) / failed (retry).
     /// Observes ``SettingsViewModel/localModelState`` (whose source is the `@Observable` `ModelManager.state`).
     @ViewBuilder
@@ -100,6 +123,14 @@ struct STTSettingsView: View {
                     }
                 }
             }
+            // Disclose the approximate download size and the network requirement BEFORE the download
+            // starts, as a subtle caption. The size is formatted from the existing
+            // `ModelManager.estimatedDownloadBytes` estimate (never hardcoded) via the same
+            // `ByteCountFormatter` used for the live speed readout.
+            Text(uiLanguageLocalized(format: "stt.download.sizeNote %@",
+                                     defaultValue: "~%@ · requires a network connection",
+                                     Self.speedFormatter.string(fromByteCount: viewModel.estimatedLocalModelBytes)))
+                .settingsCaption()
 
         case .downloading(let progress, let speedBytesPerSec):
             LabeledContent("stt.downloadStatus") {

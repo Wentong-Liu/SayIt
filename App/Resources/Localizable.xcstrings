@@ -882,6 +882,42 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Right ⌥" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "右⌥" } }
       }
+    },
+    "polish.apiKeyMissing" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No API key — polish will be skipped" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "未设置 API 密钥 — 将跳过润色" } }
+      }
+    },
+    "polish.apiKeySet" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "API key set" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已设置 API 密钥" } }
+      }
+    },
+    "polish.setupWarning.apiKey" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Polish is on but no API key is set — add one, or it will be skipped." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "润色已开启，但尚未设置 API 密钥 — 请添加，否则将跳过润色。" } }
+      }
+    },
+    "polish.setupWarning.signIn" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Polish is on but you’re not signed in to ChatGPT — sign in, or it will be skipped." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "润色已开启，但尚未登录 ChatGPT — 请登录，否则将跳过润色。" } }
+      }
+    },
+    "stt.download.sizeNote %@" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "~%@ · requires a network connection" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "~%@ · 需要联网下载" } }
+      }
+    },
+    "stt.setupCTA.download" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Download the local model to start dictating." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "下载本地模型后即可开始听写。" } }
+      }
     }
   },
   "version" : "1.0"
