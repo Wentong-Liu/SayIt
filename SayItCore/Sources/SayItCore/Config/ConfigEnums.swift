@@ -162,8 +162,8 @@ public enum ProviderKind: String, CaseIterable, Identifiable, Sendable {
 
     public var id: String { rawValue }
 
-    /// Default Provider: OpenAI.
-    public static let `default`: ProviderKind = .openAI
+    /// Default Provider: ChatGPT (Codex login).
+    public static let `default`: ProviderKind = .chatGPT
 
     /// Display name for interpolation: brand names are returned verbatim (identical across both languages), ChatGPT drops the login suffix persisted in `rawValue`.
     ///

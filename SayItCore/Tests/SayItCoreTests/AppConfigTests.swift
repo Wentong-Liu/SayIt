@@ -35,8 +35,8 @@ final class AppConfigTests: XCTestCase {
         XCTAssertTrue(config.polishEnabled)
         XCTAssertTrue(config.soundCuesEnabled)
         XCTAssertEqual(config.polishStyle, .smart)
-        XCTAssertEqual(config.providerKind, .openAI)
-        XCTAssertEqual(config.model, ProviderKind.openAI.defaultModel)
+        XCTAssertEqual(config.providerKind, .chatGPT)
+        XCTAssertEqual(config.model, ProviderKind.chatGPT.defaultModel)
         XCTAssertEqual(config.language, "auto")
     }
 
@@ -258,7 +258,7 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(fresh.interactionMode, .singleTap)
         XCTAssertEqual(fresh.sttMode, .local)
         XCTAssertEqual(fresh.polishStyle, .smart)
-        XCTAssertEqual(fresh.providerKind, .openAI)
+        XCTAssertEqual(fresh.providerKind, .chatGPT)
     }
 
     // MARK: Change notification
@@ -299,6 +299,15 @@ final class ConfigEnumTests: XCTestCase {
 
     func testSTTModeDefault() {
         XCTAssertEqual(STTMode.default, .local)
+    }
+
+    /// A fresh install defaults polish to ChatGPT (Codex login), the product's intended polish path:
+    /// it works straight after Codex OAuth login with an empty API-key Keychain, whereas an OpenAI
+    /// BYO-key default would fail every first polish with missingAPIKey. The default model is the
+    /// current frontier GPT-5.5 (a valid option, so the AppConfig clamp yields a usable model).
+    func testProviderKindDefault() {
+        XCTAssertEqual(ProviderKind.default, .chatGPT)
+        XCTAssertEqual(ProviderKind.default.defaultModel, "gpt-5.5")
     }
 
     func testPolishStyleHasAllExpectedCases() {

@@ -129,7 +129,7 @@ public final class AppConfig {
 
     // MARK: Polish Provider / model
 
-    /// The Provider used for polish. Defaults to OpenAI. Persists `rawValue`, unknown values silently fall back.
+    /// The Provider used for polish. Defaults to ChatGPT (Codex login). Persists `rawValue`, unknown values silently fall back.
     public var providerKind: ProviderKind {
         get { enumValue(Key.providerKind, default: .default) }
         set { setEnum(newValue, forKey: Key.providerKind) }
