@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Uses the ChatGPT(Codex) OAuth token to call codex/responses (Responses API + SSE).
 /// Maps [LLMMessage] to instructions (system) + input (the rest), streamingly accumulating output_text.delta.
@@ -17,6 +18,10 @@ public struct CodexResponsesProvider: LLMProvider {
     private static let maxStreamSeconds: TimeInterval = 90
     /// The data prefix of an SSE line (shared by prefix-checking and prefix-stripping, avoiding writing the same string twice).
     private static let dataPrefix = "data:"
+    /// Observability-only logger for polish failures (HTTP non-2xx / stream timeout / stream-failed event).
+    /// `nonisolated static` so it is reachable from the static `readStream` and the `@Sendable` task-group closures.
+    /// NEVER interpolate the bearer token / Authorization header here -- only server-side status codes and truncated error bodies are logged.
+    private nonisolated static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "polish")
 
     public init(accessToken: String, accountId: String, model: String,
                 userAgent: String = ChatGPTOAuth.defaultUserAgent, session: URLSession = .shared) {
@@ -66,6 +71,11 @@ public struct CodexResponsesProvider: LLMProvider {
     /// The text field: {"verbosity":"low"}.
     private struct TextOption: Encodable { let verbosity: String }
 
+    /// The reasoning field: {"effort":"none"}.
+    /// Polish is trivial text cleanup needing no reasoning; "none" turns reasoning fully off for maximum speed
+    /// (GPT-5.5 otherwise defaults to "xhigh"). Valid effort values: none/low/medium/high/xhigh.
+    private struct ReasoningOption: Encodable { let effort: String }
+
     /// The Responses API request body: instructions (system prompt) + input (message sequence) + streaming/tool toggles, with type-safe keys.
     private struct RequestBody: Encodable {
         let model: String
@@ -74,6 +84,7 @@ public struct CodexResponsesProvider: LLMProvider {
         let instructions: String
         let input: [InputMessage]
         let text: TextOption
+        let reasoning: ReasoningOption
         let include: [String]
         let tool_choice: String
         let parallel_tool_calls: Bool
@@ -97,6 +108,7 @@ public struct CodexResponsesProvider: LLMProvider {
             instructions: system,
             input: input,
             text: TextOption(verbosity: "low"),
+            reasoning: ReasoningOption(effort: "none"),
             include: ["reasoning.encrypted_content"],
             tool_choice: "auto",
             parallel_tool_calls: true)
@@ -129,7 +141,11 @@ public struct CodexResponsesProvider: LLMProvider {
             // Read all the remaining body for error reporting (joined by newline, preserving each line's boundary).
             var errLines: [String] = []
             for try await line in bytes.lines { errLines.append(line) }
-            try HTTPResponseValidator.throwIfHTTPError(http, body: errLines.joined(separator: "\n"))
+            let body = errLines.joined(separator: "\n")
+            // Observability: surface the HTTP status + a truncated server error body (e.g. a 400 rejecting effort="none").
+            // The bearer token lives only in a request header and is never interpolated here.
+            Self.log.error("polish HTTP \(http.statusCode, privacy: .public): \(String(body.prefix(500)), privacy: .public)")
+            try HTTPResponseValidator.throwIfHTTPError(http, body: body)
         }
 
         // Stream-level timeout: the old implementation used "compare systemUptime each time a line enters the loop" for the timeout; when upstream half-opens and hangs,
@@ -143,7 +159,9 @@ public struct CodexResponsesProvider: LLMProvider {
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(Self.maxStreamSeconds * 1_000_000_000))
-                throw ProviderError.streamFailed(body: "stream timed out after \(Int(Self.maxStreamSeconds))s")
+                let msg = "stream timed out after \(Int(Self.maxStreamSeconds))s"
+                Self.log.error("polish stream timeout: \(msg, privacy: .public)")
+                throw ProviderError.streamFailed(body: msg)
             }
             // Whichever finishes first wins: the read stream returns text successfully -> cancel the timer; the timer fires first -> its throw propagates up and cancels the read stream.
             let result = try await group.next()!
@@ -169,6 +187,8 @@ public struct CodexResponsesProvider: LLMProvider {
             case "response.completed", "response.done", "response.incomplete":
                 return text
             case "error", "response.failed":
+                // No HTTP status available at the SSE layer -- log the truncated payload only (the server's error detail).
+                Self.log.error("polish stream failed: \(String(payload.prefix(500)), privacy: .public)")
                 throw ProviderError.streamFailed(body: payload)
             default:
                 continue
