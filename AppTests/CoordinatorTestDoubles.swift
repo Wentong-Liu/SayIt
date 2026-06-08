@@ -214,6 +214,14 @@ final class FakeFocusedTextReader: FocusedTextReading {
     }
 }
 
+/// A no-op sound-cue player for the coordinator tests: satisfies ``SoundCuePlaying`` while rendering ZERO audio,
+/// so driven `_test_start()`/`_test_stop()` never emit an audible chime. Reuses the existing ``SoundCuePlaying``
+/// protocol (does not redeclare it). Production keeps using the real ``SoundCuePlayer`` via the init default.
+@MainActor
+final class SilentSoundCues: SoundCuePlaying {
+    func play(_ cue: SoundCue) {}
+}
+
 /// A controllable fake injector: records the injected text and returns success/failure per the preset.
 final class FakeTextInjector: TextInjecting, @unchecked Sendable {
     private let lock = NSLock()

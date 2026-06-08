@@ -38,8 +38,16 @@ public final class RecordingPanelController {
     private let model = RecordingPanelModel()
     /// The anchor used for this display: nil means lower-center of the screen, non-nil means a cursor point (AppKit global coordinates).
     private var anchorCursor: CGPoint?
+    /// When true, the controller updates its observable model (state/level) but never builds, orders, or destroys an
+    /// AppKit panel. Used ONLY by headless tests so the suite is windowless; production always uses the default `false`,
+    /// so ``shared`` and every default `init()` caller keep their exact AppKit behavior.
+    private let headless: Bool
 
-    public init() {}
+    /// - Parameter headless: when true, suppresses all NSPanel creation/ordering (test-only); defaults to false so
+    ///   production (``shared`` and `RecordingPanelController()`) is byte-identical to before.
+    public init(headless: Bool = false) {
+        self.headless = headless
+    }
 
     // MARK: - Public API
 
@@ -52,6 +60,7 @@ public final class RecordingPanelController {
         guard state.isVisible else { hide(); return }
         anchorCursor = cursorPoint
         model.state = state
+        guard !headless else { return }   // headless tests: keep model.state real, skip the window
         if panel == nil {
             buildPanel()
         }
@@ -63,6 +72,7 @@ public final class RecordingPanelController {
     public func update(state: RecordingState) {
         guard state.isVisible else { hide(); return }
         model.state = state
+        guard !headless else { return }   // headless tests: keep model.state real, skip the window
         if panel == nil {
             show(state: state)
         } else {
@@ -82,6 +92,7 @@ public final class RecordingPanelController {
     /// Hides and destroys the panel.
     public func hide() {
         model.state = .idle
+        guard !headless else { return }   // headless tests: panel is always nil here anyway; skip AppKit
         panel?.orderOut(nil)
         panel?.close()
         panel = nil

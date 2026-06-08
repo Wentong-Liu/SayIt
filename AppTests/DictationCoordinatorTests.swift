@@ -5,8 +5,9 @@ import XCTest
 /// Unit test for `DictationCoordinator`'s orchestration logic: exercises the main branches with a Fake recorder/injector/transcriber.
 ///
 /// The coordinator is driven by the hotkey event stream, and real events depend on NSEvent global monitoring, so here its `_test_*` entry points
-/// directly drive the same private handlers and await the internal tasks, guaranteeing determinism. The HUD uses a separate instance of the real `RecordingPanelController`
-/// (no frontmost focus touched, no side effects).
+/// directly drive the same private handlers and await the internal tasks, guaranteeing determinism. The suite is hermetically silent and windowless:
+/// the HUD/suggestion panels are constructed `headless: true` (model/state updated, but no NSPanel ordered on screen) and a no-op `SilentSoundCues`
+/// is injected (no audible chime), so running the tests touches no frontmost focus, opens no window, and plays no sound.
 @MainActor
 final class DictationCoordinatorTests: XCTestCase {
 
@@ -16,6 +17,7 @@ final class DictationCoordinatorTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         let config = AppConfig(defaults: defaults)
         config.polishEnabled = polishEnabled
+        config.soundCuesEnabled = false   // belt-and-suspenders: silence the chime gate in addition to the no-op player
         return config
     }
 
@@ -26,7 +28,7 @@ final class DictationCoordinatorTests: XCTestCase {
         config: AppConfig,
         recorder: FakeAudioRecorder,
         injector: FakeTextInjector,
-        panel: RecordingPanelController = RecordingPanelController(),
+        panel: RecordingPanelController = RecordingPanelController(headless: true),
         dictionaryStore: DictionaryStore? = nil,
         modelReadiness: @escaping (String) -> Bool = { _ in true },
         transcribeTimeout: Duration = .seconds(5),
@@ -54,9 +56,10 @@ final class DictationCoordinatorTests: XCTestCase {
             accessibilityGate: { true },
             modelReadiness: modelReadiness,
             transcribeTimeout: transcribeTimeout,
+            soundCues: SilentSoundCues(),
             cloudKeyReader: cloudKeyReader,
             axReader: axReader ?? FakeFocusedTextReader(single: nil),
-            suggestionPanel: suggestionPanel ?? SuggestionPanelController(autoDismissAfter: .seconds(60)),
+            suggestionPanel: suggestionPanel ?? SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true),
             learnFreshness: learnFreshness,
             learnDebounce: learnDebounce
         )
@@ -818,7 +821,7 @@ final class DictationCoordinatorTests: XCTestCase {
             config: config,
             hotkeyManager: hotkeyManager,
             recorder: recorder,
-            panel: RecordingPanelController(),
+            panel: RecordingPanelController(headless: true),
             injector: injector,
             dictionaryStore: DictionaryStore(
                 baseDirectory: FileManager.default.temporaryDirectory
@@ -826,7 +829,9 @@ final class DictationCoordinatorTests: XCTestCase {
             transcriberFactory: { FakeTranscriber(text: "x") },
             accessibilityGate: { true },
             modelReadiness: { _ in true },
-            transcribeTimeout: .seconds(5)
+            transcribeTimeout: .seconds(5),
+            soundCues: SilentSoundCues(),
+            suggestionPanel: SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         )
     }
 
@@ -859,7 +864,7 @@ final class DictationCoordinatorTests: XCTestCase {
         let config = makeConfig()
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector()
-        let panel = RecordingPanelController()
+        let panel = RecordingPanelController(headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector, panel: panel
         ) {
@@ -1051,7 +1056,7 @@ final class DictationCoordinatorTests: XCTestCase {
             FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),   // arm baseline
             FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),  // edited
         ])
-        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
             dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel
@@ -1092,7 +1097,7 @@ final class DictationCoordinatorTests: XCTestCase {
             FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),
             FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),
         ])
-        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
             dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel
@@ -1128,7 +1133,7 @@ final class DictationCoordinatorTests: XCTestCase {
             FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),
             FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),
         ])
-        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
             dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel
@@ -1156,7 +1161,7 @@ final class DictationCoordinatorTests: XCTestCase {
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
         let reader = FakeFocusedTextReader(single: nil)  // unreadable everywhere
-        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
             axReader: reader, suggestionPanel: suggestionPanel
@@ -1183,7 +1188,7 @@ final class DictationCoordinatorTests: XCTestCase {
             FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),
             nil,
         ])
-        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
             axReader: reader, suggestionPanel: suggestionPanel
@@ -1209,7 +1214,7 @@ final class DictationCoordinatorTests: XCTestCase {
         let reader = FakeFocusedTextReader(results: [
             FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),
         ])
-        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
             axReader: reader, suggestionPanel: suggestionPanel
@@ -1237,7 +1242,7 @@ final class DictationCoordinatorTests: XCTestCase {
             FocusedText(value: "the cat sat", selectedLocation: 11, selectedLength: 0),  // arm baseline
             FocusedText(value: "the dog sat", selectedLocation: 11, selectedLength: 0),  // edited (common->common)
         ])
-        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
             axReader: reader, suggestionPanel: suggestionPanel

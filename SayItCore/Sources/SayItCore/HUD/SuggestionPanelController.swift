@@ -35,14 +35,25 @@ public final class SuggestionPanelController {
     /// How long the suggestion stays up before auto-dismissing (treated as an implicit Dismiss). Injectable for tests.
     private let autoDismissAfter: Duration
 
+    /// When true, the controller wires up the model + closures + auto-dismiss task as usual but never builds, orders, or
+    /// destroys an AppKit panel. Used ONLY by headless tests so the suite is windowless; production always uses the
+    /// default `false`, so ``shared`` and every default `init(autoDismissAfter:)` caller keep their exact AppKit behavior.
+    private let headless: Bool
+
     private var panel: NSPanel?
     private let model = SuggestionPanelModel()
     /// The in-flight auto-dismiss task; cancelled+replaced on each ``show(...)`` and on ``hide()``.
     private var autoDismissTask: Task<Void, Never>?
+    /// Tracks "is a suggestion currently shown" independently of `panel` so ``_test_isShown`` stays correct in headless
+    /// tests (where `panel` is always nil). In production `panel != nil` and this flag agree.
+    private var shownForTest = false
 
-    /// - Parameter autoDismissAfter: how long the suggestion stays visible before auto-dismissing; defaults to 6s. Tests pass a tiny value.
-    public init(autoDismissAfter: Duration = .seconds(6)) {
+    /// - Parameters:
+    ///   - autoDismissAfter: how long the suggestion stays visible before auto-dismissing; defaults to 6s. Tests pass a tiny value.
+    ///   - headless: when true, suppresses all NSPanel creation/ordering (test-only); defaults to false so production is byte-identical.
+    public init(autoDismissAfter: Duration = .seconds(6), headless: Bool = false) {
         self.autoDismissAfter = autoDismissAfter
+        self.headless = headless
     }
 
     // MARK: - Public API
@@ -81,12 +92,15 @@ public final class SuggestionPanelController {
         model.corrected = corrected
         model.onAccept = accept
         model.onDismiss = dismiss
+        shownForTest = true
 
-        if panel == nil {
-            buildPanel()
+        if !headless {   // headless tests: keep model + closures wired, skip the clickable window
+            if panel == nil {
+                buildPanel()
+            }
+            relayout()
+            panel?.orderFrontRegardless()
         }
-        relayout()
-        panel?.orderFrontRegardless()
 
         // Auto-dismiss after the window: treated exactly like an explicit Dismiss (clears the caller's record).
         autoDismissTask = Task { [weak self, autoDismissAfter] in
@@ -101,6 +115,8 @@ public final class SuggestionPanelController {
     public func hide() {
         autoDismissTask?.cancel()
         autoDismissTask = nil
+        shownForTest = false
+        guard !headless else { return }   // headless tests: panel is always nil here anyway; skip AppKit
         panel?.orderOut(nil)
         panel?.close()
         panel = nil
@@ -109,7 +125,9 @@ public final class SuggestionPanelController {
     // MARK: - Test seams
 
     /// Whether the suggestion panel is currently shown. For tests/diagnostics.
-    public var _test_isShown: Bool { panel != nil }
+    /// Uses `shownForTest` so it is correct in headless tests (where `panel` is always nil); in production the
+    /// `panel != nil` term agrees with the flag.
+    public var _test_isShown: Bool { panel != nil || shownForTest }
 
     /// Directly invokes the current suggestion's Accept action (as if the user clicked Add), since the SwiftUI buttons
     /// cannot be clicked in a headless unit test. No-op when nothing is shown.
