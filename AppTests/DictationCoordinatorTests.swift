@@ -637,6 +637,89 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["云端不被门禁拦"], "cloud mode should transcribe and inject normally")
     }
 
+    /// Regression guard (double-download preparing-model hang): an IN-PROGRESS download must be treated as NOT ready for use
+    /// even when `modelReadiness` (the disk-only ``ModelManager/isDownloaded`` check) already returns true. On a fresh first
+    /// launch the load-critical CoreML weights land on disk (so `isDownloaded` flips true) BEFORE ``ModelManager/download``'s
+    /// task fully resolves to `.downloaded` — the window where the old gate (which checked only `!modelReadiness`) wrongly
+    /// passed, started recording, and entered the stuck `.preparingModel` HUD while a SECOND Hub snapshot stalled behind the
+    /// first. The pre-flight gate must now block: never record, never enter `.preparingModel`, and surface the existing
+    /// "downloading… NN%" message. If this test ever records or shows `.preparingModel`, the hang has regressed.
+    func testHandleStartGateBlocksWhileModelStillDownloadingEvenIfReadinessTrue() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        let panel = RecordingPanelController(headless: true)
+        var transcriberMade = false
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in true },  // disk weights already present (isDownloaded true)…
+            modelState: { .downloading(progress: 0.73, speedBytesPerSec: nil) }  // …but the download task hasn't finished
+        ) {
+            transcriberMade = true
+            return FakeTranscriber(text: "下载中不该被录到")
+        }
+
+        await coordinator._test_start()
+
+        // The pre-flight gate must surface a non-success (.error) toast — never flip to .listening, never .preparingModel.
+        if case .error = panel.currentState {} else {
+            XCTFail("an in-progress download must block at the pre-flight gate with an .error toast, got \(panel.currentState)")
+        }
+        XCTAssertNotEqual(panel.currentState, .processing(progress: 0.0, phase: .preparingModel),
+                          "dictating mid-download must NEVER enter the stuck 'preparing model' HUD")
+        // The surfaced copy is the existing truthful downloading message with the integer percent.
+        XCTAssertTrue(panel.currentState.displayText.contains("73%"),
+                      "the downloading copy must include the integer percent; got: \(panel.currentState.displayText)")
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 0, "an in-progress download must block recording entirely — recorder.start must never be called")
+        XCTAssertFalse(coordinator._test_isRecording, "must not be marked recording")
+
+        // A subsequent stop (e.g. the second tap of single-tap-toggle) injects nothing and never constructs the transcriber.
+        await coordinator._test_stop()
+        XCTAssertFalse(transcriberMade, "must never construct/call the transcriber while the model is still downloading")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "nothing should be injected while the model is still downloading")
+    }
+
+    /// The post-record backstop (runPipeline) must ALSO treat an in-progress download as not-ready: if a download is still
+    /// running by the time the pipeline checks (a corner the once-at-start pre-flight gate cannot catch — readiness true at
+    /// start, download still live at stop), the backstop converges WITHOUT constructing the transcriber and WITHOUT entering
+    /// `.preparingModel`, so the second-downloader race can never resurface there either.
+    func testRunPipelineBackstopConvergesWhileModelStillDownloading() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        // Downloading state visible only AFTER recording has started: pre-flight gate passes (not downloading at start),
+        // the runPipeline backstop sees .downloading and converges. A mutable box, flipped explicitly between start and
+        // stop, drives that transition deterministically (no reliance on internal modelState() call ordering).
+        let modelStateBox = MutableModelStateBox(.downloaded)
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            modelReadiness: { _ in true },  // disk weights present throughout
+            modelState: { modelStateBox.value }
+        ) {
+            FakeTranscriber(text: "不应被转写")
+        }
+
+        await coordinator._test_start()
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 1, "the pre-flight gate passes (not downloading at start), so recording starts")
+        // The download is still in flight by the time the pipeline rechecks: flip the live state to .downloading now.
+        modelStateBox.value = .downloading(progress: 0.9, speedBytesPerSec: nil)
+        await coordinator._test_stop()
+
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "the backstop must inject nothing while the model is still downloading")
+        XCTAssertFalse(coordinator._test_isRecording, "should converge to not-recording")
+        let stopCount = await recorder.stopCount
+        XCTAssertEqual(stopCount, 1, "recording is stopped to release the device")
+    }
+
     // MARK: - Truthful model-not-ready copy: downloading NN% vs no-model-yet, chosen by ModelManager state
 
     /// When the model IS downloading, the not-ready copy must be the truthful "downloading… NN%" message (with the integer
@@ -2082,6 +2165,15 @@ private final class ReadinessCallCounter {
         defer { calls += 1 }
         return calls == 0
     }
+}
+
+/// A tiny mutable holder for ``ModelManager/State``: lets a test flip the live model state between coordinator calls (e.g.
+/// `.downloaded` at handleStart so recording begins, then `.downloading(...)` by the time runPipeline rechecks), modelling
+/// a download that is still in flight when the pipeline reaches its backstop.
+@MainActor
+private final class MutableModelStateBox {
+    var value: ModelManager.State
+    init(_ value: ModelManager.State) { self.value = value }
 }
 
 /// A never-returning transcriber: used to verify the hard timeout protection (its transcribe sleeps until cancelled).
