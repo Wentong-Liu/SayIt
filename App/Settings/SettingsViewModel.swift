@@ -25,10 +25,12 @@ final class SettingsViewModel {
 
     /// - Parameters:
     ///   - config: the injected config; defaults to `.shared`, unit tests/previews can pass an isolated instance.
-    ///   - modelManager: the injected local model manager; defaults to creating a new one per the current `localModel`.
+    ///   - modelManager: the injected local model manager; defaults to the process-shared ``ModelManager/shared``
+    ///     so the Settings "Download" button, the first-run auto-download, and the menu-bar indicator all
+    ///     drive/observe the SAME state object. Tests pass an isolated instance to stay sandboxed.
     init(config: AppConfig = .shared, modelManager: ModelManager? = nil) {
         self.config = config
-        self.modelManager = modelManager ?? ModelManager(model: config.localModel)
+        self.modelManager = modelManager ?? ModelManager.shared
         // Initialize every observable storage mirror to the current persisted value (write-through to config afterwards).
         // See each property's note below: using stored mirrors instead of computed forwards is what lets `@Observable`
         // track the write, invalidate the SwiftUI view instantly, and move the Picker's selection right away (no stale value).

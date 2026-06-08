@@ -23,6 +23,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DictationStatus.shared.phase = phase
         }
         DictationCoordinator.shared.start()
+
+        // Watch the shared model manager so a finished download surfaces a one-time "ready" banner.
+        // Idempotent and edge-triggered, so an upgrading user (model already present) never gets one.
+        ModelDownloadNotifier.shared.start()
+
+        // First-launch guidance, exactly once (gated on the persisted flag). Set the flag FIRST so the
+        // body is idempotent even if it returns early, then run the guidance.
+        let config = AppConfig.shared
+        if !config.hasCompletedFirstRun {
+            config.hasCompletedFirstRun = true
+            runFirstRunGuidance(config: config)
+        }
+    }
+
+    /// One-time first-launch guidance for a brand-new install: auto-download the local model (only when
+    /// it would actually help) and open Settings on the Speech tab so the user sees the progress.
+    ///
+    /// Reuses the EXACT ``ModelManager/download()`` entry point the Settings "Download" button calls (via
+    /// the process-shared ``ModelManager/shared``), so the first-run download, the Settings button, and
+    /// the menu-bar indicator all drive/observe one state object — no duplicated download logic. A
+    /// no-network / failed download lands on the existing `.failed` + retry path (no crash). The download
+    /// is gated on ``ModelManager/shouldAutoDownloadOnFirstRun(firstRun:sttMode:isDownloaded:)`` so an
+    /// upgrading user (model already present) or a cloud-mode user gets no spurious download.
+    private func runFirstRunGuidance(config: AppConfig) {
+        if ModelManager.shouldAutoDownloadOnFirstRun(
+            firstRun: true,
+            sttMode: config.sttMode,
+            isDownloaded: ModelManager.isDownloaded(model: config.localModel)
+        ) {
+            Task { await ModelManager.shared.download() }
+        }
+
+        // Open Settings on the Speech tab (not the default General) so the local-model section and the
+        // download progress are immediately visible. Reuses the standard macOS Settings-open action that
+        // backs the menu's `openSettings()`; SettingsView reads the requested tab in `.onAppear`.
+        SettingsRouter.shared.pendingTab = .stt
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

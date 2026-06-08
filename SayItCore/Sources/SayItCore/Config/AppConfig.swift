@@ -46,6 +46,7 @@ public final class AppConfig {
         static let language = "language"
         static let uiLanguage = "ui.language"
         static let inputDeviceUID = "audio.inputDeviceUID"
+        static let hasCompletedFirstRun = "firstRun.completed"
     }
 
     /// The persisted UI language, read **nonisolated** straight from `UserDefaults` (the store is
@@ -169,6 +170,21 @@ public final class AppConfig {
         set { setEnum(newValue, forKey: Key.uiLanguage) }
     }
 
+    // MARK: First run
+
+    /// Whether the one-time first-run guidance (auto-download the local model, open Settings on the
+    /// Speech tab) has already run. Defaults to `false`, so only a brand-new install triggers it; the
+    /// startup path sets it `true` after firing the first-run actions so subsequent launches do NOT
+    /// re-trigger them (idempotent). Mirrors the ``polishEnabled`` bool-key pattern.
+    ///
+    /// An upgrading user whose model is already present gets no spurious download or Settings popup:
+    /// the first-run actions are additionally gated on `sttMode == .local && !isDownloaded`, which is
+    /// already false for them.
+    public var hasCompletedFirstRun: Bool {
+        get { boolValue(Key.hasCompletedFirstRun, default: Self.defaultHasCompletedFirstRun) }
+        set { setBool(newValue, forKey: Key.hasCompletedFirstRun) }
+    }
+
     // MARK: Audio input device
 
     /// The selected microphone input device UID; `nil` means follow the system default input device.
@@ -187,6 +203,7 @@ public final class AppConfig {
     static let defaultPolishEnabled = true
     static let defaultSoundCuesEnabled = true
     static let defaultLanguage = "auto"
+    static let defaultHasCompletedFirstRun = false
 
     // MARK: Generic read/write + change notification
 

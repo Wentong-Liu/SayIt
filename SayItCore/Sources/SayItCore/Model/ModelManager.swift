@@ -81,11 +81,36 @@ public final class ModelManager {
     /// Exponential moving average of bytes/sec; `nil` until the first measurable sample.
     @ObservationIgnored private var smoothedBytesPerSec: Double?
 
+    /// The process-shared instance, mirroring the existing ``DictationCoordinator/shared`` /
+    /// ``DictationStatus/shared`` / ``AppConfig/shared`` singleton pattern used across the app.
+    ///
+    /// Why a singleton: the first-run auto-download (``AppDelegate``), the Settings "Download" button
+    /// (``SettingsViewModel``), the menu-bar progress/badge, and the completion notification must all
+    /// observe and drive the SAME `@Observable` ``state`` — otherwise they would race separate managers
+    /// and the menu bar would show stale state. Tracks ``AppConfig/shared``'s `localModel` (always
+    /// `"large-v3-turbo"`). `SettingsViewModel` keeps its injectable manager param so tests stay isolated.
+    public static let shared = ModelManager(model: AppConfig.shared.localModel)
+
     /// - Parameter model: the initially tracked model friendly name; defaults to `"large-v3-turbo"`, consistent with ``AppConfig/localModel``'s
     ///   default and ``WhisperKitTranscriber``'s default.
     public init(model: String = "large-v3-turbo") {
         self.model = model
         self.state = Self.isDownloaded(model: model) ? .downloaded : .notDownloaded
+    }
+
+    /// Pure predicate for "should the first-run guidance start a local-model download?".
+    ///
+    /// True only when it is the first run AND the engine is local AND the model is not yet on disk.
+    /// An upgrading user with the model already present (`isDownloaded == true`), a cloud-mode user, or
+    /// a non-first-run launch all return `false` — so a fresh install is guided exactly once and no one
+    /// else gets a spurious download. Extracted as a `nonisolated static` so it is unit-testable without
+    /// any GUI / network.
+    nonisolated public static func shouldAutoDownloadOnFirstRun(
+        firstRun: Bool,
+        sttMode: STTMode,
+        isDownloaded: Bool
+    ) -> Bool {
+        firstRun && sttMode == .local && !isDownloaded
     }
 
     // MARK: - Download root directory (single source of truth)

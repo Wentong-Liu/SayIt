@@ -38,6 +38,7 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(config.providerKind, .chatGPT)
         XCTAssertEqual(config.model, ProviderKind.chatGPT.defaultModel)
         XCTAssertEqual(config.language, "auto")
+        XCTAssertFalse(config.hasCompletedFirstRun)
     }
 
     // MARK: Read/write round-trip (enums)
@@ -94,6 +95,28 @@ final class AppConfigTests: XCTestCase {
     func testSoundCuesEnabledChangePostsNotification() {
         let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config)
         config.soundCuesEnabled = false
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    // MARK: First-run flag
+
+    /// A brand-new store has not completed first run, so the one-time guidance can fire.
+    func testHasCompletedFirstRunDefaultsFalse() {
+        XCTAssertFalse(config.hasCompletedFirstRun)
+        XCTAssertFalse(AppConfig(defaults: defaults).hasCompletedFirstRun)
+    }
+
+    /// Once the startup path flips it true it persists, so subsequent launches do not re-trigger.
+    func testHasCompletedFirstRunRoundTripAndPersists() {
+        config.hasCompletedFirstRun = true
+        XCTAssertTrue(config.hasCompletedFirstRun)
+        // Cross-instance persistence: a fresh AppConfig reading the same store still sees it true.
+        XCTAssertTrue(AppConfig(defaults: defaults).hasCompletedFirstRun)
+    }
+
+    func testHasCompletedFirstRunChangePostsNotification() {
+        let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config)
+        config.hasCompletedFirstRun = true
         wait(for: [exp], timeout: 1.0)
     }
 

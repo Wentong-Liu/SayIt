@@ -344,6 +344,20 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "登录超时，请重试" } }
       }
     },
+    "menu.modelDownloading %d" : {
+      "comment" : "Menu-bar status line shown while the local model is downloading; %d is the percent complete.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Downloading model… %d%%" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在下载模型…… %d%%" } }
+      }
+    },
+    "menu.modelNotReady" : {
+      "comment" : "Menu-bar status line shown when the local engine is selected but its model is not downloaded yet.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Setup needed — local model not downloaded" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要设置 — 本地模型尚未下载" } }
+      }
+    },
     "menu.quit" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Quit SayIt" } },
@@ -360,6 +374,20 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "large-v3-turbo (recommended)" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "large-v3-turbo（推荐）" } }
+      }
+    },
+    "notif.modelReady.body" : {
+      "comment" : "Body of the local notification posted when the local model finishes downloading.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The local model is installed — dictation now runs offline." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型已安装 — 听写现在可离线运行。" } }
+      }
+    },
+    "notif.modelReady.title" : {
+      "comment" : "Title of the local notification posted when the local model finishes downloading.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "SayIt is ready" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "SayIt 已就绪" } }
       }
     },
     "perm.accessibility" : {
@@ -679,8 +707,8 @@
     },
     "stt.footer.local" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local models run offline, completely free; the model downloads on first use." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型离线运行，完全免费，首次使用会下载模型。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The model (~1.6 GB) downloads automatically on first launch, then runs offline — completely free." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型约 1.6 GB，首次启动时自动下载，之后离线运行，完全免费。" } }
       }
     },
     "stt.model" : {
