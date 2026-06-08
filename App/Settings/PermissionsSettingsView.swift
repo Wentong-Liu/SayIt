@@ -12,8 +12,8 @@ struct PermissionsSettingsView: View {
         Form {
             Section {
                 permissionRow(
-                    title: String(localized: "perm.microphone", defaultValue: "Microphone"),
-                    detail: String(localized: "perm.microphone.detail", defaultValue: "Records your voice for transcription."),
+                    title: uiLanguageLocalized("perm.microphone", defaultValue: "Microphone"),
+                    detail: uiLanguageLocalized("perm.microphone.detail", defaultValue: "Records your voice for transcription."),
                     granted: viewModel.microphoneStatus == .authorized,
                     statusText: microphoneStatusText,
                     actionTitle: microphoneActionTitle
@@ -22,14 +22,14 @@ struct PermissionsSettingsView: View {
                 }
 
                 permissionRow(
-                    title: String(localized: "perm.accessibility", defaultValue: "Accessibility"),
-                    detail: String(localized: "perm.accessibility.detail",
-                                   defaultValue: "Listens for the global trigger key and inserts text into the current app."),
+                    title: uiLanguageLocalized("perm.accessibility", defaultValue: "Accessibility"),
+                    detail: uiLanguageLocalized("perm.accessibility.detail",
+                                                defaultValue: "Listens for the global trigger key and inserts text into the current app."),
                     granted: viewModel.accessibilityTrusted,
                     statusText: viewModel.accessibilityTrusted
-                        ? String(localized: "perm.status.granted", defaultValue: "Granted")
-                        : String(localized: "perm.status.notGranted", defaultValue: "Not granted"),
-                    actionTitle: String(localized: "perm.openSettings", defaultValue: "Open System Settings")
+                        ? uiLanguageLocalized("perm.status.granted", defaultValue: "Granted")
+                        : uiLanguageLocalized("perm.status.notGranted", defaultValue: "Not granted"),
+                    actionTitle: uiLanguageLocalized("perm.openSettings", defaultValue: "Open System Settings")
                 ) {
                     viewModel.openAccessibilitySettings()
                 }
@@ -51,18 +51,18 @@ struct PermissionsSettingsView: View {
 
     private var microphoneStatusText: String {
         switch viewModel.microphoneStatus {
-        case .authorized:    return String(localized: "perm.status.granted", defaultValue: "Granted")
-        case .denied:        return String(localized: "perm.status.denied", defaultValue: "Denied")
-        case .restricted:    return String(localized: "perm.status.restricted", defaultValue: "Restricted")
-        case .notDetermined: return String(localized: "perm.status.notAsked", defaultValue: "Not asked")
+        case .authorized:    return uiLanguageLocalized("perm.status.granted", defaultValue: "Granted")
+        case .denied:        return uiLanguageLocalized("perm.status.denied", defaultValue: "Denied")
+        case .restricted:    return uiLanguageLocalized("perm.status.restricted", defaultValue: "Restricted")
+        case .notDetermined: return uiLanguageLocalized("perm.status.notAsked", defaultValue: "Not asked")
         }
     }
 
     /// When undetermined the button initiates the system prompt; otherwise it guides to System Settings.
     private var microphoneActionTitle: String {
         viewModel.microphoneStatus == .notDetermined
-            ? String(localized: "perm.requestAccess", defaultValue: "Request Access")
-            : String(localized: "perm.openSettings", defaultValue: "Open System Settings")
+            ? uiLanguageLocalized("perm.requestAccess", defaultValue: "Request Access")
+            : uiLanguageLocalized("perm.openSettings", defaultValue: "Open System Settings")
     }
 
     @ViewBuilder

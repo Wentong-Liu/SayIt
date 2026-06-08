@@ -58,10 +58,13 @@ public enum RecordingState: Equatable, Sendable {
         }
     }
 
-    /// Gets localized copy from the in-bundle `Localizable.xcstrings`; when missing it falls back to English, guaranteeing it is not blank.
+    /// Gets localized copy from the in-bundle `Localizable.xcstrings`, resolved in the app's
+    /// currently-selected UI language (``AppConfig/uiLanguage``) rather than the system locale, so the
+    /// HUD pill matches the rest of the UI and switches live with the setting (the HUD is rebuilt each
+    /// dictation, so it reads the current language at show time). Falls back safely to English when the
+    /// language's `.lproj` or the key is missing — never blank, never the bare key.
     private static func localized(_ key: String, fallback: String) -> String {
-        String(localized: String.LocalizationValue(key), bundle: .module, comment: "Recording HUD state text")
-            .nonKeyOr(fallback, key: key)
+        UILanguageLocalizer.string(key, defaultValue: fallback, bundle: .module)
     }
 
     /// Processing progress (0...1). Only `.processing` returns a carried value, others are `nil`, for the view to bind directly.
@@ -99,12 +102,5 @@ public enum RecordingState: Equatable, Sendable {
     /// hinting "taking longer than usual". Does not add an enum case / phase, keeping the type and exhaustive switch unchanged (cleanly rebasable with parallel tasks).
     public static var takingLongerMessage: String {
         localized("hud.takingLonger", fallback: "Taking longer than usual…")
-    }
-}
-
-private extension String {
-    /// When the localization key is not found, `String(localized:)` returns the key name as-is; in that case fall back to English.
-    func nonKeyOr(_ fallback: String, key: String) -> String {
-        self == key ? fallback : self
     }
 }

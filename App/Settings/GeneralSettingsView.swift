@@ -65,8 +65,8 @@ struct GeneralSettingsView: View {
 
                 HStack {
                     Button(micVM.isTesting
-                           ? String(localized: "general.stopTest")
-                           : String(localized: "general.testMic")) {
+                           ? uiLanguageLocalized("general.stopTest", defaultValue: "Stop Test")
+                           : uiLanguageLocalized("general.testMic", defaultValue: "Test Microphone")) {
                         micVM.toggleTesting()
                     }
                     MicLevelBar(level: micVM.level)
@@ -88,17 +88,20 @@ struct GeneralSettingsView: View {
     private var defaultDeviceLabel: String {
         if let uid = micVM.systemDefaultUID,
            let device = micVM.devices.first(where: { $0.uid == uid }) {
-            return String(localized: "general.systemDefault.named \(device.name)")
+            // The "System Default (%@)" wrapper follows the UI language; the interpolated
+            // macOS-provided device name is inserted verbatim (not translated).
+            return uiLanguageLocalized(format: "general.systemDefault.named %@",
+                                       defaultValue: "System Default (%@)", device.name)
         }
-        return String(localized: "general.systemDefault", defaultValue: "System Default")
+        return uiLanguageLocalized("general.systemDefault", defaultValue: "System Default")
     }
 
     private var micHint: String {
         micVM.isTesting
-            ? String(localized: "general.micHint.testing",
-                     defaultValue: "Speak into the mic — the level bar reacts to volume.")
-            : String(localized: "general.micHint.idle",
-                     defaultValue: "Tap “Test Microphone” to check the selected device has input.")
+            ? uiLanguageLocalized("general.micHint.testing",
+                                  defaultValue: "Speak into the mic — the level bar reacts to volume.")
+            : uiLanguageLocalized("general.micHint.idle",
+                                  defaultValue: "Tap “Test Microphone” to check the selected device has input.")
     }
 
     /// The localization key for the interaction-style hint copy. Returns a `LocalizedStringKey` rather than a pre-resolved `String`,

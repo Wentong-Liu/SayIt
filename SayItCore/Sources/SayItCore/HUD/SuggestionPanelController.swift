@@ -243,12 +243,12 @@ struct SuggestionPanelView: View {
         return String(format: format, model.corrected)
     }
 
-    /// Gets localized copy from the in-bundle `Localizable.xcstrings`; falls back to English when the key is missing.
+    /// Gets localized copy from the in-bundle `Localizable.xcstrings`, resolved in the app's
+    /// currently-selected UI language (``AppConfig/uiLanguage``) rather than the system locale, so the
+    /// suggestion panel matches the rest of the UI. Falls back safely to English when the language's
+    /// `.lproj` or the key is missing.
     private static func localized(_ key: String, fallback: String) -> String {
-        let value = String(localized: String.LocalizationValue(key),
-                           bundle: .module,
-                           comment: "Learn-from-edits suggestion prompt")
-        return value == key ? fallback : value
+        UILanguageLocalizer.string(key, defaultValue: fallback, bundle: .module)
     }
 }
 #endif
