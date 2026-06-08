@@ -29,11 +29,11 @@ appears right where your cursor is.
 
 Your speech is transcribed **locally on your Mac, accelerated by the Apple Neural
 Engine** — the same NPU that powers on-device AI. It's quick, and it stays quick
-no matter how long you spoke: measured on an **Apple M4 Pro (MacBook Pro)**,
-transcription runs in about **0.4 seconds** — a 9-second clip became text in under
-half a second, roughly **19× faster than real time**. Exact speed depends on your
-Mac, but the work always runs on-device, fully offline, and your audio never
-leaves your machine.
+no matter how long you spoke: measured on an **Apple M4 Pro** with the recommended
+**large-v3-turbo** model, transcription runs in about **0.4 seconds** — an
+~9-second clip became text in ~0.4 s, roughly **20× faster than real time**, and a
+short phrase finishes just as fast. Exact speed depends on your Mac, but the work
+always runs on-device, fully offline, and your audio never leaves your machine.
 
 ### ♻️ Reuses the AI subscription you already have
 
@@ -50,7 +50,7 @@ turn it off and SayIt stays 100% free and fully offline.
 
 ## How to use it
 
-1. **Hold or tap** the trigger key (right ⌘ by default).
+1. **Hold or tap** the trigger key (right ⌥ Option by default).
 2. **Speak.**
 3. **Release or tap again** — the polished text appears at your cursor.
 
