@@ -39,6 +39,14 @@ public struct OpenAICompatibleProvider: LLMProvider {
         let model: String
         let messages: [WireMessage]
         let temperature: Double
+        /// Model-aware lowest reasoning tier, so our trivial text-cleanup/extraction polish runs with as little
+        /// reasoning latency as the chosen model allows. It is Optional/model-aware because the floor is NOT
+        /// universal: gpt-5.5 supports the no-reasoning "none" tier, but the default BYO model gpt-5.4-mini and
+        /// gpt-5-mini only go down to "minimal" — sending an unsupported effort returns HTTP 400 and would make
+        /// every polish fail. Non-OpenAI providers (DeepSeek) do not accept this field at all, so it stays nil.
+        /// Auto-synthesized Encodable uses encodeIfPresent for Optionals, so a nil value is omitted from the JSON
+        /// (the DeepSeek request body stays byte-for-byte identical to before).
+        let reasoning_effort: String?
     }
     private struct ResponseBody: Decodable {
         // content is set nullable: when the model "replied but content is null/missing" it can still decode (falling back to an empty string where read),
@@ -60,8 +68,11 @@ public struct OpenAICompatibleProvider: LLMProvider {
         let wire = messages.map {
             WireMessage(role: $0.role.rawValue, content: Self.wireContent(for: $0, sendsImages: sendsImages))
         }
+        // Only OpenAI's chat/completions accepts reasoning_effort; DeepSeek (and any other provider) gets nil → omitted.
+        let reasoningEffort = config.name == "OpenAI" ? Self.lowestReasoningEffort(forModel: config.model) : nil
         req.httpBody = try JSONEncoder().encode(
-            RequestBody(model: config.model, messages: wire, temperature: LLMDefaults.temperature))
+            RequestBody(model: config.model, messages: wire, temperature: LLMDefaults.temperature,
+                        reasoning_effort: reasoningEffort))
 
         let data: Data
         let response: URLResponse
@@ -92,5 +103,14 @@ public struct OpenAICompatibleProvider: LLMProvider {
             return .parts(text: msg.content, images: parts)
         }
         return .text(msg.content)
+    }
+
+    /// Maps an OpenAI model id to the LOWEST reasoning tier that model accepts, so the polish request asks for
+    /// as little reasoning latency as possible without ever sending a value the API would reject. The floor is
+    /// model-aware: gpt-5.5 supports the new no-reasoning "none" tier, but the default BYO model gpt-5.4-mini and
+    /// gpt-5-mini (GPT-5 / GPT-5.4 era) only go down to "minimal" — they return HTTP 400 on "none", which would
+    /// make every polish fail. Substring match on "5.5" targets gpt-5.5 without matching gpt-5.4-mini / gpt-5-mini.
+    private static func lowestReasoningEffort(forModel model: String) -> String {
+        model.contains("5.5") ? "none" : "minimal"
     }
 }
