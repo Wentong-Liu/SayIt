@@ -39,17 +39,20 @@ struct DictionarySettingsView: View {
     }
 
     var body: some View {
-        Form {
+        VStack(alignment: .leading, spacing: Theme.sectionGap) {
+            header
             if dictionaryViewModel.entries.isEmpty {
                 emptyState
             } else {
                 entriesSection
             }
         }
-        .formStyle(.grouped)
-        // The add affordance lives INSIDE the pane content (the entries-section header and the empty-state button),
-        // never as a window-level `.toolbar`. In a macOS Settings `TabView` the window toolbar IS the tab-bar row, so
-        // a `.toolbar { Button("plus") }` here would surface as a stray "+" after the last tab. See `entriesSection`.
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // The add affordance lives INSIDE the pane content (the header add pill and the empty-state button),
+        // never as a window-level toolbar modifier. In the prior Settings `TabView` the window toolbar WAS the
+        // tab-bar row, so an add button there leaked a stray "+" after the last tab; keeping it in-content also
+        // suits the new sidebar shell. See `header` and `entriesSection`.
         .sheet(item: $editorContext) { context in
             switch context {
             case .add:
@@ -69,65 +72,76 @@ struct DictionarySettingsView: View {
         .onDisappear { dictionaryViewModel.stopObserving() }
     }
 
-    /// Shown when the dictionary is empty: a short hint plus an add button.
+    /// The pane header: the section title on the leading edge and the styled "+ add" pill on the trailing edge.
+    /// The add affordance lives here (in-content), never in a window toolbar.
     @ViewBuilder
-    private var emptyState: some View {
-        Section {
-            VStack(spacing: 12) {
-                Image(systemName: "character.book.closed")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.secondary)
-                Text("dictionary.empty.title")
-                    .font(.headline)
-                Text("dictionary.empty.hint")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                Button("dictionary.add") { editorContext = .add }
-                    .buttonStyle(.borderedProminent)
+    private var header: some View {
+        HStack {
+            Text("dictionary.section.entries")
+                .font(.title3.weight(.semibold))
+            Spacer()
+            Button {
+                editorContext = .add
+            } label: {
+                Label("dictionary.add", systemImage: "plus")
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .buttonStyle(PrimaryPillButtonStyle())
+            .help("dictionary.add")
         }
     }
 
-    /// The list of entries: one row each, with an inline delete (✕) affordance and edit (tap / context menu). The section header
-    /// carries the in-content "add entry" button (an `+` affordance that lives in the pane body, not the window
-    /// toolbar) so the add flow stays reachable once the list is non-empty without leaking into the Settings tab bar.
+    /// Shown when the dictionary is empty: a centered icon, a short hint, and a styled add button.
+    @ViewBuilder
+    private var emptyState: some View {
+        VStack(spacing: Theme.sectionGap) {
+            Image(systemName: "character.book.closed")
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+            Text("dictionary.empty.title")
+                .font(.headline)
+            Text("dictionary.empty.hint")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button {
+                editorContext = .add
+            } label: {
+                Label("dictionary.add", systemImage: "plus")
+            }
+            .buttonStyle(PrimaryPillButtonStyle())
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 24)
+    }
+
+    /// The list of entries: one rounded card row each, with an inline delete (✕) affordance and edit (tap / context
+    /// menu). The add affordance lives in the pane `header`, so the add flow stays reachable once the list is non-empty.
     @ViewBuilder
     private var entriesSection: some View {
-        Section {
-            ForEach(dictionaryViewModel.entries) { entry in
-                EntryRow(
-                    entry: entry,
-                    onEdit: { editorContext = .edit(entry) },
-                    onDelete: { Task { await dictionaryViewModel.remove(id: entry.id) } }
-                )
-            }
-        } header: {
-            HStack {
-                Text("dictionary.section.entries")
-                Spacer()
-                Button {
-                    editorContext = .add
-                } label: {
-                    Label("dictionary.add", systemImage: "plus")
-                        .labelStyle(.iconOnly)
+        ScrollView {
+            LazyVStack(spacing: 6) {
+                ForEach(dictionaryViewModel.entries) { entry in
+                    EntryRow(
+                        entry: entry,
+                        onEdit: { editorContext = .edit(entry) },
+                        onDelete: { Task { await dictionaryViewModel.remove(id: entry.id) } }
+                    )
                 }
-                .buttonStyle(.borderless)
-                .help("dictionary.add")
             }
         }
+        .scrollContentBackground(.hidden)
     }
 
 }
 
 // MARK: - Row
 
-/// A single dictionary entry row: just the word on the left (Typeless-style flat list) and an inline ✕ delete button
-/// on the trailing edge; Edit stays reachable by tapping the row or via the context menu (macOS list swipe inside a
-/// `Form` is unreliable, so we expose explicit actions). Entries are simply present (kept) or deleted — there is no
-/// per-row enable/disable in the UI (the model's `enabled` flag is unchanged and still read by the rewriter).
+/// A single dictionary entry row, rendered as a rounded card (Typeless-style): just the word on the left and an
+/// inline ✕ delete button on the trailing edge; Edit stays reachable by tapping the row or via the context menu.
+/// (The row now lives in a `ScrollView`/`LazyVStack`, so the old `.swipeActions` — a `List`-only affordance — is
+/// dropped; edit/delete remain reachable through the retained tap + context-menu paths.) Entries are simply present
+/// (kept) or deleted — there is no per-row enable/disable in the UI (the model's `enabled` flag is unchanged and
+/// still read by the rewriter).
 private struct EntryRow: View {
     let entry: DictionaryEntry
     let onEdit: () -> Void
@@ -147,13 +161,13 @@ private struct EntryRow: View {
             .foregroundStyle(.secondary)
             .help("dictionary.delete")
         }
-        .contentShape(Rectangle())
+        .padding(.horizontal, Theme.rowPadH)
+        .padding(.vertical, Theme.rowPadV + 2)
+        .cardSurface()
+        .contentShape(RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous))
         .onTapGesture { onEdit() }
         .contextMenu {
             Button("dictionary.edit") { onEdit() }
-            Button("dictionary.delete", role: .destructive) { onDelete() }
-        }
-        .swipeActions(edge: .trailing) {
             Button("dictionary.delete", role: .destructive) { onDelete() }
         }
     }
@@ -233,5 +247,5 @@ private struct EditorResult {
 
 #Preview {
     DictionarySettingsView(store: DictionaryStore(), viewModel: SettingsViewModel())
-        .frame(width: 480, height: 420)
+        .frame(width: 520, height: 520)
 }

@@ -1,10 +1,15 @@
 import SwiftUI
 import SayItCore
 
-/// The SayIt settings main interface: paged to carry the sections "General / Speech Recognition / Polish / Dictionary / Permissions".
+/// The SayIt settings main interface: a custom left-sidebar window (Typeless-style) carrying the
+/// sections "General / Speech Recognition / Polish / Dictionary / Permissions".
 ///
 /// It only does the settings UI and reading/writing config/credentials, binding the existing ``AppConfig`` and ``KeychainStore`` (via ``SettingsViewModel``),
 /// without end-to-end dictation orchestration (which belongs to T13). All config enums reuse `SayItCore`'s single source of truth, not redeclared.
+///
+/// Phase 1 of the redesign replaces the plain native `TabView` with a branded two-column layout
+/// (sidebar + content). The four non-dictionary panes are hosted unchanged in the new content
+/// area — only the shell and the Dictionary pane are restyled this round.
 struct SettingsView: View {
     @State private var viewModel = SettingsViewModel()
 
@@ -12,24 +17,153 @@ struct SettingsView: View {
     /// same `dictionary.json` the dictation pipeline reads, so entries added here immediately feed PR-2's rewriter.
     @State private var dictionaryStore = DictionaryStore()
 
+    /// The currently selected sidebar section. Defaults to General, matching the prior `TabView` first tab.
+    @State private var selection: SettingsTab = .general
+
     var body: some View {
-        TabView {
-            GeneralSettingsView(viewModel: viewModel)
-                .tabItem { Label("tab.general", systemImage: "gearshape") }
-
-            STTSettingsView(viewModel: viewModel)
-                .tabItem { Label("tab.stt", systemImage: "waveform") }
-
-            PolishSettingsView(viewModel: viewModel)
-                .tabItem { Label("tab.polish", systemImage: "sparkles") }
-
-            DictionarySettingsView(store: dictionaryStore, viewModel: viewModel)
-                .tabItem { Label("tab.dictionary", systemImage: "character.book.closed") }
-
-            PermissionsSettingsView(viewModel: viewModel)
-                .tabItem { Label("tab.permissions", systemImage: "lock.shield") }
+        HStack(spacing: 0) {
+            sidebar
+            Divider()
+            content
         }
-        .frame(width: 480, height: 420)
+        .frame(width: 720, height: 520)
+        .tint(Theme.accent)
+    }
+
+    // MARK: - Sidebar
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Branded header: the monochrome speech-mark glyph tinted to the accent + the "SayIt" wordmark.
+            HStack(spacing: 8) {
+                Image("MenuBarIcon")
+                    .renderingMode(.template)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 22, height: 22)
+                    .foregroundStyle(Theme.accent)
+                Text(verbatim: "SayIt")
+                    .font(.headline.weight(.semibold))
+            }
+            .padding(.top, 16)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
+
+            // Navigation items.
+            VStack(spacing: 2) {
+                ForEach(SettingsTab.allCases) { tab in
+                    SidebarRow(tab: tab, isSelected: selection == tab) {
+                        selection = tab
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+
+            Spacer()
+
+            // Subtle footer: app name + version only. No upgrade/paywall — SayIt is free.
+            Text(verbatim: "SayIt \(Self.appVersion)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
+        }
+        .frame(width: 200)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Theme.sidebarBackground)
+    }
+
+    /// The short marketing version (CFBundleShortVersionString), shown verbatim in the sidebar footer.
+    private static var appVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String).map { "v\($0)" } ?? ""
+    }
+
+    // MARK: - Content
+
+    @ViewBuilder
+    private var content: some View {
+        Group {
+            switch selection {
+            case .general:
+                GeneralSettingsView(viewModel: viewModel)
+            case .stt:
+                STTSettingsView(viewModel: viewModel)
+            case .polish:
+                PolishSettingsView(viewModel: viewModel)
+            case .dictionary:
+                DictionarySettingsView(store: dictionaryStore, viewModel: viewModel)
+            case .permissions:
+                PermissionsSettingsView(viewModel: viewModel)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.contentBackground)
+    }
+}
+
+// MARK: - Tabs
+
+/// The five settings sections, carrying the localized label key + SF Symbol that the prior `TabView`
+/// `.tabItem` pairs used (reused verbatim so the sidebar reads identically to the old tab bar).
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general, stt, polish, dictionary, permissions
+
+    var id: String { rawValue }
+
+    var labelKey: LocalizedStringKey {
+        switch self {
+        case .general: return "tab.general"
+        case .stt: return "tab.stt"
+        case .polish: return "tab.polish"
+        case .dictionary: return "tab.dictionary"
+        case .permissions: return "tab.permissions"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general: return "gearshape"
+        case .stt: return "waveform"
+        case .polish: return "sparkles"
+        case .dictionary: return "character.book.closed"
+        case .permissions: return "lock.shield"
+        }
+    }
+}
+
+// MARK: - Sidebar row
+
+/// A single sidebar navigation item. Selected = a filled rounded-rect highlight in the accent color
+/// with white foreground (Typeless-style); unselected = plain with a subtle hover fill.
+private struct SidebarRow: View {
+    let tab: SettingsTab
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Label(tab.labelKey, systemImage: tab.systemImage)
+                .font(.body)
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .frame(height: 30)
+                .background {
+                    RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                        .fill(background)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+    }
+
+    private var background: Color {
+        if isSelected { return Theme.accent }
+        if isHovering { return Theme.hoverFill }
+        return .clear
     }
 }
 
