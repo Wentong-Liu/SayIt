@@ -41,7 +41,6 @@ final class SettingsViewModel {
         self.polishEnabled = config.polishEnabled
         self.polishStyle = config.polishStyle
         self.soundCuesEnabled = config.soundCuesEnabled
-        self.learnFromEditsEnabled = config.learnFromEditsEnabled
         self.providerKind = config.providerKind
         self.model = config.model
         // Sync the secrets and permission state once on first entering the panel.
@@ -91,20 +90,6 @@ final class SettingsViewModel {
         didSet {
             guard soundCuesEnabled != oldValue else { return }
             config.soundCuesEnabled = soundCuesEnabled
-        }
-    }
-
-    // MARK: Dictionary
-
-    /// Whether SayIt may learn new dictionary words from the user's in-place corrections of dictated text.
-    /// Stored mirror, same rationale as ``triggerKey`` (write-through to `config` so the Toggle reflects live and persists).
-    ///
-    /// - Note: Defaults to OFF. As of this PR nothing in the live dictation pipeline reads it yet — this is a settings-only
-    ///   opt-in placeholder; live edit detection + entry persistence land in the next Part-B PR.
-    var learnFromEditsEnabled: Bool {
-        didSet {
-            guard learnFromEditsEnabled != oldValue else { return }
-            config.learnFromEditsEnabled = learnFromEditsEnabled
         }
     }
 

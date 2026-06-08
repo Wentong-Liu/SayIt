@@ -44,12 +44,19 @@ public final class HotkeyManager {
     /// The macOS virtual keyCode for the ESC key (used to cancel an in-progress dictation; mirrors ``TriggerKey``'s named-keyCode style instead of a bare magic number).
     private let escapeKeyCode: UInt16 = 53
 
-    /// The macOS virtual keyCode for the Backspace (Delete-back) key. Used as a passive "the user is editing" signal for the
-    /// learn-from-edits feature; mirrors ``escapeKeyCode``'s named-keyCode style instead of a bare magic number.
+    /// The macOS virtual keyCode for the Backspace (Delete-back) key. Kept observe-only (it returns early so it never
+    /// taints the single-tap candidate); mirrors ``escapeKeyCode``'s named-keyCode style instead of a bare magic number.
     private let backspaceKeyCode: UInt16 = 51
 
-    /// The macOS virtual keyCode for the Forward-Delete key. The other in-place edit signal alongside ``backspaceKeyCode``.
+    /// The macOS virtual keyCode for the Forward-Delete key. The other observe-only edit key alongside ``backspaceKeyCode``.
     private let forwardDeleteKeyCode: UInt16 = 117
+
+    /// The macOS virtual keyCode for the main Return / Enter key. A "commit" signal for the learn-from-edits feature: when
+    /// the user presses it the field edit is considered DONE, so the coordinator fires its compare. Observe-only.
+    private let returnKeyCode: UInt16 = 36
+
+    /// The macOS virtual keyCode for the keypad Enter key. The other "commit" key alongside ``returnKeyCode``.
+    private let keypadEnterKeyCode: UInt16 = 76
 
     // MARK: Event output
 
@@ -64,11 +71,18 @@ public final class HotkeyManager {
     /// keeping the "ignore ESC when idle" rule in one place rather than duplicating dictation state inside the manager.
     public var isSessionActive: (() -> Bool)?
 
-    /// Fired (main thread) on a Backspace / Forward-Delete keyDown — a passive "the user is editing text" signal for the
-    /// learn-from-edits feature. The monitor is observe-only: the key is NEVER consumed, so the foreground app still receives
-    /// it and normal typing is never blocked. The coordinator gates on this only while a fresh injection record exists
-    /// (otherwise it is a no-op), so this is harmless when learn-from-edits is off or no recent injection is pending.
-    public var onEditKey: (() -> Void)?
+    /// Fired (main thread) on EVERY keyDown while monitoring — a passive "the user typed a key" activity signal for the
+    /// learn-from-edits feature, used by the coordinator to reset its idle timer (so the compare fires only after the user
+    /// pauses). The monitor is observe-only: the key is NEVER consumed, so the foreground app still receives it and normal
+    /// typing is never blocked. The coordinator ignores this unless a fresh injection record is armed, so it is harmless
+    /// when nothing is pending. Fired BEFORE any early-return so even ESC / commit / edit keys count as activity.
+    public var onUserKeystroke: (() -> Void)?
+
+    /// Fired (main thread) on a Return / keypad-Enter keyDown — a "the user committed the edit" signal for the
+    /// learn-from-edits feature. The coordinator reacts by firing its compare once. Observe-only: the key is NEVER
+    /// consumed (the foreground app still receives the Return), and it returns early so it does not taint the single-tap
+    /// candidate (same discipline as ESC). Harmless when nothing is armed (the coordinator ignores it then).
+    public var onCommitKey: (() -> Void)?
 
     /// Event async sequence, convenient for `for await event in manager.events { ... }`.
     public let events: AsyncStream<HotkeyEvent>
@@ -186,9 +200,9 @@ public final class HotkeyManager {
 
     /// Synthesizes one ordinary keyDown by virtual keyCode and runs it through the SAME private ``handleKeyDown(_:)``
     /// path a real global monitor would (NSEvent global monitoring cannot be synthesized in unit tests). Used to assert
-    /// Backspace(51)/Forward-Delete(117) fire ``onEditKey`` and that edit keys do not disturb the single-tap candidate.
-    /// Returns the constructed event so callers can also reuse it; a `nil` return means the platform refused to build the
-    /// synthetic event (treated as a skipped assertion by the test).
+    /// every keyDown fires ``onUserKeystroke``, Return(36)/keypad-Enter(76) fire ``onCommitKey``, and that commit/edit
+    /// keys do not disturb the single-tap candidate. Returns the constructed event so callers can also reuse it; a `nil`
+    /// return means the platform refused to build the synthetic event (treated as a skipped assertion by the test).
     @discardableResult
     public func _test_emitKeyDown(keyCode: UInt16) -> NSEvent? {
         guard let event = NSEvent.keyEvent(
@@ -260,6 +274,10 @@ public final class HotkeyManager {
     }
 
     private func handleKeyDown(_ event: NSEvent) {
+        // Learn-from-edits activity signal: EVERY keyDown counts as a keystroke (so the coordinator can reset its idle
+        // timer). Fired first, before any early-return, so ESC / commit / edit keys also count as activity. Observe-only.
+        onUserKeystroke?()
+
         if event.keyCode == escapeKeyCode {
             // ESC cancels an in-progress dictation only. When idle (isSessionActive false/nil) we do nothing and leave ESC to the foreground app,
             // and return early so ESC never taints the single-tap candidate (otherwise a stray ESC during a hold could void the tap).
@@ -267,11 +285,18 @@ public final class HotkeyManager {
             return
         }
 
+        if event.keyCode == returnKeyCode || event.keyCode == keypadEnterKeyCode {
+            // Commit signal for learn-from-edits: notify (never consume) and return early so the commit key does not taint
+            // the single-tap candidate (same reasoning as ESC). The coordinator ignores this unless a fresh injection
+            // record is armed, so normal typing is never affected.
+            onCommitKey?()
+            return
+        }
+
         if event.keyCode == backspaceKeyCode || event.keyCode == forwardDeleteKeyCode {
-            // Passive edit signal for learn-from-edits: notify (never consume) and return early so the edit key does not
-            // taint the single-tap candidate (same reasoning as ESC). The coordinator ignores this unless a fresh injection
-            // record exists, so normal typing/deleting is never affected.
-            onEditKey?()
+            // Edit keys stay observe-only: notify nothing of substance (the idle-timer reset above already fired via
+            // onUserKeystroke), and return early so they do not taint the single-tap candidate (same reasoning as ESC).
+            // They no longer drive a compare — the compare is commit/idle/focus-loss triggered.
             return
         }
 
