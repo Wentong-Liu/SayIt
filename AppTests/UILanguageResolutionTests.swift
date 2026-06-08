@@ -126,6 +126,48 @@ final class UILanguageResolutionTests: XCTestCase {
         }
     }
 
+    /// The menu-bar menu labels ("Settings…" / "Quit SayIt") must resolve in the SELECTED UI language.
+    /// Before the fix they were `Button("menu.settings")` / `Button("menu.quit")` `LocalizedStringKey`s,
+    /// resolved through the MenuBarExtra `.environment(\.locale, …)` override — which is NOT applied to the
+    /// lazily-built menu items on the FIRST open, so on a Chinese-system Mac with Display Language = English
+    /// the menu showed Chinese the first time and only switched to English on the second open. Resolving the
+    /// labels through ``UILanguageLocalizer`` (the `uiLanguageLocalized` wrapper) makes them correct on the
+    /// first open, independent of the environment render timing. This guards both keys resolve per-language
+    /// and genuinely diverge.
+    func testMenuBarLabelsFollowLanguage() {
+        let cases: [(key: String, en: String, zh: String)] = [
+            ("menu.settings", "Settings…", "设置…"),
+            ("menu.quit", "Quit SayIt", "退出 SayIt"),
+        ]
+        for c in cases {
+            XCTAssertEqual(resolve(c.key, c.en, .english), c.en, "\(c.key) must be English in English mode")
+            XCTAssertEqual(resolve(c.key, c.en, .simplifiedChinese), c.zh, "\(c.key) must be Chinese in Chinese mode")
+            XCTAssertNotEqual(resolve(c.key, c.en, .english), resolve(c.key, c.en, .simplifiedChinese),
+                              "\(c.key) en and zh-Hans must diverge")
+            XCTAssertNotEqual(resolve(c.key, c.en, .english), c.key, "\(c.key) must not resolve to the bare key")
+        }
+    }
+
+    /// End-to-end guard through the App-layer convenience `uiLanguageLocalized`, the exact call the
+    /// MenuBarExtra now uses, driving the persisted UI-language key directly. This confirms the menu labels
+    /// switch language live the way the menu body re-evaluates them when `uiLocale` changes.
+    func testMenuBarLabelsResolveViaLiveWrapper() {
+        let key = "ui.language"
+        let saved = UserDefaults.standard.string(forKey: key)
+        defer {
+            if let saved { UserDefaults.standard.set(saved, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+
+        UserDefaults.standard.set(UILanguage.english.rawValue, forKey: key)
+        XCTAssertEqual(uiLanguageLocalized("menu.settings", defaultValue: "Settings…"), "Settings…")
+        XCTAssertEqual(uiLanguageLocalized("menu.quit", defaultValue: "Quit SayIt"), "Quit SayIt")
+
+        UserDefaults.standard.set(UILanguage.simplifiedChinese.rawValue, forKey: key)
+        XCTAssertEqual(uiLanguageLocalized("menu.settings", defaultValue: "Settings…"), "设置…")
+        XCTAssertEqual(uiLanguageLocalized("menu.quit", defaultValue: "Quit SayIt"), "退出 SayIt")
+    }
+
     /// The "System Default (%@)" wrapper follows the UI language while the interpolated device name is
     /// inserted verbatim. Verifies both the English and Chinese wrapper resolve and substitute.
     func testSystemDefaultNamedFormatFollowsLanguage() {
