@@ -27,6 +27,14 @@ struct SayItApp: App {
             // labels re-evaluate — when the user switches the UI language (the `uiLocale` @State is
             // updated on AppConfig.didChangeNotification in the Settings scene below).
             let _ = uiLocale
+
+            // A model-status line so the download progress / not-ready state is visible in the menu even
+            // when Settings is closed. Reads the shared `@Observable` ModelManager state directly (no poll).
+            if let status = modelStatusText {
+                Text(status)
+                Divider()
+            }
+
             Button {
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
@@ -44,8 +52,11 @@ struct SayItApp: App {
             }
             .keyboardShortcut("q", modifiers: .command)
         } label: {
-            Image("MenuBarIcon")
-                .accessibilityLabel("SayIt")
+            // The label observes `ModelManager.shared.state` (an `@Observable`): reading `.state` here
+            // registers SwiftUI tracking, so the icon re-renders on every download progress / completion
+            // change with NO polling. While downloading, append a "NN%" readout; while the local engine
+            // is selected but the model is missing, overlay a persistent "setup needed" badge.
+            menuBarLabel
         }
         .environment(\.locale, uiLocale)
 
@@ -57,5 +68,58 @@ struct SayItApp: App {
                     uiLocale = AppConfig.shared.uiLanguage.locale
                 }
         }
+    }
+
+    // MARK: - Menu-bar model-status presentation
+
+    /// The status-item label: the monochrome speech mark, plus a live download-percentage suffix while
+    /// downloading and a persistent "setup needed" badge while the local engine is selected but the
+    /// model is not yet on disk. Reading `ModelManager.shared.state` here registers `@Observable`
+    /// tracking, so the label re-renders on state change without polling.
+    @ViewBuilder
+    private var menuBarLabel: some View {
+        let _ = uiLocale
+        if case .downloading(let progress, _) = ModelManager.shared.state {
+            // Icon + a compact percentage so a brand-new user sees the install is in progress.
+            HStack(spacing: 3) {
+                Image("MenuBarIcon")
+                Text(verbatim: "\(Int(progress * 100))%")
+            }
+            .accessibilityLabel("SayIt")
+        } else if needsLocalModel {
+            // Persistent "setup needed" badge overlaid on the icon: the local engine is selected but
+            // its model is absent (state `.notDownloaded`/`.failed` while sttMode == .local).
+            Image("MenuBarIcon")
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .imageScale(.small)
+                        .foregroundStyle(Theme.accent)
+                }
+                .accessibilityLabel("SayIt")
+        } else {
+            Image("MenuBarIcon")
+                .accessibilityLabel("SayIt")
+        }
+    }
+
+    /// Whether the local engine is selected but its model is not yet usable — the condition that drives
+    /// the "setup needed" badge / menu line.
+    private var needsLocalModel: Bool {
+        AppConfig.shared.sttMode == .local && !ModelManager.isDownloaded(model: AppConfig.shared.localModel)
+    }
+
+    /// A localized status line for the dropdown menu so the download progress / not-ready state is
+    /// visible on open even with Settings closed; `nil` when the model is ready (no line needed).
+    private var modelStatusText: String? {
+        if case .downloading(let progress, _) = ModelManager.shared.state {
+            return uiLanguageLocalized(format: "menu.modelDownloading %d",
+                                       defaultValue: "Downloading model… %d%%",
+                                       Int(progress * 100))
+        }
+        if needsLocalModel {
+            return uiLanguageLocalized("menu.modelNotReady",
+                                       defaultValue: "Setup needed — local model not downloaded")
+        }
+        return nil
     }
 }

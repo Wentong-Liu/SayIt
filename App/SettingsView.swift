@@ -30,6 +30,14 @@ struct SettingsView: View {
         // Hide the settings window's title bar so the custom sidebar + content fill the whole
         // window and the traffic-light buttons float over the sidebar's top-left (Typeless-style).
         .background(WindowConfigurator())
+        // Consume-once: if something (the first-run guidance) requested a specific opening tab, land
+        // there instead of the default General, then clear the request so later opens are unaffected.
+        .onAppear {
+            if let tab = SettingsRouter.shared.pendingTab {
+                selection = tab
+                SettingsRouter.shared.pendingTab = nil
+            }
+        }
     }
 
     // MARK: - Sidebar

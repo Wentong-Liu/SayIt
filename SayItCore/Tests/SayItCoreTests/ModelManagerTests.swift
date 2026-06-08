@@ -675,6 +675,40 @@ final class ModelManagerTests: XCTestCase {
         }
         // else: weights/ exists but no weight.bin at all -> incomplete.
     }
+
+    // MARK: - First-run auto-download predicate
+
+    /// The first-run guidance only downloads for a brand-new local-engine user whose model is missing.
+    func testShouldAutoDownloadOnlyForFreshLocalUserWithoutModel() {
+        XCTAssertTrue(ModelManager.shouldAutoDownloadOnFirstRun(
+            firstRun: true, sttMode: .local, isDownloaded: false),
+            "fresh install, local engine, no model -> must auto-download")
+    }
+
+    /// An upgrading user whose model is already present must NOT get a spurious download.
+    func testShouldNotAutoDownloadWhenModelAlreadyPresent() {
+        XCTAssertFalse(ModelManager.shouldAutoDownloadOnFirstRun(
+            firstRun: true, sttMode: .local, isDownloaded: true),
+            "model already downloaded -> no auto-download")
+    }
+
+    /// A cloud-mode user must never trigger a local-model download on first run.
+    func testShouldNotAutoDownloadInCloudMode() {
+        XCTAssertFalse(ModelManager.shouldAutoDownloadOnFirstRun(
+            firstRun: true, sttMode: .cloud, isDownloaded: false),
+            "cloud engine -> no local-model download")
+        XCTAssertFalse(ModelManager.shouldAutoDownloadOnFirstRun(
+            firstRun: true, sttMode: .cloud, isDownloaded: true))
+    }
+
+    /// A non-first-run launch must never auto-download regardless of the other inputs.
+    func testShouldNotAutoDownloadWhenNotFirstRun() {
+        XCTAssertFalse(ModelManager.shouldAutoDownloadOnFirstRun(
+            firstRun: false, sttMode: .local, isDownloaded: false),
+            "subsequent launches must not re-trigger")
+        XCTAssertFalse(ModelManager.shouldAutoDownloadOnFirstRun(
+            firstRun: false, sttMode: .local, isDownloaded: true))
+    }
 }
 
 /// A one-shot async gate for deterministically ordering steps across concurrent tasks in
