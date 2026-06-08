@@ -16,6 +16,19 @@ struct PolishSettingsView: View {
             }
 
             if viewModel.polishEnabled {
+                // Persistent setup CTA / warning: shown whenever polish is ENABLED but not yet set up for
+                // the current provider (ChatGPT not signed in, or a BYO provider with no saved API key).
+                // The copy matches the provider (sign-in vs API-key). This is the pane's persistent CTA —
+                // distinct from the transient `polishStatusMessage` Section below — and reacts to provider /
+                // enable / login / key-save because every input is observable VM state.
+                if let warningKey = viewModel.polishSetupWarningKey {
+                    Section {
+                        Label(LocalizedStringKey(warningKey), systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
+
                 Section {
                     Picker("polish.style", selection: $viewModel.polishStyle) {
                         ForEach(PolishStyle.allCases) { style in
@@ -99,6 +112,15 @@ struct PolishSettingsView: View {
     /// API Key entry for ordinary Providers.
     @ViewBuilder
     private var apiKeyCredentialView: some View {
+        // Persistent key-presence status, mirroring the OAuth sign-in row: green when a key is saved,
+        // amber warning when empty (so the user knows polish will be skipped). Reactive — `polishBYOKeyPresent`
+        // tracks the same Keychain-backed buffer the SecureField below binds to (never logs the key).
+        HStack {
+            Image(systemName: viewModel.polishBYOKeyPresent ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(viewModel.polishBYOKeyPresent ? .green : .orange)
+            Text(viewModel.polishBYOKeyPresent ? "polish.apiKeySet" : "polish.apiKeyMissing")
+        }
+
         SecureField(uiLanguageLocalized(format: "polish.apiKeyField %@",
                                         defaultValue: "%@ API Key", viewModel.providerKind.displayName),
                     text: $viewModel.polishAPIKey)

@@ -221,6 +221,101 @@ final class SettingsViewModelObservationTests: XCTestCase {
         XCTAssertEqual(config.polishEnabled, !original)
     }
 
+    // MARK: - Setup affordances (size disclosure + polish-unconfigured warning)
+
+    /// The Speech-pane size note must never hardcode "1.6 GB": `estimatedLocalModelBytes` must mirror the
+    /// existing `ModelManager.estimatedDownloadBytes` estimate for the fixed local model (turbo → 1.6 GB).
+    func testEstimatedLocalModelBytesMirrorsModelManager() {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+        let expected = Int64(ModelManager.estimatedDownloadBytes(for: config.localModel))
+        XCTAssertEqual(vm.estimatedLocalModelBytes, expected)
+        // The local model is fixed to turbo, whose estimate is 1.6 GB (1.6e9 bytes).
+        XCTAssertEqual(vm.estimatedLocalModelBytes, 1_600_000_000)
+    }
+
+    /// When polish is OFF, no provider should ever report a setup warning (nothing to warn about).
+    func testPolishDisabledNeverWarnsForAnyProvider() {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+        vm.polishEnabled = false
+        for kind in ProviderKind.allCases {
+            vm.providerKind = kind
+            XCTAssertFalse(vm.polishNeedsSetup, "\(kind): disabled polish must not need setup")
+            XCTAssertNil(vm.polishSetupWarningKey, "\(kind): disabled polish must have no warning key")
+        }
+    }
+
+    /// BYO providers: an empty key → not configured → warns with the API-key key; a present key → configured → no warning.
+    /// Drives the live `polishAPIKey` buffer (the Keychain mirror) — no Keychain write needed.
+    func testPolishBYOProvidersWarnWhenKeyMissingAndClearWhenSet() {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+        vm.polishEnabled = true
+        for kind in ProviderKind.allCases where kind != .chatGPT {
+            vm.providerKind = kind
+
+            // Empty key (whitespace counts as empty) → needs setup, API-key warning.
+            vm.polishAPIKey = "   "
+            XCTAssertFalse(vm.polishBYOKeyPresent, "\(kind): whitespace key is not present")
+            XCTAssertFalse(vm.polishIsConfigured, "\(kind): empty key is not configured")
+            XCTAssertTrue(vm.polishNeedsSetup, "\(kind): empty key + enabled needs setup")
+            XCTAssertEqual(vm.polishSetupWarningKey, "polish.setupWarning.apiKey",
+                           "\(kind): empty BYO key must show the API-key warning")
+
+            // Present key → configured, no warning.
+            vm.polishAPIKey = "sk-test-key"
+            XCTAssertTrue(vm.polishBYOKeyPresent, "\(kind): non-empty key is present")
+            XCTAssertTrue(vm.polishIsConfigured, "\(kind): saved key is configured")
+            XCTAssertFalse(vm.polishNeedsSetup, "\(kind): configured key needs no setup")
+            XCTAssertNil(vm.polishSetupWarningKey, "\(kind): configured key has no warning key")
+        }
+    }
+
+    /// ChatGPT (OAuth) provider: the warning gate is `isChatGPTLoggedIn` (private(set), defaults to the
+    /// real Keychain state). On a sandboxed test runner with no ChatGPT token, the default is "not signed
+    /// in", so enabling polish on ChatGPT must surface the sign-in warning (not the API-key one). When the
+    /// runner happens to have a real token, the branch is configured instead — assert accordingly so the
+    /// test is robust to either Keychain state while still proving the OAuth-vs-BYO key selection.
+    func testPolishChatGPTWarnsWithSignInKeyWhenNotLoggedIn() {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+        vm.polishEnabled = true
+        vm.providerKind = .chatGPT
+        XCTAssertTrue(vm.providerUsesOAuth)
+
+        if vm.isChatGPTLoggedIn {
+            // A real token exists on this runner: configured, no warning.
+            XCTAssertTrue(vm.polishIsConfigured)
+            XCTAssertFalse(vm.polishNeedsSetup)
+            XCTAssertNil(vm.polishSetupWarningKey)
+        } else {
+            // The common new-user state: enabled + not signed in → sign-in warning (NOT the API-key one).
+            XCTAssertFalse(vm.polishIsConfigured)
+            XCTAssertTrue(vm.polishNeedsSetup)
+            XCTAssertEqual(vm.polishSetupWarningKey, "polish.setupWarning.signIn")
+        }
+    }
+
+    /// The warning must react to provider switches: leaving a BYO provider with a saved key for ChatGPT
+    /// (not signed in) flips the warning key from nil to the sign-in variant.
+    func testPolishWarningReactsToProviderSwitch() throws {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+        vm.polishEnabled = true
+
+        // Configure a BYO provider with a key → no warning.
+        vm.providerKind = .openAI
+        vm.polishAPIKey = "sk-test-key"
+        XCTAssertNil(vm.polishSetupWarningKey)
+
+        // Switch to ChatGPT; only meaningful when the runner is not signed in.
+        vm.providerKind = .chatGPT
+        try XCTSkipIf(vm.isChatGPTLoggedIn, "Runner has a real ChatGPT token; sign-in branch not exercised.")
+        XCTAssertEqual(vm.polishSetupWarningKey, "polish.setupWarning.signIn",
+                       "switching to ChatGPT while signed out must surface the sign-in warning")
+    }
+
     // MARK: - Tag identity guard
 
     /// Picker option `.tag()` identity must match the persisted value. The views tag enum options

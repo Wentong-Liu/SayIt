@@ -144,6 +144,48 @@ final class SettingsViewModel {
         modelManager.cancelDownload()
     }
 
+    /// The approximate on-disk download size, in bytes, of the current local model (always turbo via
+    /// ``AppConfig/localModel``). A pure read of the existing ``ModelManager/estimatedDownloadBytes(for:)``
+    /// estimate (turbo → ~1.6 GB) so the Speech pane can show the size BEFORE downloading without
+    /// hardcoding a "1.6 GB" string; the actual value is formatted with `ByteCountFormatter` in the view.
+    var estimatedLocalModelBytes: Int64 {
+        Int64(ModelManager.estimatedDownloadBytes(for: config.localModel))
+    }
+
+    /// Whether a BYO-provider polish API key is present, derived from the live ``polishAPIKey`` buffer.
+    /// That buffer IS the Keychain mirror for the current provider: it is loaded straight from
+    /// `KeychainStore.get(account:)` on entering the panel (``reloadCredentials``) and on switching the
+    /// provider (``providerDidChange``), and updated when the user saves (``savePolishAPIKey``). So this
+    /// reflects the saved key without an extra Keychain read and never logs/prints the key. Reactive: it
+    /// also flips optimistically while the user is typing (the SecureField is bound to the same buffer),
+    /// which is acceptable/clearer UX. Only meaningful for BYO providers; ChatGPT uses ``isChatGPTLoggedIn``.
+    var polishBYOKeyPresent: Bool {
+        !polishAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Whether polish is set up for the CURRENT provider: ChatGPT (OAuth) requires a signed-in token,
+    /// every other provider (BYO) requires a saved API key. Computed regardless of ``polishEnabled``
+    /// (it is only acted on when enabled, via ``polishNeedsSetup``).
+    var polishIsConfigured: Bool {
+        providerUsesOAuth ? isChatGPTLoggedIn : polishBYOKeyPresent
+    }
+
+    /// Whether polish is ENABLED but NOT yet set up for the current provider — the gate for the
+    /// in-pane warning/CTA. False whenever polish is off (then there is nothing to warn about).
+    var polishNeedsSetup: Bool {
+        polishEnabled && !polishIsConfigured
+    }
+
+    /// The localization KEY for the persistent polish-setup warning, or `nil` when no warning is needed
+    /// (``polishNeedsSetup`` is false). The copy matches the provider: ChatGPT needs a sign-in, BYO
+    /// providers need an API key. Returning a key (not resolved text) keeps the VM free of the App-layer
+    /// `uiLanguageLocalized` helper and matches how the panes already render localization keys; the view
+    /// resolves it and the unit tests assert on the key.
+    var polishSetupWarningKey: String? {
+        guard polishNeedsSetup else { return nil }
+        return providerUsesOAuth ? "polish.setupWarning.signIn" : "polish.setupWarning.apiKey"
+    }
+
     /// The cloud STT model identifier. Stored mirror, same rationale as ``triggerKey``.
     var cloudSTTModel: String {
         didSet {
