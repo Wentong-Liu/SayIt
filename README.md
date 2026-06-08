@@ -14,6 +14,10 @@
     <img alt="Price" src="https://img.shields.io/badge/price-free-brightgreen">
     <img alt="License" src="https://img.shields.io/badge/license-see%20LICENSE-lightgrey">
   </p>
+
+  <p>
+    <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+  </p>
 </div>
 
 <hr>
