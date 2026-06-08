@@ -7,7 +7,11 @@ import SayItCore
 /// dictated text to each entry's canonical form. This pane only manages the data through ``DictionaryViewModel``
 /// (which wraps the ``DictionaryStore`` actor); it does not touch the dictation pipeline.
 struct DictionarySettingsView: View {
-    @State private var viewModel: DictionaryViewModel
+    @State private var dictionaryViewModel: DictionaryViewModel
+
+    /// The shared settings view model, threaded in to bind the "learn from edits" toggle through the established
+    /// AppConfig + stored-mirror single-source-of-truth pattern (same as every other settings pane).
+    @Bindable var viewModel: SettingsViewModel
 
     /// The entry currently being edited in the sheet (`nil` = adding a new one); non-nil drives sheet presentation.
     @State private var editorContext: EditorContext?
@@ -25,19 +29,23 @@ struct DictionarySettingsView: View {
         }
     }
 
-    /// - Parameter store: the shared dictionary store (the App injects a single instance pointing at the same
-    ///   `dictionary.json` the dictation pipeline reads).
-    init(store: DictionaryStore) {
-        _viewModel = State(initialValue: DictionaryViewModel(store: store))
+    /// - Parameters:
+    ///   - store: the shared dictionary store (the App injects a single instance pointing at the same
+    ///     `dictionary.json` the dictation pipeline reads).
+    ///   - viewModel: the shared settings view model (carries the "learn from edits" toggle's persisted mirror).
+    init(store: DictionaryStore, viewModel: SettingsViewModel) {
+        _dictionaryViewModel = State(initialValue: DictionaryViewModel(store: store))
+        self.viewModel = viewModel
     }
 
     var body: some View {
         Form {
-            if viewModel.entries.isEmpty {
+            if dictionaryViewModel.entries.isEmpty {
                 emptyState
             } else {
                 entriesSection
             }
+            learnFromEditsSection
         }
         .formStyle(.grouped)
         // The add affordance lives INSIDE the pane content (the entries-section header and the empty-state button),
@@ -47,19 +55,19 @@ struct DictionarySettingsView: View {
             switch context {
             case .add:
                 DictionaryEntryEditor(entry: nil) { saved in
-                    Task { await viewModel.add(canonical: saved.canonical) }
+                    Task { await dictionaryViewModel.add(canonical: saved.canonical) }
                 }
             case .edit(let entry):
                 DictionaryEntryEditor(entry: entry) { saved in
-                    Task { await viewModel.update(saved.applied(to: entry)) }
+                    Task { await dictionaryViewModel.update(saved.applied(to: entry)) }
                 }
             }
         }
         .onAppear {
-            Task { await viewModel.reload() }
-            viewModel.startObserving()
+            Task { await dictionaryViewModel.reload() }
+            dictionaryViewModel.startObserving()
         }
-        .onDisappear { viewModel.stopObserving() }
+        .onDisappear { dictionaryViewModel.stopObserving() }
     }
 
     /// Shown when the dictionary is empty: a short hint plus an add button.
@@ -90,14 +98,14 @@ struct DictionarySettingsView: View {
     @ViewBuilder
     private var entriesSection: some View {
         Section {
-            ForEach(viewModel.entries) { entry in
+            ForEach(dictionaryViewModel.entries) { entry in
                 EntryRow(
                     entry: entry,
                     onToggle: { enabled in
-                        Task { await viewModel.setEnabled(enabled, for: entry) }
+                        Task { await dictionaryViewModel.setEnabled(enabled, for: entry) }
                     },
                     onEdit: { editorContext = .edit(entry) },
-                    onDelete: { Task { await viewModel.remove(id: entry.id) } }
+                    onDelete: { Task { await dictionaryViewModel.remove(id: entry.id) } }
                 )
             }
         } header: {
@@ -113,6 +121,20 @@ struct DictionarySettingsView: View {
                 .buttonStyle(.borderless)
                 .help("dictionary.add")
             }
+        }
+    }
+
+    /// The opt-in "learn words from my edits" toggle (default OFF). Lives in the content region (not the toolbar) with a
+    /// footnote explaining it learns from in-place corrections. As of this PR the toggle is a placeholder — nothing in the
+    /// live dictation pipeline reads it yet (live detection lands in the next Part-B PR), hence the "coming soon" footer.
+    @ViewBuilder
+    private var learnFromEditsSection: some View {
+        Section {
+            Toggle("dictionary.learnFromEdits", isOn: $viewModel.learnFromEditsEnabled)
+        } footer: {
+            Text("dictionary.learnFromEdits.footer")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -224,6 +246,6 @@ private struct EditorResult {
 }
 
 #Preview {
-    DictionarySettingsView(store: DictionaryStore())
+    DictionarySettingsView(store: DictionaryStore(), viewModel: SettingsViewModel())
         .frame(width: 480, height: 420)
 }

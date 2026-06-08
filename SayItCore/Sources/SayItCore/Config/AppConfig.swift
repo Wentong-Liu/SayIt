@@ -41,6 +41,7 @@ public final class AppConfig {
         static let polishEnabled = "polish.enabled"
         static let polishStyle = "polish.style"
         static let soundCuesEnabled = "sound.cuesEnabled"
+        static let learnFromEditsEnabled = "learn.fromEdits.enabled"
         static let providerKind = "provider.kind"
         static let model = "provider.model"
         static let language = "language"
@@ -104,6 +105,17 @@ public final class AppConfig {
         set { setBool(newValue, forKey: Key.soundCuesEnabled) }
     }
 
+    // MARK: Learn from edits
+
+    /// Whether SayIt may learn new dictionary words from the user's in-place corrections of dictated text.
+    ///
+    /// Defaults to **OFF** (privacy-conservative). As of this PR this flag is a settings-only opt-in placeholder:
+    /// nothing in the live dictation pipeline reads it yet (live edit detection + entry persistence land in the next Part-B PR).
+    public var learnFromEditsEnabled: Bool {
+        get { boolValue(Key.learnFromEditsEnabled, default: Self.defaultLearnFromEditsEnabled) }
+        set { setBool(newValue, forKey: Key.learnFromEditsEnabled) }
+    }
+
     // MARK: Polish Provider / model
 
     /// The Provider used for polish. Defaults to OpenAI. Persists `rawValue`, unknown values silently fall back.
@@ -163,6 +175,7 @@ public final class AppConfig {
     static let defaultCloudSTTModel = "gpt-4o-mini-transcribe"
     static let defaultPolishEnabled = true
     static let defaultSoundCuesEnabled = true
+    static let defaultLearnFromEditsEnabled = false
     static let defaultLanguage = "auto"
 
     // MARK: Generic read/write + change notification
