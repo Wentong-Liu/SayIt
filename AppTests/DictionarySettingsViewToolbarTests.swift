@@ -4,7 +4,7 @@ import XCTest
 ///
 /// In a macOS Settings `TabView`, each pane's window-level `.toolbar` items render in the tab-bar row (the tab bar
 /// *is* the window toolbar). `DictionarySettingsView` previously declared a window `.toolbar { Button("plus") }` to
-/// add an entry, which leaked a stray "+" after the last tab (通用 / 语音识别 / 润色 / 词典 / 权限 / +).
+/// add an entry, which leaked a stray "+" after the last tab (General / Speech Recognition / Polish / Dictionary / Permissions / +).
 ///
 /// SwiftUI view *structure* is not introspectable at runtime without extra tooling, so this guard asserts at the
 /// source level that `DictionarySettingsView` does NOT use a window-level `.toolbar` modifier, while still exposing

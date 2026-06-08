@@ -76,14 +76,14 @@ final class DictationCoordinatorTests: XCTestCase {
         }
 
         await coordinator._test_start()
-        XCTAssertTrue(coordinator._test_isRecording, "start 后应标记为录音中")
+        XCTAssertTrue(coordinator._test_isRecording, "should be marked recording after start")
         let startCount = await recorder.startCount
         XCTAssertEqual(startCount, 1)
 
         await coordinator._test_stop()
 
-        XCTAssertEqual(injector.injectedTexts, ["你好世界"], "应注入转写文本")
-        XCTAssertFalse(coordinator._test_isRecording, "stop 后应清录音标记")
+        XCTAssertEqual(injector.injectedTexts, ["你好世界"], "should inject the transcribed text")
+        XCTAssertFalse(coordinator._test_isRecording, "should clear the recording flag after stop")
         let stopCount = await recorder.stopCount
         XCTAssertEqual(stopCount, 1)
     }
@@ -144,7 +144,7 @@ final class DictationCoordinatorTests: XCTestCase {
         // order (most-used LAST) — the documented ordering is active end-to-end via GlossaryPrompt.orderedCanonicals.
         // SwiftUI(usage 1) before WhisperKit(usage 5); disabled-term excluded.
         XCTAssertEqual(calls.first?.biasTerms, ["SwiftUI", "WhisperKit"],
-                       "非空词典应把启用条目按 usageCount 升序（最常用在尾部）透传给转写调用，禁用条目排除")
+                       "a non-empty dictionary should thread enabled entries into the transcribe call in usageCount-ascending order (most-used last); disabled entries excluded")
     }
 
     /// A2 ordering active: higher-usage terms must sit LAST in the biasTerms array reaching the transcribe call,
@@ -173,7 +173,7 @@ final class DictationCoordinatorTests: XCTestCase {
 
         let calls = await transcriber.calls
         XCTAssertEqual(calls.first?.biasTerms, ["rare", "mid", "common"],
-                       "偏置词应按 usageCount 升序到达转写调用（最常用在尾部，使 token 上限保留高频词）")
+                       "bias terms should reach the transcribe call in usageCount-ascending order (most-used last, so the token cap keeps high-frequency terms)")
     }
 
     /// An empty dictionary must pass empty bias terms to the transcribe call (no biasing -> byte-identical to today).
@@ -197,7 +197,7 @@ final class DictationCoordinatorTests: XCTestCase {
 
         let calls = await transcriber.calls
         XCTAssertEqual(calls.count, 1)
-        XCTAssertEqual(calls.first?.biasTerms, [], "空词典应传空偏置词（不构造任何 prompt）")
+        XCTAssertEqual(calls.first?.biasTerms, [], "an empty dictionary should pass empty bias terms (no prompt is constructed)")
     }
 
     // MARK: - Empty audio: no transcription, no injection
@@ -215,8 +215,8 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "空音频不应注入")
-        XCTAssertFalse(transcriberMade, "空音频不应构造转写器")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "empty audio should not inject")
+        XCTAssertFalse(transcriberMade, "empty audio should not construct a transcriber")
     }
 
     // MARK: - Empty transcription: no injection
@@ -232,7 +232,7 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "空转写不应注入")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "an empty transcript should not inject")
     }
 
     // MARK: - Transcription failure: no injection
@@ -248,7 +248,7 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "转写失败不应注入")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "a transcription failure should not inject")
         XCTAssertFalse(coordinator._test_isRecording)
     }
 
@@ -280,10 +280,10 @@ final class DictationCoordinatorTests: XCTestCase {
         }
 
         await coordinator._test_start()
-        XCTAssertFalse(coordinator._test_isRecording, "启动失败不应标记录音中")
+        XCTAssertFalse(coordinator._test_isRecording, "a start failure should not mark recording")
 
         await coordinator._test_stop()
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "录音没起来不应注入")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "when recording never started nothing should be injected")
     }
 
     // MARK: - Extremely-short-press race: start closely followed by stop, stop not before start, no .notRecording thrown
@@ -347,8 +347,8 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        XCTAssertEqual(factoryCallCount, 1, "配置不变时转写器应复用，工厂只构造一次（模型保持暖态）")
-        XCTAssertEqual(injector.injectedTexts, ["复用", "复用", "复用"], "三次听写都应正常注入")
+        XCTAssertEqual(factoryCallCount, 1, "the transcriber should be reused when config is unchanged; the factory constructs only once (model stays warm)")
+        XCTAssertEqual(injector.injectedTexts, ["复用", "复用", "复用"], "all three dictations should inject normally")
     }
 
     /// After a relevant STT config change (such as switching the local model), the transcriber should be rebuilt so the new model takes effect.
@@ -372,7 +372,7 @@ final class DictationCoordinatorTests: XCTestCase {
         config.localModel = "small"
         await coordinator._test_start()
         await coordinator._test_stop()
-        XCTAssertEqual(factoryCallCount, 2, "本地模型变更后应重建转写器")
+        XCTAssertEqual(factoryCallCount, 2, "the transcriber should be rebuilt after the local model changes")
     }
 
     // MARK: - item 2: writing back the same config value does not touch the state machine (not reset during a hold)
@@ -422,9 +422,9 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        XCTAssertFalse(transcriberMade, "模型未就绪不应构造/调用转写器（避免触发下载与卡死）")
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "模型未就绪不应注入")
-        XCTAssertFalse(coordinator._test_isRecording, "应收敛到非录音中")
+        XCTAssertFalse(transcriberMade, "when the model is not ready the transcriber should not be constructed/called (avoiding triggering a download and a hang)")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "when the model is not ready nothing should be injected")
+        XCTAssertFalse(coordinator._test_isRecording, "should converge to not-recording")
         // Recording is stopped to release the device.
         let stopCount = await recorder.stopCount
         XCTAssertEqual(stopCount, 1)
@@ -449,7 +449,7 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        XCTAssertEqual(injector.injectedTexts, ["云端转写结果"], "云端模式应正常转写并注入")
+        XCTAssertEqual(injector.injectedTexts, ["云端转写结果"], "cloud mode should transcribe and inject normally")
     }
 
     // MARK: - Input device takes effect in real time: end-to-end dictation uses the persisted inputDeviceUID
@@ -469,7 +469,7 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
 
         let usedUID = await recorder.lastStartDeviceUID
-        XCTAssertEqual(usedUID, "DeviceXYZ", "端到端听写应使用持久化选定的输入设备")
+        XCTAssertEqual(usedUID, "DeviceXYZ", "end-to-end dictation should use the persisted selected input device")
     }
 
     /// When no device is selected (nil), end-to-end dictation starts with the system default device (deviceUID passed nil).
@@ -484,7 +484,7 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
 
         let usedUID = await recorder.lastStartDeviceUID
-        XCTAssertNil(usedUID, "未选设备时应传 nil（跟随系统默认）")
+        XCTAssertNil(usedUID, "when no device is selected nil should be passed (follow the system default)")
     }
 
     /// Real-time device-selection switching: change config.inputDeviceUID between two dictations, the second must use the new device
@@ -507,7 +507,7 @@ final class DictationCoordinatorTests: XCTestCase {
         config.inputDeviceUID = "DeviceB"
         await coordinator._test_start()
         let secondUID = await recorder.lastStartDeviceUID
-        XCTAssertEqual(secondUID, "DeviceB", "运行中的协调器应在下次听写现读最新设备选择")
+        XCTAssertEqual(secondUID, "DeviceB", "a running coordinator should read the latest device selection fresh on the next dictation")
     }
 
     // MARK: - Transcription hard timeout: never permanently stuck "transcribing"
@@ -531,8 +531,8 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "超时不应注入")
-        XCTAssertFalse(coordinator._test_isRecording, "超时后应收敛到非录音中")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "a timeout should not inject")
+        XCTAssertFalse(coordinator._test_isRecording, "should converge to not-recording after timeout")
     }
 
     // MARK: - ESC cancel: mid-transcribe cancel injects nothing and returns to idle
@@ -569,9 +569,9 @@ final class DictationCoordinatorTests: XCTestCase {
         // Let the cancelled pipeline run its early-return + defer to completion.
         await coordinator._test_awaitProcessing()
 
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "取消后绝不应注入任何文本")
-        XCTAssertEqual(coordinator.phase, .idle, "取消后应复位到 idle")
-        XCTAssertFalse(coordinator._test_isRecording, "取消后不应再标记为录音中")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "after cancel no text should ever be injected")
+        XCTAssertEqual(coordinator.phase, .idle, "should reset to idle after cancel")
+        XCTAssertFalse(coordinator._test_isRecording, "should no longer be marked recording after cancel")
     }
 
     // MARK: - ESC cancel then immediate restart: a fresh session must begin reliably
@@ -606,12 +606,12 @@ final class DictationCoordinatorTests: XCTestCase {
         // 2) Arm the stop gate, then ESC-cancel: the cancel's in-flight stop suspends while still marked `recording`.
         await recorder.gateStop()
         coordinator._test_cancel()
-        XCTAssertEqual(coordinator.phase, .idle, "取消后应立即复位到 idle")
+        XCTAssertEqual(coordinator.phase, .idle, "should reset to idle immediately after cancel")
         await recorder.waitUntilStopGated()  // ensure the cancel-stop is pinned in the "still recording" window
 
         // 3) Immediately start again (non-blocking) while the cancel-stop is still in flight.
         coordinator._test_handleStart()
-        XCTAssertEqual(coordinator.phase, .listening, "重启应立即进入 listening")
+        XCTAssertEqual(coordinator.phase, .listening, "the restart should immediately enter listening")
         // Give the unfixed code's start path a chance to run and (wrongly) throw .alreadyRecording before we release the gate.
         for _ in 0..<20 { await Task.yield() }
 
@@ -620,24 +620,24 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_awaitStart()
 
         // The restart MUST have begun a fresh recording session — not been knocked out by the unfinished cancel-stop.
-        XCTAssertTrue(coordinator._test_isRecording, "取消后立即重启应可靠开始新一轮录音，而非被未完成的 stop 卡住")
-        XCTAssertEqual(coordinator.phase, .listening, "重启后应保持 listening")
+        XCTAssertTrue(coordinator._test_isRecording, "an immediate restart after cancel should reliably begin a fresh recording session rather than be stuck on the unfinished stop")
+        XCTAssertEqual(coordinator.phase, .listening, "should stay in listening after the restart")
         let recorderRecording = await recorder.isRecording
-        XCTAssertTrue(recorderRecording, "重启后录音器应处于录音中（未被半停状态遗留）")
+        XCTAssertTrue(recorderRecording, "after restart the recorder should be recording (not left in a half-stopped state)")
 
         // 5) The fresh session must complete end-to-end: stop -> transcribe -> inject.
         await coordinator._test_stop()
-        XCTAssertEqual(injector.injectedTexts, ["fresh session"], "重启的会话应能正常转写并注入")
+        XCTAssertEqual(injector.injectedTexts, ["fresh session"], "the restarted session should transcribe and inject normally")
         XCTAssertEqual(coordinator.phase, .idle)
-        XCTAssertFalse(coordinator._test_isRecording, "整轮结束后不应再标记为录音中")
+        XCTAssertFalse(coordinator._test_isRecording, "should no longer be marked recording after the whole round finishes")
 
         // The recorder must not be left half-stopped: every start was matched by a stop (cancel-stop + the restart's pipeline stop).
         let startCount = await recorder.startCount
         let stopCount = await recorder.stopCount
-        XCTAssertEqual(startCount, 2, "应有两次 start：取消前一次 + 重启一次")
-        XCTAssertEqual(stopCount, 2, "应有两次 stop：取消的 stop + 重启会话的管线 stop，录音器未被遗留在半停状态")
+        XCTAssertEqual(startCount, 2, "there should be two starts: one before cancel + one for the restart")
+        XCTAssertEqual(stopCount, 2, "there should be two stops: the cancel stop + the restart session's pipeline stop; the recorder is not left half-stopped")
         let stillRecording = await recorder.isRecording
-        XCTAssertFalse(stillRecording, "录音器最终应处于已停止状态")
+        XCTAssertFalse(stillRecording, "the recorder should end up stopped")
     }
 
     // MARK: - ESC cancel mid-start: must NOT resurrect the session (startTask resurrection bug)
@@ -666,34 +666,34 @@ final class DictationCoordinatorTests: XCTestCase {
         // 1) Arm the start gate, then kick off start WITHOUT awaiting: the start Task suspends inside recorder.start().
         await recorder.gateStart()
         coordinator._test_handleStart()
-        XCTAssertEqual(coordinator.phase, .listening, "start 触发后先进入 listening")
+        XCTAssertEqual(coordinator.phase, .listening, "should first enter listening after start is triggered")
         await recorder.waitUntilStartGated()  // ensure the start Task is pinned in the "start in flight, suspended" window
         // Capture the start Task handle BEFORE cancel nils it out, so we can deterministically await the cancelled
         // (orphaned) closure to completion after releasing the gate (otherwise _test_awaitStart is a no-op post-cancel).
         let captured = coordinator._test_startTask
-        XCTAssertNotNil(captured, "handleStart 应建立 start Task")
+        XCTAssertNotNil(captured, "handleStart should establish the start Task")
 
         // 2) ESC-cancel lands while the start is suspended.
         coordinator._test_cancel()
-        XCTAssertEqual(coordinator.phase, .idle, "取消后应立即复位到 idle")
-        XCTAssertFalse(coordinator._test_isRecording, "取消后不应标记为录音中")
+        XCTAssertEqual(coordinator.phase, .idle, "should reset to idle immediately after cancel")
+        XCTAssertFalse(coordinator._test_isRecording, "should not be marked recording after cancel")
 
         // 3) Release the gated start, then let the (cancelled) start Task run to completion.
         await recorder.releaseStart()
         await captured?.value
 
         // The cancelled start must NOT have resurrected the session.
-        XCTAssertEqual(coordinator.phase, .idle, "取消后被恢复的 start 闭包不应把会话拉回来")
-        XCTAssertFalse(coordinator._test_isRecording, "被取消的 start 不应把 isRecording 置为 true（复活会话）")
-        XCTAssertFalse(coordinator._test_hasLevelTask, "被取消的 start 不应启动电平转发（复活会话）")
+        XCTAssertEqual(coordinator.phase, .idle, "a resumed start closure after cancel should not resurrect the session")
+        XCTAssertFalse(coordinator._test_isRecording, "a cancelled start should not set isRecording=true (resurrecting the session)")
+        XCTAssertFalse(coordinator._test_hasLevelTask, "a cancelled start should not start level forwarding (resurrecting the session)")
 
         // The device must be released: if recorder.start() already succeeded before the cancel was observed, the recorder
         // must be stopped (via the pending-stop path) rather than left recording.
         let recorderRecording = await recorder.isRecording
-        XCTAssertFalse(recorderRecording, "取消后录音器必须被释放（已停止），而非被遗留在录音中")
+        XCTAssertFalse(recorderRecording, "after cancel the recorder must be released (stopped), not left recording")
 
         // Nothing was injected (cancel injects nothing).
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "取消绝不应注入任何文本")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "cancel should never inject any text")
     }
 
     /// Companion to the resurrection guard: a cancel landing while the start Task is suspended at `awaitPendingStop()`
@@ -729,14 +729,14 @@ final class DictationCoordinatorTests: XCTestCase {
         await recorder.releaseStop()
         await coordinator._test_awaitStart()
 
-        XCTAssertEqual(coordinator.phase, .idle, "取消后被恢复的 start 闭包不应拉回会话")
-        XCTAssertFalse(coordinator._test_isRecording, "在 awaitPendingStop 处被取消不应起录音")
-        XCTAssertFalse(coordinator._test_hasLevelTask, "在 awaitPendingStop 处被取消不应启动电平转发")
+        XCTAssertEqual(coordinator.phase, .idle, "a resumed start closure after cancel should not resurrect the session")
+        XCTAssertFalse(coordinator._test_isRecording, "a cancel at awaitPendingStop should not start recording")
+        XCTAssertFalse(coordinator._test_hasLevelTask, "a cancel at awaitPendingStop should not start level forwarding")
         // The restart's recorder.start() must never have run: only the first session's one start happened.
         let startCount = await recorder.startCount
-        XCTAssertEqual(startCount, 1, "在 recorder.start() 之前被取消，不应再次调用 recorder.start()")
+        XCTAssertEqual(startCount, 1, "cancelled before recorder.start(), recorder.start() should not be called again")
         let recorderRecording = await recorder.isRecording
-        XCTAssertFalse(recorderRecording, "录音器最终应处于已停止状态")
+        XCTAssertFalse(recorderRecording, "the recorder should end up stopped")
     }
 
     // MARK: - Single-tap toggle resync: cancel / start-failure resets the hotkey toggle (no wasted next tap)
@@ -755,17 +755,17 @@ final class DictationCoordinatorTests: XCTestCase {
                                                 recorder: recorder, injector: injector)
 
         // First isolated tap activates the toggle (-> would emit .start) and the coordinator begins a session.
-        XCTAssertEqual(manager._test_emitSingleTap(), .start, "首个孤立轻点应 .start 并激活切换状态")
-        XCTAssertTrue(manager._test_singleTapSessionActive, "首个轻点后切换状态应为激活")
+        XCTAssertEqual(manager._test_emitSingleTap(), .start, "the first isolated tap should .start and activate the toggle state")
+        XCTAssertTrue(manager._test_singleTapSessionActive, "the toggle state should be active after the first tap")
         await coordinator._test_start()
 
         // ESC-cancel: the coordinator must resync the toggle back to inactive.
         coordinator._test_cancel()
         XCTAssertEqual(coordinator.phase, .idle)
         XCTAssertFalse(manager._test_singleTapSessionActive,
-                       "取消后协调器应重置单击切换状态机，使下一次轻点重新 .start 而非被吞")
+                       "after cancel the coordinator should reset the single-tap toggle state machine so the next tap .starts again rather than being swallowed")
         // Proof of resync: the NEXT tap emits .start again (not a wasted phantom .stop).
-        XCTAssertEqual(manager._test_emitSingleTap(), .start, "取消后下一次轻点应重新 .start，而非被吞成无效的 .stop")
+        XCTAssertEqual(manager._test_emitSingleTap(), .start, "after cancel the next tap should .start again, not be swallowed into a no-op .stop")
     }
 
     /// Start-failure (microphone denied) in single-tap mode: the first tap flipped the toggle active, but recording
@@ -784,10 +784,10 @@ final class DictationCoordinatorTests: XCTestCase {
 
         // The start fails (mic denied) -> failToIdle -> must resync the toggle.
         await coordinator._test_start()
-        XCTAssertFalse(coordinator._test_isRecording, "启动失败不应标记录音中")
+        XCTAssertFalse(coordinator._test_isRecording, "a start failure should not mark recording")
         XCTAssertFalse(manager._test_singleTapSessionActive,
-                       "启动失败后应重置单击切换状态机（下一次轻点重新开始）")
-        XCTAssertEqual(manager._test_emitSingleTap(), .start, "启动失败后下一次轻点应重新 .start")
+                       "after a start failure the single-tap toggle state machine should be reset (the next tap starts again)")
+        XCTAssertEqual(manager._test_emitSingleTap(), .start, "after a start failure the next tap should .start again")
     }
 
     /// Hold mode must be unaffected: cancel() calling sessionDidEndExternally() is a no-op for the hold machine, so a
@@ -806,7 +806,7 @@ final class DictationCoordinatorTests: XCTestCase {
         // sessionDidEndExternally() only touches the single-tap machine; the single-tap toggle stays inactive (default),
         // confirming hold mode's cancel does not flip any toggle state. (Hold start/stop is driven by physical key edges.)
         XCTAssertFalse(manager._test_singleTapSessionActive)
-        XCTAssertEqual(manager.mode, .holdToTalk, "hold 模式不应被取消逻辑改动")
+        XCTAssertEqual(manager.mode, .holdToTalk, "hold mode should not be altered by the cancel logic")
     }
 
     /// Builds a coordinator wired to a caller-supplied real HotkeyManager (for the single-tap-toggle resync tests),
@@ -850,9 +850,9 @@ final class DictationCoordinatorTests: XCTestCase {
         coordinator._test_cancel()
 
         XCTAssertEqual(coordinator.phase, .idle)
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "idle 时取消不应注入")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "cancel while idle should not inject")
         let stopCount = await recorder.stopCount
-        XCTAssertEqual(stopCount, 0, "idle 时取消不应触碰录音器")
+        XCTAssertEqual(stopCount, 0, "cancel while idle should not touch the recorder")
     }
 
     // MARK: - Level forwarding: each session subscribes to the current session's level stream, forwarding to the HUD waveform
@@ -872,14 +872,14 @@ final class DictationCoordinatorTests: XCTestCase {
         }
 
         await coordinator._test_start()
-        XCTAssertTrue(coordinator._test_isRecording, "start 后应在录音中")
+        XCTAssertTrue(coordinator._test_isRecording, "should be recording after start")
 
         // Simulate a real tap delivering one normalized level on this session's stream (emitLevel is nonisolated, called synchronously).
         recorder.emitLevel(0.7)
 
         // The forwarding task asynchronously consumes the level and switches back to the main thread to refresh the HUD; poll-wait for it to arrive (avoiding dependence on a fixed sleep).
         let forwarded = await waitForLevel(panel, atLeast: 0.69)
-        XCTAssertTrue(forwarded, "start 后投递的会话电平应被转发到 HUD（level≈0.7），而非恒为 0")
+        XCTAssertTrue(forwarded, "a session level delivered after start should be forwarded to the HUD (level≈0.7), not stuck at 0")
     }
 
     /// Poll-wait for the HUD's `currentLevel` to reach a threshold (the forwarding task is async, the main thread must be yielded multiple times).
@@ -905,14 +905,14 @@ final class DictationCoordinatorTests: XCTestCase {
         }
 
         coordinator._test_showTransientError("first")
-        XCTAssertTrue(coordinator._test_hasTransientTask, "首个 transient 应建立延迟隐藏任务")
-        XCTAssertFalse(coordinator._test_transientTaskCancelled, "首个 transient 任务尚未被取消")
+        XCTAssertTrue(coordinator._test_hasTransientTask, "the first transient should establish a delayed-hide task")
+        XCTAssertFalse(coordinator._test_transientTaskCancelled, "the first transient task should not be cancelled yet")
 
         // A second transient must cancel the first's sleeper (only the latest owns hide()).
         coordinator._test_showTransientError("second")
         // The CURRENT transientTask is the second (not cancelled); the first was cancelled+replaced.
         XCTAssertTrue(coordinator._test_hasTransientTask)
-        XCTAssertFalse(coordinator._test_transientTaskCancelled, "最新 transient 任务不应被取消（取消的是被替换的旧任务）")
+        XCTAssertFalse(coordinator._test_transientTaskCancelled, "the latest transient task should not be cancelled (the replaced old one is what gets cancelled)")
     }
 
     /// ESC-cancel during/after a transient must cancel the in-flight ~1.6s sleeper so a stale transient can never hide a
@@ -931,13 +931,13 @@ final class DictationCoordinatorTests: XCTestCase {
         coordinator._test_showTransientError("transient")
         // Capture the handle BEFORE cancel() nils it out, so we can assert it was cancelled.
         let captured = coordinator._test_transientTask
-        XCTAssertNotNil(captured, "showTransient 应建立延迟隐藏任务")
+        XCTAssertNotNil(captured, "showTransient should establish a delayed-hide task")
 
         // Re-enter an active session, then cancel: the in-flight transient sleeper must be cancelled.
         await coordinator._test_start()
         coordinator._test_cancel()
-        XCTAssertEqual(captured?.isCancelled, true, "取消应取消在途的 transient 延迟隐藏任务")
-        XCTAssertFalse(coordinator._test_hasTransientTask, "取消后应清空 transientTask 句柄")
+        XCTAssertEqual(captured?.isCancelled, true, "cancel should cancel the in-flight transient delayed-hide task")
+        XCTAssertFalse(coordinator._test_hasTransientTask, "the transientTask handle should be cleared after cancel")
     }
 
     // MARK: - A4: failToIdle guard — no redundant recorder.stop()/pendingStop on the already-stopped path
@@ -960,8 +960,8 @@ final class DictationCoordinatorTests: XCTestCase {
         // runPipeline ran recorder.stop() once (success), then transcribe threw -> failToIdle. The guard must skip a
         // second stop (recorder is already .notRecording) and leave no pendingStop the next handleStart needlessly awaits.
         let stopCount = await recorder.stopCount
-        XCTAssertEqual(stopCount, 1, "已停止路径上 failToIdle 不应再多停一次（避免被吞掉的 .notRecording 空操作）")
-        XCTAssertFalse(coordinator._test_hasPendingStop, "已停止路径上 failToIdle 不应遗留误导性的 pendingStop")
+        XCTAssertEqual(stopCount, 1, "on the already-stopped path failToIdle should not stop again (avoiding a swallowed .notRecording no-op)")
+        XCTAssertFalse(coordinator._test_hasPendingStop, "on the already-stopped path failToIdle should not leave a misleading pendingStop")
         XCTAssertTrue(injector.injectedTexts.isEmpty)
         XCTAssertFalse(coordinator._test_isRecording)
     }
@@ -979,8 +979,8 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
 
         let stopCount = await recorder.stopCount
-        XCTAssertEqual(stopCount, 0, "启动失败（引擎未起）时 failToIdle 不应调用 recorder.stop()")
-        XCTAssertFalse(coordinator._test_hasPendingStop, "启动失败路径不应遗留 pendingStop")
+        XCTAssertEqual(stopCount, 0, "on start failure (engine never started) failToIdle should not call recorder.stop()")
+        XCTAssertFalse(coordinator._test_hasPendingStop, "the start-failure path should not leave a pendingStop")
     }
 
     // MARK: - A5: cloud key read off the per-dictation main-actor hot path (cached against the cheap signature)
@@ -1008,7 +1008,7 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
 
         XCTAssertEqual(readCount.value, 1,
-                       "配置不变时云端密钥应缓存，跨多次听写最多读取一次（不在 @MainActor 热路径上同步读 Keychain）")
+                       "the cloud key should be cached when config is unchanged, read at most once across multiple dictations (not synchronously reading the Keychain on the @MainActor hot path)")
     }
 
     /// After a cheap (mode/model) signature change the cloud key is re-read (a rebuild is required anyway), so the cache
@@ -1035,7 +1035,7 @@ final class DictationCoordinatorTests: XCTestCase {
         config.cloudSTTModel = "whisper-1"
         await coordinator._test_start()
         await coordinator._test_stop()
-        XCTAssertEqual(readCount.value, 2, "模型变更后应重新读取云端密钥（此时本就需要重建转写器）")
+        XCTAssertEqual(readCount.value, 2, "the cloud key should be re-read after a model change (a transcriber rebuild is required anyway)")
     }
 
     // MARK: - Learn from edits (Part B): arm + edit-key + diff + persist; OFF / AX-nil / expired / non-proper-noun
@@ -1067,21 +1067,21 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        XCTAssertEqual(injector.injectedTexts, ["I met jon today"], "应注入转写文本")
-        XCTAssertTrue(coordinator._test_injectionRecordArmed, "开启后成功注入应武装一条 injection record")
+        XCTAssertEqual(injector.injectedTexts, ["I met jon today"], "should inject the transcribed text")
+        XCTAssertTrue(coordinator._test_injectionRecordArmed, "after enabling, a successful inject should arm one injection record")
 
         // Simulate the user editing in place (Backspace), then the debounced read-back + diff.
         await coordinator._test_handleEditKey()
-        XCTAssertTrue(suggestionPanel._test_isShown, "单 token 专有名词替换应弹出建议")
+        XCTAssertTrue(suggestionPanel._test_isShown, "a single-token proper-noun substitution should pop up a suggestion")
 
         // Accept -> persist + clear the record.
         suggestionPanel._test_accept()
         // The persist runs in a detached Task off the main actor; poll the store until it lands.
         let added = await waitForEntry(in: store)
-        XCTAssertEqual(added?.canonical, "John", "Accept 应以 corrected 作为 canonical 持久化")
-        XCTAssertEqual(added?.variants, ["jon"], "Accept 应以 heard 作为 variant 持久化")
-        XCTAssertEqual(added?.source, .learnedFromEdit, "来源应为 learnedFromEdit")
-        XCTAssertFalse(coordinator._test_injectionRecordArmed, "Accept 后应清除 record")
+        XCTAssertEqual(added?.canonical, "John", "Accept should persist corrected as the canonical")
+        XCTAssertEqual(added?.variants, ["jon"], "Accept should persist heard as the variant")
+        XCTAssertEqual(added?.source, .learnedFromEdit, "the source should be learnedFromEdit")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "the record should be cleared after Accept")
     }
 
     /// Dismiss path: the same arm + edit + suggestion, but Dismiss adds NOTHING and clears the record.
@@ -1114,15 +1114,15 @@ final class DictationCoordinatorTests: XCTestCase {
         // Give any (erroneous) persist a chance to run, then assert the store stayed empty.
         for _ in 0..<10 { await Task.yield() }
         let entries = await store.all()
-        XCTAssertTrue(entries.isEmpty, "Dismiss 不应持久化任何条目")
-        XCTAssertFalse(coordinator._test_injectionRecordArmed, "Dismiss 后应清除 record")
+        XCTAssertTrue(entries.isEmpty, "Dismiss should not persist any entry")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "the record should be cleared after Dismiss")
     }
 
     /// Toggle OFF: ZERO behavior change. injectFinalText arms NOTHING, an edit-key is a no-op, no suggestion, store empty,
     /// and the injected text is byte-identical (reusing the empty-dictionary regression).
     func testLearnFromEditsOffArmsNothingAndNoSuggestion() async {
         let config = makeConfig()  // learnFromEditsEnabled defaults to false
-        XCTAssertFalse(config.learnFromEditsEnabled, "前置：默认应为关")
+        XCTAssertFalse(config.learnFromEditsEnabled, "precondition: the default should be off")
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
         let store = DictionaryStore(
@@ -1144,14 +1144,14 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        XCTAssertEqual(injector.injectedTexts, ["I met jon today"], "OFF 时注入文本应逐字节不变（零行为变化）")
-        XCTAssertFalse(coordinator._test_injectionRecordArmed, "OFF 时不应武装任何 record")
-        XCTAssertEqual(reader.readCount, 0, "OFF 时绝不应进行任何 AX 读取")
+        XCTAssertEqual(injector.injectedTexts, ["I met jon today"], "when OFF the injected text should be byte-for-byte unchanged (zero behavior change)")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "when OFF no record should be armed")
+        XCTAssertEqual(reader.readCount, 0, "when OFF no AX read should ever happen")
 
         await coordinator._test_handleEditKey()
-        XCTAssertFalse(suggestionPanel._test_isShown, "OFF 时编辑键应为 no-op，无建议")
+        XCTAssertFalse(suggestionPanel._test_isShown, "when OFF the edit key should be a no-op, no suggestion")
         let entries = await store.all()
-        XCTAssertTrue(entries.isEmpty, "OFF 时词典应保持为空")
+        XCTAssertTrue(entries.isEmpty, "when OFF the dictionary should stay empty")
     }
 
     /// AX read returns nil at ARM time (secure/unreadable field): the record is NOT armed, so a later edit-key is a no-op.
@@ -1172,9 +1172,9 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
 
-        XCTAssertFalse(coordinator._test_injectionRecordArmed, "ARM 时 AX 返回 nil 不应武装 record")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "an AX nil at ARM time should not arm a record")
         await coordinator._test_handleEditKey()
-        XCTAssertFalse(suggestionPanel._test_isShown, "未武装时编辑键应无建议")
+        XCTAssertFalse(suggestionPanel._test_isShown, "when not armed the edit key should yield no suggestion")
     }
 
     /// AX read returns nil at READ-BACK time (focus moved to a secure/unreadable field after arming): no suggestion.
@@ -1198,10 +1198,10 @@ final class DictationCoordinatorTests: XCTestCase {
 
         await coordinator._test_start()
         await coordinator._test_stop()
-        XCTAssertTrue(coordinator._test_injectionRecordArmed, "ARM 读成功应武装")
+        XCTAssertTrue(coordinator._test_injectionRecordArmed, "a successful ARM read should arm")
 
         await coordinator._test_handleEditKey()
-        XCTAssertFalse(suggestionPanel._test_isShown, "读回 AX nil 应静默丢弃，无建议")
+        XCTAssertFalse(suggestionPanel._test_isShown, "an AX nil on read-back should be silently dropped, no suggestion")
     }
 
     /// An expired record: the edit-key is ignored entirely (never interferes with typing), no suggestion.
@@ -1227,9 +1227,9 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator._test_injectionRecordArmed)
 
         await coordinator._test_handleEditKey()
-        XCTAssertFalse(suggestionPanel._test_isShown, "过期 record 应被忽略，无建议")
-        XCTAssertFalse(coordinator._test_injectionRecordArmed, "过期 record 应被清除")
-        XCTAssertEqual(reader.readCount, 0, "过期 record 应在任何读取前短路")
+        XCTAssertFalse(suggestionPanel._test_isShown, "an expired record should be ignored, no suggestion")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "an expired record should be cleared")
+        XCTAssertEqual(reader.readCount, 0, "an expired record should short-circuit before any read")
     }
 
     /// A non-proper-noun edit (cat -> dog, both common words): the detector returns nil, so no suggestion is shown.
@@ -1254,7 +1254,7 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
         await coordinator._test_handleEditKey()
 
-        XCTAssertFalse(suggestionPanel._test_isShown, "普通词->普通词（cat->dog）detector 返回 nil，不应有建议")
+        XCTAssertFalse(suggestionPanel._test_isShown, "common-word -> common-word (cat->dog) the detector returns nil, so there should be no suggestion")
     }
 
     /// Polls the store until it has at least one entry (the Accept persist runs in a detached Task off the main actor),
