@@ -108,10 +108,23 @@ public struct RecordingPanelView: View {
     /// ``RecordingState/displayText`` -- which already returns the Transcribing… / Polishing… copy per phase,
     /// i.e. the "transcribing vs polish" distinction is carried entirely by the copy and the progress-bar position takes no part. The info/error copy is also unchanged.
     private var statusText: String {
-        if processingElapsedLong, model.state.processingPhase != nil {
+        Self.statusText(for: model.state, processingElapsedLong: processingElapsedLong)
+    }
+
+    /// Pure decision for the HUD's primary copy, factored out of the computed property so it is directly unit-testable
+    /// (the same extract-for-testing pattern as ``RecordingState/displayText`` and `WhisperKitTranscriber.promptText`).
+    ///
+    /// The "taking longer than usual" swap applies ONLY to the actual transcribing/polishing phases. The `.preparingModel`
+    /// phase (cold CoreML load) must keep showing "Preparing model…" the whole time — NEVER swapping to the alarming
+    /// "taking longer" copy — because a first-ever ANE compile legitimately takes a while and the upper layer bounds that
+    /// wait separately. Excluding `.preparingModel` here leaves the transcribing/polishing swap byte-identical.
+    static func statusText(for state: RecordingState, processingElapsedLong: Bool) -> String {
+        if processingElapsedLong,
+           let phase = state.processingPhase,
+           phase != .preparingModel {
             return RecordingState.takingLongerMessage
         }
-        return model.state.displayText
+        return state.displayText
     }
 
     /// Responds to state changes, driving the single client-side ease of the progress bar and the "taking longer than usual" copy flip (decoupled from the backend).

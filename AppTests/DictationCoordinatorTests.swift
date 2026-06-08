@@ -877,6 +877,132 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["热启动转写结果"], "a warm model should transcribe and inject normally")
     }
 
+    // MARK: - Preparing-model hang: bounded prepare wait abandons the WAIT (never the load), no hang, non-alarming
+
+    /// Regression guard (preparing-model hang, fixes 1+2): when the cold-start model load is NON-cancellable and never
+    /// returns within the bound, the prepare WAIT must elapse and converge to idle with a NON-alarming hint — WITHOUT
+    /// hanging (the old `withThrowingTaskGroup` awaited the un-stoppable load at scope exit, defeating the timeout). The
+    /// fake's `preload()` is GATED and NEVER released, so it never returns (modelling the multi-minute first-ever ANE
+    /// compile); the bounded wait elapses, the pipeline shows the "still preparing" copy (NOT "Transcription failed"),
+    /// converges to idle, and injects nothing. The detached load is NOT cancelled, so `preloadCalled` stays true (it keeps
+    /// running + caching so a retry would be warm). If this test ever HANGS, the defeated-timeout bug has regressed.
+    func testColdLocalModelBoundedPrepareConvergesToIdleAndDoesNotHang() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let panel = RecordingPanelController(headless: true)
+        let transcriber = FakeTranscriber(text: "不应被转写", ready: false)
+        await transcriber.gatePreload()   // gate and NEVER release: preload() never returns (non-cancellable cold load)
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in true },     // download gate passes; the cold in-memory load is what hangs
+            transcribeTimeout: .milliseconds(50)  // tiny bound so the wait elapses fast
+        ) {
+            transcriber
+        }
+
+        await coordinator._test_start()
+        // Awaiting the pipeline must NOT hang: the bounded wait elapses (~50ms) even though preload() never returns.
+        await coordinator._test_stop()
+
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "a still-preparing convergence must inject nothing")
+        XCTAssertEqual(coordinator.phase, .idle, "the bounded prepare wait must converge to idle (never stuck)")
+        // The HUD shows the NON-alarming "still preparing" copy, NOT the scary "Transcription failed".
+        let stillPreparing = uiLanguageLocalized("hud.modelStillPreparing",
+                                                 defaultValue: "Model is still preparing — try again in a moment")
+        let failed = uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed")
+        XCTAssertEqual(panel.currentState, .error(stillPreparing),
+                       "the bounded-wait elapse must show the non-alarming still-preparing hint")
+        XCTAssertNotEqual(panel.currentState.displayText, failed,
+                          "the bounded-wait elapse must NOT show the scary transcription-failed copy")
+        // The detached load was kicked and is NOT cancelled — it keeps running so a retry is warm.
+        let preloaded = await transcriber.preloadCalled
+        XCTAssertTrue(preloaded, "the cold-start load must have been kicked (and keeps running detached)")
+        // Release the gate so the lingering detached load task can finish (test hygiene; no behavior assertion).
+        await transcriber.releasePreload()
+    }
+
+    /// Regression guard (preparing-model hang, fix 2): ESC during the preparing phase must IMMEDIATELY abort the WAIT and
+    /// converge to idle injecting nothing; and a LATE bounded-wait elapse / load completion that resolves AFTER the cancel
+    /// must NOT re-show any HUD or error (the old defeated timeout threw minutes later and re-flashed "Transcription
+    /// failed"). The fake's `preload()` is gated; the test cancels while the prepare wait is in flight, then waits PAST the
+    /// (tiny) bound and releases the load — asserting the panel stays hidden (idle) the whole time and nothing is injected.
+    func testCancelDuringPreparingAbortsAndDoesNotReShowAfterLateResolve() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let panel = RecordingPanelController(headless: true)
+        let transcriber = FakeTranscriber(text: "不应被转写", ready: false)
+        await transcriber.gatePreload()
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in true },
+            transcribeTimeout: .milliseconds(40)
+        ) {
+            transcriber
+        }
+
+        await coordinator._test_start()
+        coordinator._test_handleStop()
+        // Wait until the pipeline is sitting in the gated preload (the preparing-model window).
+        await transcriber.waitUntilPreloadGated()
+        XCTAssertEqual(panel.currentState, .processing(progress: 0.0, phase: .preparingModel),
+                       "sanity: the HUD shows the preparing-model phase before cancel")
+
+        // ESC mid-prepare: must abort the wait promptly and hide the HUD.
+        coordinator._test_cancel()
+        await coordinator._test_awaitProcessing()
+        XCTAssertEqual(coordinator.phase, .idle, "ESC during preparing must converge to idle")
+        XCTAssertFalse(panel.currentState.isVisible, "ESC must hide the HUD (panel idle) during preparing")
+
+        // Wait PAST the bound and release the gated load, so any late finisher (timeout elapse / load completion) fires
+        // AFTER the cancel — it must NOT re-show the HUD or an error.
+        try? await Task.sleep(for: .milliseconds(120))
+        await transcriber.releasePreload()
+        for _ in 0..<50 { await Task.yield(); try? await Task.sleep(for: .milliseconds(2)) }
+
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "after cancel nothing should ever be injected")
+        XCTAssertEqual(coordinator.phase, .idle, "a late timeout/completion after cancel must keep phase idle")
+        XCTAssertFalse(panel.currentState.isVisible,
+                       "a late timeout/completion after cancel must NOT re-show any HUD or error")
+    }
+
+    // MARK: - Prewarm on download completion: edge into .downloaded only
+
+    /// Regression guard (preparing-model hang, fix 4): the coordinator prewarms the engine on the EDGE into `.downloaded`
+    /// (so the first dictation after a fresh first-run download is warm, not a cold foreground compile), and ONLY on that
+    /// edge — a model already present at launch (seeded `previous == .downloaded`) never re-prewarms, and one download
+    /// never fires twice. Asserts on the pure ``DictationCoordinator/shouldPrewarmOnModelTransition(previous:current:)``
+    /// edge predicate the observation handler delegates to (deterministic, no `ModelManager` singleton / disk).
+    func testPrewarmFiresOnlyOnEdgeIntoDownloaded() {
+        // Fresh download finishing: <anything but .downloaded> -> .downloaded is the prewarm edge.
+        XCTAssertTrue(DictationCoordinator.shouldPrewarmOnModelTransition(
+            previous: .downloading(progress: 0.9, speedBytesPerSec: nil), current: .downloaded))
+        XCTAssertTrue(DictationCoordinator.shouldPrewarmOnModelTransition(
+            previous: .notDownloaded, current: .downloaded))
+        XCTAssertTrue(DictationCoordinator.shouldPrewarmOnModelTransition(
+            previous: .failed(reason: "x"), current: .downloaded))
+        // First-ever observation (nil) landing on .downloaded also counts as an edge.
+        XCTAssertTrue(DictationCoordinator.shouldPrewarmOnModelTransition(
+            previous: nil, current: .downloaded))
+        // Already downloaded at launch -> stays .downloaded: NOT an edge (never re-prewarm / never twice).
+        XCTAssertFalse(DictationCoordinator.shouldPrewarmOnModelTransition(
+            previous: .downloaded, current: .downloaded))
+        // Non-.downloaded targets are never a prewarm edge.
+        XCTAssertFalse(DictationCoordinator.shouldPrewarmOnModelTransition(
+            previous: .notDownloaded, current: .downloading(progress: 0.1, speedBytesPerSec: nil)))
+        XCTAssertFalse(DictationCoordinator.shouldPrewarmOnModelTransition(
+            previous: .downloaded, current: .failed(reason: "x")))
+    }
+
     // MARK: - Input device takes effect in real time: end-to-end dictation uses the persisted inputDeviceUID
 
     /// Regression guard: the microphone selected in the settings page must take effect immediately for the **next** dictation (no App restart needed).

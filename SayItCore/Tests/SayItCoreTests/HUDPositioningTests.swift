@@ -102,6 +102,43 @@ final class RecordingStateTests: XCTestCase {
         XCTAssertTrue(supported.contains(message), "got \(message)")
     }
 
+    #if canImport(SwiftUI)
+    /// Regression guard (preparing-model hang, fix 3): while the cold-start model load is in flight the HUD shows the
+    /// `.preparingModel` phase. Even once `processingElapsedLong` is true (the client-side ramp exceeded its window), the
+    /// primary copy must STAY "Preparing model…" and NEVER swap to the alarming "Taking longer than usual…" — a first-ever
+    /// ANE compile legitimately takes a while and the upper layer bounds that wait separately. Asserts on the pure
+    /// ``RecordingPanelView/statusText(for:processingElapsedLong:)`` decision the computed property delegates to.
+    @MainActor
+    func testPreparingModelNeverSwapsToTakingLongerEvenWhenElapsedLong() {
+        let preparing = RecordingState.processing(progress: 0.0, phase: .preparingModel)
+        // Before the ramp window: shows the preparing copy (sanity).
+        XCTAssertEqual(RecordingPanelView.statusText(for: preparing, processingElapsedLong: false),
+                       preparing.displayText)
+        // After the ramp window (elapsedLong): MUST still show the preparing copy, NOT the taking-longer copy.
+        let elapsed = RecordingPanelView.statusText(for: preparing, processingElapsedLong: true)
+        XCTAssertEqual(elapsed, preparing.displayText,
+                       "the preparing-model phase must keep its own copy even when processing elapsed long")
+        XCTAssertNotEqual(elapsed, RecordingState.takingLongerMessage,
+                          "the preparing-model phase must NEVER swap to the 'taking longer than usual' copy")
+    }
+
+    /// Companion guard: the transcribing/polishing phases' "taking longer" swap is unchanged — once `processingElapsedLong`
+    /// is true those phases DO swap to the taking-longer copy (proving fix 3 narrowed the exclusion to `.preparingModel`
+    /// only, leaving the existing behavior byte-identical for the real transcribing/polishing phases).
+    @MainActor
+    func testTranscribingAndPolishingStillSwapToTakingLongerWhenElapsedLong() {
+        for phase in [RecordingState.ProcessingPhase.transcribing, .polishing] {
+            let state = RecordingState.processing(progress: 0.9, phase: phase)
+            XCTAssertEqual(RecordingPanelView.statusText(for: state, processingElapsedLong: true),
+                           RecordingState.takingLongerMessage,
+                           "the \(phase) phase should still swap to the taking-longer copy when elapsed long")
+            // Not elapsed long -> its own copy (unchanged).
+            XCTAssertEqual(RecordingPanelView.statusText(for: state, processingElapsedLong: false),
+                           state.displayText)
+        }
+    }
+    #endif
+
     func testErrorTextTrimsAndFallsBack() {
         XCTAssertEqual(RecordingState.error("  超时  ").displayText, "超时")
         // An empty message falls back to the localized generic error copy (one of en or zh-Hans).

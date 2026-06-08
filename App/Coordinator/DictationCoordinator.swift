@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import os
 import SayItCore
 
@@ -190,6 +191,11 @@ final class DictationCoordinator {
 
     /// The observer token for the config-change notification (registered in block form, must be removed with the token).
     private var configObserver: NSObjectProtocol?
+
+    /// The last ``ModelManager`` state seen by the prewarm-on-download observation, so it fires the background prewarm only
+    /// on the EDGE into `.downloaded` (`<anything else> -> .downloaded`) — never re-arming a prewarm for a model already
+    /// present at launch, and never twice for one download. `nil` until the observation is first armed in ``start()``.
+    private var lastObservedModelState: ModelManager.State?
 
     /// The reused warm transcriber instance: paired with ``cachedSignature``. Reused across multiple dictations when the config is unchanged,
     /// so ``WhisperKitTranscriber``'s CoreML engine loads only once and stays warm (fixing the ~10s reload of the ~1GB model per dictation).
@@ -407,6 +413,10 @@ final class DictationCoordinator {
         preloadLocalIfReady()
         // Warm the cached cloud key off the main actor at launch so the first cloud dictation does not block on a synchronous Keychain read.
         refreshCloudKeyInBackground()
+        // Prewarm-on-download: after a fresh first-run download finishes, kick a BACKGROUND prewarm so the FIRST dictation
+        // does not hit a cold multi-minute foreground CoreML compile. Arms an edge-triggered observation of the shared
+        // ModelManager's state here (independent of App/ModelDownloadNotifier, which a parallel task is changing).
+        observeModelDownloadForPrewarm()
     }
 
     /// Stops monitoring and cleans up (usually called before App exit; not required).
@@ -780,14 +790,18 @@ final class DictationCoordinator {
             // (joining the in-flight background prewarm; idempotent) before switching to the normal transcribing phase. When
             // the model is already warm (the common post-prewarm case) this is skipped entirely — zero "preparing" flash,
             // byte-identical to before. Cloud mode never enters this branch (CloudTranscriber.isReady defaults to true).
-            // The preload is wrapped in the SAME timeout envelope as transcribe, and a load failure throws STTError, so both
-            // fall through to the existing TranscribeTimeout / STTError catch arms below — the preparing state can never hang.
+            // The preload WAIT is bounded by ``awaitPreloadBounded(_:)`` (NOT ``withTranscribeTimeout``): the CoreML load is
+            // not cooperatively cancellable, so a task group would block on it at scope exit and DEFEAT the timeout (the
+            // multi-minute first-ever ANE-compile freeze). ``awaitPreloadBounded`` instead abandons the WAIT (timeout/ESC)
+            // while the detached load keeps loading + caching in the background, so a retry shortly after is warm. A load
+            // FAILURE still throws STTError -> the existing STTError catch arm; ESC throws CancellationError -> the existing
+            // silent-return arm; the bounded-wait elapsing throws ``PrepareStillLoading`` -> the non-alarming arm below.
             if config.sttMode == .local, await transcriber.isReady == false {
                 // Metrics (observability only): bracket the model load/warmup wait. When this branch is skipped (warm model
                 // / cloud) prepareMs stays 0 — exactly "0 when the model was already warm".
                 let prepareStart = clock.now
                 updateProcessing(0.0, .preparingModel)
-                _ = try await withTranscribeTimeout {
+                try await awaitPreloadBounded {
                     try await transcriber.preload()
                 }
                 updateProcessing(0.0, .transcribing)
@@ -814,8 +828,17 @@ final class DictationCoordinator {
             metrics.sttMs = Self.milliseconds(clock.now - sttStart)
             transcript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch is CancellationError {
-            // ESC cancelled the dictation mid-transcribe: abort silently (the user intentionally aborted), no HUD error flash, inject nothing.
-            // withTranscribeTimeout's child tasks inherit cancellation, so an outer cancel makes the inner transcribe/Task.sleep throw CancellationError that surfaces here.
+            // ESC cancelled the dictation mid-transcribe (or mid cold-start prepare): abort silently (the user intentionally
+            // aborted), no HUD error flash, inject nothing. withTranscribeTimeout's child tasks inherit cancellation, so an
+            // outer cancel makes the inner transcribe/Task.sleep throw CancellationError; ``awaitPreloadBounded`` likewise
+            // resumes with CancellationError on cancel (its cancellation handler), so the preparing wait surfaces here too.
+            return
+        } catch is PrepareStillLoading {
+            // The cold-start prepare WAIT elapsed without the model becoming ready (e.g. the first-ever ANE compile is still
+            // running). The detached load keeps loading + caching in the background, so a retry shortly after succeeds —
+            // converge to idle with a NON-alarming hint (NOT the scary "Transcription failed"). Guarded inside
+            // modelStillPreparingToIdle so a wait that elapses AFTER an ESC cancel (phase already .idle) re-shows nothing.
+            modelStillPreparingToIdle()
             return
         } catch is TranscribeTimeout {
             // Hard timeout: transcription does not return in time (e.g. the underlying layer stuck loading/downloading the model). Give an error hint and converge to idle.
@@ -989,10 +1012,12 @@ final class DictationCoordinator {
     /// Wraps a piece of async transcription work with a hard timeout: whoever returns first wins, the other branch is cancelled.
     /// If the timeout branch arrives first, throws ``TranscribeTimeout`` (guaranteeing "never permanently stuck transcribing").
     ///
-    /// Generic over the work's result so the SAME timeout envelope (and its ``TranscribeTimeout`` -> idle catch arm in
-    /// ``runPipeline``) also bounds the cold-start model `preload()` (returning `Void`): the preparing-model gate can never
-    /// hang. The marker error + `group.cancelAll()` + cancellation semantics are unchanged for the existing transcribe call.
-    /// - Parameter work: the actual async work closure (transcribe -> ``TranscriptionResult``, or preload -> `Void`).
+    /// Used for the CANCELLABLE transcribe call: `transcribe(...)` (and the timeout `Task.sleep`) cooperate with
+    /// cancellation, so `group.cancelAll()` actually stops the loser and the group does not block at scope exit. The
+    /// cold-start `preload()` is a NON-cancellable CoreML load, so it must NOT go through this group (which awaits all
+    /// children at scope exit and would block on the un-stoppable load — the defeated-timeout hang) — it uses the
+    /// abandon-the-wait-not-the-load path ``awaitPreloadBounded(_:)`` instead. This envelope is unchanged for transcribe.
+    /// - Parameter work: the actual async work closure (transcribe -> ``TranscriptionResult``).
     private func withTranscribeTimeout<T: Sendable>(
         _ work: @escaping @Sendable () async throws -> T
     ) async throws -> T {
@@ -1009,6 +1034,90 @@ final class DictationCoordinator {
                 throw TranscribeTimeout()
             }
             return result
+        }
+    }
+
+    // MARK: Bounded cold-start preload wait (abandon the wait, never the load)
+
+    /// The marker error thrown when the cold-start ``awaitPreloadBounded(_:)`` wait elapses without the model becoming
+    /// ready. Distinct from ``TranscribeTimeout`` so the pipeline can converge to a NON-alarming "still preparing" hint
+    /// (the background load keeps running, so a retry shortly after succeeds) rather than the scary "Transcription failed".
+    private struct PrepareStillLoading: Error {}
+
+    /// A one-shot, thread-safe wrapper around a `CheckedContinuation` so the FIRST of {load finished, timeout elapsed,
+    /// cancelled} resolves the cold-start wait and every later finisher is a no-op. The continuation is resumed from
+    /// multiple unstructured tasks (and the cancellation handler), so the guard must be lock-protected.
+    private final class PreloadWaitBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Error>?
+        /// The FIRST finisher's outcome, when it raced ahead of ``store(_:)`` (no continuation captured yet). Held here so
+        /// ``store(_:)`` resumes with the EXACT outcome (success OR failure) — never substituting a wrong error.
+        private var pendingResult: Result<Void, Error>?
+        private var resumed = false
+
+        func store(_ continuation: CheckedContinuation<Void, Error>) {
+            lock.lock(); defer { lock.unlock() }
+            // If a finisher already raced ahead (e.g. an immediate cancel, or an instant load) before the continuation was
+            // captured, resume it now with that exact outcome; otherwise hold the continuation for the first finisher.
+            if let pendingResult {
+                continuation.resume(with: pendingResult)
+            } else {
+                self.continuation = continuation
+            }
+        }
+
+        func resume(with result: Result<Void, Error>) {
+            lock.lock(); defer { lock.unlock() }
+            guard !resumed else { return }
+            resumed = true
+            if let continuation {
+                self.continuation = nil
+                continuation.resume(with: result)
+            } else {
+                // The continuation has not been captured yet (a finisher won the race instantly): remember the exact
+                // outcome so ``store(_:)`` resumes it as soon as it arrives.
+                pendingResult = result
+            }
+        }
+    }
+
+    /// Bounds the cold-start `preload()` WAIT without ever blocking on (or cancelling) the non-cooperatively-cancellable
+    /// CoreML model load. The load runs in a DETACHED task that this method never awaits and never cancels: the engine
+    /// keeps loading and caching in the background, so a retry shortly after is warm. This method only stops WAITING —
+    /// it resolves on the FIRST of three finishers via a single resume-once continuation:
+    /// - the detached load finished/failed -> resume with its result (success, or rethrow its `STTError`);
+    /// - the timeout elapsed -> throw ``PrepareStillLoading`` (converge to a non-alarming hint, load continues);
+    /// - the current task was cancelled (ESC) -> throw `CancellationError` PROMPTLY (the HUD dismisses immediately).
+    ///
+    /// This is the fix for the "hard timeout defeated by a non-cancellable load" hang: `withThrowingTaskGroup` awaits all
+    /// children at scope exit, so wrapping the load there blocked on it for minutes; here nothing structured awaits the load.
+    /// - Parameter preload: the cold-start load closure (`WhisperKitTranscriber.preload()` -> `Void`, mapping failure to `STTError`).
+    private func awaitPreloadBounded(_ preload: @escaping @Sendable () async throws -> Void) async throws {
+        let timeout = transcribeTimeout
+        // The load runs detached so it is NOT a structured child of this scope (never awaited at exit) and is NOT cancelled
+        // when this wait is abandoned — it keeps loading + caching so the NEXT dictation is fast.
+        let loadTask = Task.detached(priority: .userInitiated) {
+            try await preload()
+        }
+        let box = PreloadWaitBox()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                box.store(continuation)
+                // Finisher 1: the load finished or failed -> resume with its outcome (detached, so it is never cancelled here).
+                Task.detached {
+                    let result = await loadTask.result
+                    box.resume(with: result.mapError { $0 as Error })
+                }
+                // Finisher 2: the bounded wait elapsed -> abandon the WAIT (not the load) with the non-alarming marker.
+                Task.detached {
+                    try? await Task.sleep(for: timeout)
+                    box.resume(with: .failure(PrepareStillLoading()))
+                }
+            }
+        } onCancel: {
+            // Finisher 3: ESC cancelled this run -> resume PROMPTLY so the HUD dismisses immediately; the catch arm in
+            // ``runPipeline`` swallows the `CancellationError` silently. The detached load keeps running (not cancelled).
+            box.resume(with: .failure(CancellationError()))
         }
     }
 
@@ -1090,6 +1199,55 @@ final class DictationCoordinator {
         guard ModelManager.isDownloaded(model: config.localModel) else { return }
         // Reuse currentTranscriber's cache + prewarm path, avoiding a duplicate instance.
         _ = try? currentTranscriber()
+    }
+
+    /// Arms an edge-triggered observation of the shared ``ModelManager``'s `@Observable` state so a FRESH first-run
+    /// download (`<anything but .downloaded> -> .downloaded`) kicks a BACKGROUND prewarm of the WhisperKit engine — so the
+    /// FIRST dictation after the download does NOT hit a cold multi-minute foreground ANE compile (the heart of the
+    /// "Preparing model… freezes for minutes" report). Independent of `App/ModelDownloadNotifier` (which a parallel task is
+    /// changing): this re-arms its own `withObservationTracking` (no polling) and reuses the existing
+    /// ``preloadLocalIfReady`` / ``currentTranscriber`` prewarm path (idempotent; local mode only — a cloud user's edge is a
+    /// no-op since `preloadLocalIfReady` early-returns). Seeds `lastObservedModelState` so a model already present at launch
+    /// never spuriously re-prewarms.
+    private func observeModelDownloadForPrewarm() {
+        lastObservedModelState = ModelManager.shared.state
+        armModelDownloadObservation()
+    }
+
+    /// Re-arms a one-shot observation of `ModelManager.shared.state`; on each change it prewarms on the edge into
+    /// `.downloaded` and re-arms, tracking the live state without any timer/poll (mirrors the established observation
+    /// pattern). The `onChange` hop bounces back onto the main actor (this type is `@MainActor`).
+    private func armModelDownloadObservation() {
+        withObservationTracking {
+            _ = ModelManager.shared.state
+        } onChange: {
+            Task { @MainActor [weak self] in
+                self?.handleModelStateChangeForPrewarm()
+            }
+        }
+    }
+
+    /// Processes one observed ``ModelManager`` state change: on the EDGE into `.downloaded` (and only then) kicks the
+    /// background prewarm via ``preloadLocalIfReady`` (idempotent; local mode only), then re-arms the observation.
+    private func handleModelStateChangeForPrewarm() {
+        let previous = lastObservedModelState
+        let current = ModelManager.shared.state
+        lastObservedModelState = current
+        if Self.shouldPrewarmOnModelTransition(previous: previous, current: current) {
+            // The download just finished: reuse the launch/config prewarm path so the first dictation is warm. Local-mode
+            // gated inside preloadLocalIfReady (cloud is a no-op); the underlying preloadInBackground is detached + idempotent.
+            preloadLocalIfReady()
+        }
+        armModelDownloadObservation()
+    }
+
+    /// Pure edge predicate for "did the model just finish downloading?" — true ONLY on the transition `<anything but
+    /// .downloaded> -> .downloaded`. Mirrors `App/ModelDownloadNotifier`'s edge logic and the codebase's pure-predicate
+    /// style (`ModelManager.shouldAutoDownloadOnFirstRun`); factored out as a `static` so it is unit-testable without the
+    /// `ModelManager` singleton / disk. A model already present at launch (seeded `previous == .downloaded`) never
+    /// re-prewarms; one download never fires twice. `previous == nil` (never observed) into `.downloaded` counts as an edge.
+    static func shouldPrewarmOnModelTransition(previous: ModelManager.State?, current: ModelManager.State) -> Bool {
+        current == .downloaded && previous != .downloaded
     }
 
     /// Refreshes the cached cloud key OFF the main actor (Task.detached), so the per-dictation hot path never blocks on a
@@ -1476,6 +1634,19 @@ final class DictationCoordinator {
         showSetupBlockingError(modelNotReadyMessage())
     }
 
+    /// Cold-start prepare WAIT elapsed (the model is still loading in the background): converge to idle with a clear,
+    /// NON-alarming hint rather than the scary "Transcription failed", because nothing is broken — the detached CoreML
+    /// load keeps running and caching, so a retry in a moment succeeds. Guarded by `phase != .idle` so a wait that
+    /// resolves AFTER the user already ESC-cancelled (cancel() set phase = .idle and hid the panel) NEVER re-shows the HUD
+    /// (fix for the "scary error reappears minutes later" defeated-timeout bug). Routed through the longer-lived
+    /// ``showSetupBlockingError`` (info-style copy) so the user has time to read "try again in a moment".
+    private func modelStillPreparingToIdle() {
+        guard phase != .idle else { return }
+        showSetupBlockingError(uiLanguageLocalized(
+            "hud.modelStillPreparing",
+            defaultValue: "Model is still preparing — try again in a moment"))
+    }
+
     /// Truthful, actionable copy for "the local model is not ready to transcribe", chosen by reading ``ModelManager``'s
     /// published state (via the injectable ``modelState`` seam) instead of always claiming "still downloading":
     /// - `.downloading(progress:)`: "Local model downloading… NN% — please wait" (truthful, since first launch auto-downloads).
@@ -1501,6 +1672,12 @@ final class DictationCoordinator {
 
     /// Failure convergence: the HUD briefly reports an error then returns to idle, and best-effort stops any still-running recording.
     private func failToIdle(message: String) {
+        // Late/superseded no-op guard: if this run is no longer active (the session already converged to idle — e.g. ESC's
+        // cancel() set phase = .idle and hid the panel, then a DEFEATED timeout / a late STT failure from the abandoned
+        // background load resolves minutes later), do NOT re-show any HUD or error. Every legitimate failToIdle caller fires
+        // while a run is live (handleStart's start-failure path with phase == .listening; runPipeline's stop/timeout/STT
+        // paths with phase == .working), so this only suppresses the stale post-cancel re-show, byte-identically otherwise.
+        guard phase != .idle else { return }
         // Capture whether the recorder may still be live BEFORE clearing the flag. Most failToIdle paths fire AFTER
         // runPipeline already ran a successful recorder.stop() (transcribe timeout/failure, empty transcript), so the
         // recorder is already `.notRecording`: a second beginPendingStop() there is a swallowed no-op that also leaves a
