@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The "verdict" of one polish: distinguishes polish success, skip-per-config, and failure fallback (carrying an observable reason).
 ///
@@ -77,6 +78,9 @@ public struct PolishOutcome: Equatable, Sendable {
 /// - input is empty / whitespace-only -> return the trimmed input directly, not calling the provider.
 public struct PolishPipeline: Sendable {
 
+    /// Observability-only logger for polish failure fallbacks (additive: independent of whether the App injects `logFailure`).
+    private static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "polish")
+
     /// An optional failure-log callback: called only on a "failure fallback", carrying a human-readable reason.
     /// Defaults to nil (no logging); the App layer can inject printing/reporting for debugging. `@Sendable` to satisfy concurrency safety.
     private let logFailure: (@Sendable (String) -> Void)?
@@ -134,6 +138,7 @@ public struct PolishPipeline: Sendable {
 
     /// Failure fallback: log the reason (if a logger was injected) and return the `.failedFallback` result carrying the original.
     private func fallback(_ rawText: String, reason: String) -> PolishOutcome {
+        Self.log.error("polish failed, fell back to original: \(reason, privacy: .public)")
         logFailure?(reason)
         return PolishOutcome(text: rawText, resolution: .failedFallback(reason: reason))
     }
