@@ -1,4 +1,5 @@
 import Foundation
+import os
 import WhisperKit
 
 // Note: WhisperKit itself also defines a class named `TranscriptionResult`, conflicting with this module's
@@ -24,6 +25,9 @@ import WhisperKit
 public actor WhisperKitTranscriber: Transcriber {
     /// The expected input sample rate (Hz). WhisperKit requires 16kHz mono PCM.
     public static let requiredSampleRate: Double = 16_000
+
+    /// Lightweight observability logger for local inference timing (no transcription text is ever logged).
+    private nonisolated static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "stt")
 
     /// The model identifier (e.g. `"large-v3-turbo"`, `"base"`, `"small.en"`).
     public nonisolated let model: String
@@ -85,7 +89,20 @@ public actor WhisperKitTranscriber: Transcriber {
             return tokens.isEmpty ? nil : tokens
         }()
 
+        // Observability only: time JUST the WhisperKit decode (two clock reads bracketing the await — nothing else
+        // added to the hot path), then emit one parseable .notice line so the README can quantify on-device speed.
+        // Only numbers are logged (all `privacy: .public`); the recognized text itself is never interpolated.
+        let clock = ContinuousClock()
+        let start = clock.now
         let result = try await runDecode(engine: engine, audio: audio, language: language, promptTokens: promptTokens)
+        let elapsed = clock.now - start
+        let clipSeconds = Double(audio.count) / sampleRate
+        let inferenceSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        let inferenceMs = inferenceSeconds * 1000
+        let rtf = clipSeconds > 0 ? inferenceSeconds / clipSeconds : 0
+        Self.log.notice(
+            "stt: clip=\(clipSeconds, format: .fixed(precision: 2), privacy: .public)s inference=\(inferenceMs, format: .fixed(precision: 0), privacy: .public)ms rtf=\(rtf, format: .fixed(precision: 3), privacy: .public) chars=\(result.text.count, privacy: .public)"
+        )
 
         // WhisperKit issue #372: on large-v3-turbo, a non-nil promptTokens can yield an EMPTY transcription. We already
         // mitigate by setting firstTokenLogProbThreshold to nil when prompting (so the decode loop does not break early),
