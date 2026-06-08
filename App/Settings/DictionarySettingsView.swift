@@ -40,15 +40,9 @@ struct DictionarySettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    editorContext = .add
-                } label: {
-                    Label("dictionary.add", systemImage: "plus")
-                }
-            }
-        }
+        // The add affordance lives INSIDE the pane content (the entries-section header and the empty-state button),
+        // never as a window-level `.toolbar`. In a macOS Settings `TabView` the window toolbar IS the tab-bar row, so
+        // a `.toolbar { Button("plus") }` here would surface as a stray "+" after the last tab. See `entriesSection`.
         .sheet(item: $editorContext) { context in
             switch context {
             case .add:
@@ -90,10 +84,12 @@ struct DictionarySettingsView: View {
         }
     }
 
-    /// The list of entries: one row each, with an enabled toggle and edit / delete affordances.
+    /// The list of entries: one row each, with an enabled toggle and edit / delete affordances. The section header
+    /// carries the in-content "add entry" button (an `+` affordance that lives in the pane body, not the window
+    /// toolbar) so the add flow stays reachable once the list is non-empty without leaking into the Settings tab bar.
     @ViewBuilder
     private var entriesSection: some View {
-        Section("dictionary.section.entries") {
+        Section {
             ForEach(viewModel.entries) { entry in
                 EntryRow(
                     entry: entry,
@@ -103,6 +99,19 @@ struct DictionarySettingsView: View {
                     onEdit: { editorContext = .edit(entry) },
                     onDelete: { Task { await viewModel.remove(id: entry.id) } }
                 )
+            }
+        } header: {
+            HStack {
+                Text("dictionary.section.entries")
+                Spacer()
+                Button {
+                    editorContext = .add
+                } label: {
+                    Label("dictionary.add", systemImage: "plus")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+                .help("dictionary.add")
             }
         }
     }
