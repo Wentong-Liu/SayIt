@@ -110,7 +110,14 @@ public actor DictionaryStore {
 
     // MARK: - Load / write / notify
 
-    /// Lazy-load once: on first access, create the directory and read+decode from disk; if the file is missing or corrupt, start with an empty dictionary (logs, never throws/crashes).
+    /// Lazy-load once: on first access, create the directory and read+decode from disk.
+    ///
+    /// Tolerance / data-safety policy (a single bad entry must never wipe the whole user dictionary):
+    /// - **Per-entry lossy decode**: the `entries` array is decoded element by element through ``LossyEntry``, so one
+    ///   malformed entry (missing field, unknown `source`, empty `canonical`) is skipped and the good entries survive.
+    /// - **File-level corruption**: if the top-level JSON is unreadable/undecodable (so we cannot even reach the
+    ///   array), the original bytes are **backed up to `dictionary.json.corrupt` before** starting empty, so the next
+    ///   save does not overwrite the user's (possibly hand-recoverable) data. Logs, never throws/crashes.
     @discardableResult
     private func ensureLoaded() -> UserDictionary {
         if let cache { return cache }
@@ -127,15 +134,40 @@ public actor DictionaryStore {
 
         do {
             let data = try Data(contentsOf: fileURL)
-            let decoded = try JSONDecoder().decode(UserDictionary.self, from: data)
+            // Lossy decode: the top-level container plus a per-element-tolerant `entries` array. Individual bad
+            // entries are dropped here; only a structurally broken file (not an object / not the `entries` array)
+            // throws out to the catch below.
+            let lenient = try JSONDecoder().decode(LossyUserDictionary.self, from: data)
+            if lenient.droppedCount > 0 {
+                logger.error("Loaded dictionary at \(self.fileURL.path, privacy: .public): kept \(lenient.entries.count, privacy: .public) entries, dropped \(lenient.droppedCount, privacy: .public) undecodable entries.")
+            }
+            let decoded = UserDictionary(entries: lenient.entries)
             cache = decoded
             return decoded
         } catch {
-            // File corrupt/undecodable: log and start with an empty dictionary, never crashing.
-            logger.error("Failed to load dictionary at \(self.fileURL.path, privacy: .public): \(String(describing: error), privacy: .public). Starting empty.")
+            // File-level corruption: back up the original bytes before starting empty, so the next save does not
+            // destroy recoverable data. Then log and start with an empty dictionary, never crashing.
+            backUpCorruptFile(reason: error)
             let empty = UserDictionary()
             cache = empty
             return empty
+        }
+    }
+
+    /// Move the unreadable/undecodable `dictionary.json` aside to `dictionary.json.corrupt` so a subsequent save does
+    /// not overwrite it. Best-effort: a failure to back up only logs (we still proceed to start empty).
+    ///
+    /// Uses copy + remove rather than a plain move so that even if the destination already exists (a previous
+    /// corruption was backed up before), we overwrite it deterministically instead of failing.
+    private func backUpCorruptFile(reason: Error) {
+        let backupURL = fileURL.appendingPathExtension("corrupt")
+        do {
+            let data = try Data(contentsOf: fileURL)
+            try data.write(to: backupURL, options: [.atomic])
+            try? fileManager.removeItem(at: fileURL)
+            logger.error("Corrupt dictionary at \(self.fileURL.path, privacy: .public): \(String(describing: reason), privacy: .public). Backed up to \(backupURL.path, privacy: .public) and starting empty.")
+        } catch {
+            logger.error("Corrupt dictionary at \(self.fileURL.path, privacy: .public): \(String(describing: reason), privacy: .public). FAILED to back up (\(String(describing: error), privacy: .public)); starting empty WITHOUT overwriting it.")
         }
     }
 
@@ -159,5 +191,51 @@ public actor DictionaryStore {
         } catch {
             logger.error("Failed to persist dictionary to \(self.fileURL.path, privacy: .public): \(String(describing: error), privacy: .public).")
         }
+    }
+}
+
+// MARK: - Lossy load wrappers (skip individual bad entries, keep the good ones)
+
+/// A lenient mirror of ``UserDictionary`` used **only on the load path**. Unlike the synthesized `Codable` of
+/// ``UserDictionary`` -- where one undecodable array element fails the entire decode and silently wipes the whole
+/// dictionary -- this decodes the `entries` array element by element and **skips** any element that fails, keeping the
+/// rest. The top-level shape (an object with an `entries` array) must still be valid; if it is not, the decode throws
+/// and ``DictionaryStore`` backs the file up to `.corrupt` before starting empty.
+private struct LossyUserDictionary: Decodable {
+    let entries: [DictionaryEntry]
+    /// How many array elements were dropped because they could not be decoded (for logging / diagnostics).
+    let droppedCount: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case entries
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // `entries` may be absent (treat as empty) but, if present, must be an array -- otherwise this throws and the
+        // file is treated as fully corrupt (backed up). We then decode each element independently.
+        guard container.contains(.entries) else {
+            self.entries = []
+            self.droppedCount = 0
+            return
+        }
+
+        // Decode the array as `[FailableEntry]`. `FailableEntry.init(from:)` *never* throws -- it captures each
+        // element's decode result internally -- which guarantees the unkeyed container always advances past every
+        // element (avoiding the infinite-loop hazard of catching `decode` failures directly on an unkeyed container).
+        let failables = try container.decode([FailableEntry].self, forKey: .entries)
+        self.entries = failables.compactMap(\.entry)
+        self.droppedCount = failables.count - self.entries.count
+    }
+}
+
+/// A non-throwing single-element wrapper: its `init(from:)` attempts a tolerant ``DictionaryEntry`` decode and stores
+/// `nil` on failure instead of propagating, so an array of these can be decoded in one shot and each bad element is
+/// simply dropped (with the container guaranteed to advance element by element).
+private struct FailableEntry: Decodable {
+    let entry: DictionaryEntry?
+
+    init(from decoder: any Decoder) throws {
+        self.entry = try? DictionaryEntry(from: decoder)
     }
 }
