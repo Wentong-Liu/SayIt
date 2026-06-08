@@ -157,52 +157,89 @@ final class DictionaryRewriterTests: XCTestCase {
         XCTAssertEqual(first, "wrap useEffect and useEffect together")
     }
 
-    // MARK: - Auto-derivation from canonical (single-word model: NO user-supplied variants)
+    // MARK: - NO auto-derivation of spoken forms (single-word model: NO user-supplied variants)
+    //
+    // Product decision: the deterministic Layer 3 must NOT guess multi-word spoken forms from the canonical spelling.
+    // A single-word entry matches its canonical only via exact / case-insensitive / joined-lowercase (single token).
+    // Context-aware "spoken phrase -> term" conversion (e.g. `use effect` -> `useEffect`) is delegated to the LLM
+    // (Layer 2 injects the glossary + transcript into the polish prompt). These tests invert the former T55 behavior.
 
-    func testAutoDerivedCamelCaseSpacedAndHyphenated() {
-        // Only the canonical "useEffect" — no variants. The matcher derives "use effect" / "use-effect" / "useeffect".
+    func testCanonicalWithoutVariantsMatchesExactCaseInsensitiveAndJoinedOnly() {
+        // Only the canonical "useEffect" — no variants.
         let entry = DictionaryEntry(canonical: "useEffect")
         XCTAssertEqual(entry.variants, [], "precondition: this entry supplies no variants")
-        XCTAssertEqual(DictionaryRewriter.apply(to: "Call use effect here", using: [entry]), "Call useEffect here")
-        XCTAssertEqual(DictionaryRewriter.apply(to: "Call use-effect here", using: [entry]), "Call useEffect here")
-        XCTAssertEqual(DictionaryRewriter.apply(to: "the useeffect hook", using: [entry]), "the useEffect hook")
+        // (a) exact case-sensitive spelling stays canonical.
+        XCTAssertEqual(DictionaryRewriter.apply(to: "Call useEffect here", using: [entry]), "Call useEffect here")
+        // (b) case-insensitive (all-caps) of the canonical normalizes to the stored casing.
+        XCTAssertEqual(DictionaryRewriter.apply(to: "Call USEEFFECT here", using: [entry]), "Call useEffect here",
+                       "case-insensitive: an all-caps spelling normalizes to the canonical")
         XCTAssertEqual(DictionaryRewriter.apply(to: "Call UseEffect here", using: [entry]), "Call useEffect here",
                        "case-insensitive: the PascalCase spelling normalizes to the canonical")
+        // (c) the joined-lowercase run-on single token normalizes to the canonical.
+        XCTAssertEqual(DictionaryRewriter.apply(to: "the useeffect hook", using: [entry]), "the useEffect hook")
+        // NOT a two-word spoken phrase — that is the LLM's job, the deterministic layer leaves it untouched.
+        XCTAssertEqual(DictionaryRewriter.apply(to: "Call use effect here", using: [entry]), "Call use effect here",
+                       "no auto-derivation: the two-word phrase 'use effect' must NOT be rewritten")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "Call use-effect here", using: [entry]), "Call use-effect here",
+                       "no auto-derivation: the hyphenated phrase 'use-effect' must NOT be rewritten")
     }
 
-    func testAutoDerivedPascalCaseBigQuery() {
-        // BigQuery -> "big query" / "big-query" derived, no variants supplied.
+    func testNoOverCorrectionForIOSEntry() {
+        // The canonical reported in the audit (HIGH #1): an `iOS` entry must NOT rewrite the ordinary phrase 'i os'.
+        let entry = DictionaryEntry(canonical: "iOS")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "i os here", using: [entry]), "i os here",
+                       "no auto-derivation: 'i os' must NOT become 'iOS'")
+        // The canonical and its case-insensitive / joined forms still normalize.
+        XCTAssertEqual(DictionaryRewriter.apply(to: "the iOS app", using: [entry]), "the iOS app")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "the IOS app", using: [entry]), "the iOS app",
+                       "case-insensitive normalizes to the stored casing")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "the ios app", using: [entry]), "the iOS app",
+                       "joined single-token lowercase normalizes to the stored casing")
+    }
+
+    func testNoOverCorrectionForMacOSEntry() {
+        let entry = DictionaryEntry(canonical: "macOS")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "on mac os today", using: [entry]), "on mac os today",
+                       "no auto-derivation: 'mac os' must NOT become 'macOS'")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "on macos today", using: [entry]), "on macOS today",
+                       "joined single-token lowercase still normalizes")
+    }
+
+    func testNoOverCorrectionForOAuth2Entry() {
+        let entry = DictionaryEntry(canonical: "OAuth2")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "use o auth 2 flow", using: [entry]), "use o auth 2 flow",
+                       "no auto-derivation: 'o auth 2' must NOT become 'OAuth2'")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "use oauth2 flow", using: [entry]), "use OAuth2 flow",
+                       "joined single-token lowercase still normalizes")
+    }
+
+    func testNoOverCorrectionForPascalCaseBigQuery() {
+        // BigQuery: no variants supplied -> 'big query' / 'big-query' must NOT be rewritten.
         let entry = DictionaryEntry(canonical: "BigQuery")
         XCTAssertEqual(DictionaryRewriter.apply(to: "load it into big query now", using: [entry]),
-                       "load it into BigQuery now")
+                       "load it into big query now",
+                       "no auto-derivation: 'big query' must NOT become 'BigQuery'")
         XCTAssertEqual(DictionaryRewriter.apply(to: "load it into big-query now", using: [entry]),
-                       "load it into BigQuery now")
+                       "load it into big-query now",
+                       "no auto-derivation: 'big-query' must NOT become 'BigQuery'")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "load it into bigquery now", using: [entry]),
+                       "load it into BigQuery now", "joined single-token lowercase still normalizes")
         XCTAssertEqual(DictionaryRewriter.apply(to: "load it into BigQuery now", using: [entry]),
                        "load it into BigQuery now", "the canonical itself stays canonical")
     }
 
-    func testAutoDerivedAcronymWordBoundary() {
-        // Upper-run -> word boundary: HTTPServer -> "http server".
+    func testNoOverCorrectionForAcronymWordBoundary() {
+        // HTTPServer: no variants -> 'http server' must NOT be rewritten (no fabricated upper-run boundary split).
         let entry = DictionaryEntry(canonical: "HTTPServer")
         XCTAssertEqual(DictionaryRewriter.apply(to: "start the http server please", using: [entry]),
-                       "start the HTTPServer please")
-        XCTAssertEqual(DictionaryRewriter.apply(to: "start the http-server please", using: [entry]),
-                       "start the HTTPServer please")
+                       "start the http server please",
+                       "no auto-derivation: 'http server' must NOT become 'HTTPServer'")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "start the httpserver please", using: [entry]),
+                       "start the HTTPServer please", "joined single-token lowercase still normalizes")
     }
 
-    func testAutoDerivedWholeWordSafetyOnDerivedForms() {
-        // Derived "use effect" must remain whole-word: trailing letters keep it as a separate (unmatched) word.
-        let entry = DictionaryEntry(canonical: "useEffect")
-        XCTAssertEqual(DictionaryRewriter.apply(to: "use effecting code", using: [entry]), "use effecting code",
-                       "use effecting is not the whole derived form")
-        XCTAssertEqual(DictionaryRewriter.apply(to: "use effects today", using: [entry]), "use effects today",
-                       "use effects is not the whole derived form")
-        // The single word "use" alone must not be rewritten by a derived multi-token form.
-        XCTAssertEqual(DictionaryRewriter.apply(to: "use it well", using: [entry]), "use it well")
-    }
-
-    func testNoAutoDerivationForPlainLowercaseTerm() {
-        // codex: single all-lowercase token -> no derived forms; exact/case-insensitive only, no over-correction.
+    func testNoFabricationForPlainLowercaseTerm() {
+        // codex: single all-lowercase token -> exact/case-insensitive only, no over-correction.
         let entry = DictionaryEntry(canonical: "codex")
         XCTAssertEqual(DictionaryRewriter.apply(to: "open codex now", using: [entry]), "open codex now",
                        "the canonical matches itself (identity)")
@@ -212,8 +249,8 @@ final class DictionaryRewriterTests: XCTestCase {
                        "the unrelated word 'code' must not be touched (no fabricated variants)")
     }
 
-    func testNoAutoDerivationForAllCapsTerm() {
-        // GPT: single all-caps token -> no derived multi-word form; "g p t" must not become "GPT".
+    func testNoFabricationForAllCapsTerm() {
+        // GPT: single all-caps token -> "g p t" must not become "GPT".
         let entry = DictionaryEntry(canonical: "GPT")
         XCTAssertEqual(DictionaryRewriter.apply(to: "use GPT now", using: [entry]), "use GPT now")
         XCTAssertEqual(DictionaryRewriter.apply(to: "use gpt now", using: [entry]), "use GPT now",
@@ -222,38 +259,46 @@ final class DictionaryRewriterTests: XCTestCase {
                        "an all-caps acronym derives no spoken multi-word form")
     }
 
-    func testNoAutoDerivationForChineseTerm() {
-        // A CJK term has no case boundaries -> no derived forms; matches exactly, unrelated text untouched.
+    func testNoFabricationForChineseTerm() {
+        // A CJK term has no case boundaries -> matches exactly, unrelated text untouched.
         let entry = DictionaryEntry(canonical: "拓荆科技")
         XCTAssertEqual(DictionaryRewriter.apply(to: "我在拓荆科技工作", using: [entry]), "我在拓荆科技工作")
         XCTAssertEqual(DictionaryRewriter.apply(to: "今天天气不错", using: [entry]), "今天天气不错",
                        "unrelated Chinese text is untouched (no fabricated variants)")
     }
 
-    func testAutoDerivationDeterministic() {
-        let entry = DictionaryEntry(canonical: "useEffect")
-        let input = "wrap use-effect and use effect together"
+    // MARK: - Explicit variants ARE still honored (deliberate user mappings)
+
+    func testExplicitTwoWordVariantStillRewritesPhrase() {
+        // A user-confirmed variant 'use effect' is a deliberate mapping: the two-word phrase DOES still rewrite.
+        let entry = DictionaryEntry(canonical: "useEffect", variants: ["use effect"])
+        XCTAssertEqual(DictionaryRewriter.apply(to: "Call use effect here", using: [entry]), "Call useEffect here",
+                       "explicit variant 'use effect' is preserved and still merges")
+        // The hyphenated spelling of the same explicit variant also merges (whitespace/hyphen normalized to one key).
+        XCTAssertEqual(DictionaryRewriter.apply(to: "Call use-effect here", using: [entry]), "Call useEffect here",
+                       "the explicit variant normalizes across the hyphen too")
+        // And the canonical's joined-lowercase single token still works.
+        XCTAssertEqual(DictionaryRewriter.apply(to: "the useeffect hook", using: [entry]), "the useEffect hook")
+    }
+
+    func testExplicitVariantDoesNotEnableUnrelatedPhrases() {
+        // The explicit variant only maps its own phrase (by normalized key); a phrase with a different key is untouched.
+        // Note: a variant collapses whitespace/hyphens into a single normalized key, so 'i o s' and 'i os' share the
+        // key "ios" and both legitimately map — that is the intended explicit-variant behavior. To prove the canonical
+        // alone does NOT fabricate a phrase mapping, we declare a variant only for one phrase and dictate another.
+        let entry = DictionaryEntry(canonical: "iOS", variants: ["eye o s"])
+        XCTAssertEqual(DictionaryRewriter.apply(to: "eye o s here", using: [entry]), "iOS here",
+                       "the explicit variant 'eye o s' is a deliberate mapping and rewrites")
+        XCTAssertEqual(DictionaryRewriter.apply(to: "i os here", using: [entry]), "i os here",
+                       "the phrase 'i os' is not the declared variant and the canonical never fabricates a phrase mapping")
+    }
+
+    func testDeterministicWithExplicitVariant() {
+        let entry = DictionaryEntry(canonical: "useEffect", variants: ["use effect"])
+        let input = "wrap use effect and use effect together"
         let first = DictionaryRewriter.apply(to: input, using: [entry])
         let second = DictionaryRewriter.apply(to: input, using: [entry])
         XCTAssertEqual(first, second)
         XCTAssertEqual(first, "wrap useEffect and useEffect together")
-    }
-
-    func testDerivedSpokenFormsPureHelper() {
-        // Direct coverage of the derivation helper's contract (over-correction guard + multi-segment forms).
-        XCTAssertEqual(DictionaryMatcher.Rule.derivedSpokenForms(from: "useEffect"),
-                       ["use effect", "use-effect", "useeffect"])
-        XCTAssertEqual(DictionaryMatcher.Rule.derivedSpokenForms(from: "BigQuery"),
-                       ["big query", "big-query", "bigquery"])
-        XCTAssertEqual(DictionaryMatcher.Rule.derivedSpokenForms(from: "HTTPServer"),
-                       ["http server", "http-server", "httpserver"])
-        // A typed multi-word term splits on the existing space too; the space-joined form equals the canonical
-        // ("feature flag") so it is dropped (already a form), leaving the hyphen + run-on derivations.
-        XCTAssertEqual(DictionaryMatcher.Rule.derivedSpokenForms(from: "feature flag"),
-                       ["feature-flag", "featureflag"])
-        // Single-segment terms derive nothing.
-        XCTAssertEqual(DictionaryMatcher.Rule.derivedSpokenForms(from: "codex"), [])
-        XCTAssertEqual(DictionaryMatcher.Rule.derivedSpokenForms(from: "GPT"), [])
-        XCTAssertEqual(DictionaryMatcher.Rule.derivedSpokenForms(from: "拓荆科技"), [])
     }
 }

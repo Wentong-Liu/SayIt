@@ -77,9 +77,20 @@ enum DictionaryMatcher {
 
     /// Tries to match the tokens spanned by `span` as a single unit against some rule; on a hit returns its canonical form.
     ///
-    /// Arbitration order: (1) exact case-sensitive -> (2) exact case-insensitive -> (3) multi-token merge.
-    /// Multiple tokens (`span` spanning >1 token) may only merge when the separators between them **contain only whitespace/hyphens**,
-    /// so `use effect` / `use-effect` can merge while `use. effect` cannot.
+    /// Arbitration order:
+    /// (1) exact case-sensitive ->
+    /// (2) exact case-insensitive ->
+    /// (3) joined-lowercase canonical, **single-token only** (e.g. `useeffect` -> `useEffect`) ->
+    /// (4) explicit-variant multi-token merge (only the user's own `entry.variants` may merge across tokens).
+    ///
+    /// The deterministic layer deliberately does **not** synthesize multi-word spoken forms from the canonical
+    /// spelling: a single-word entry like `iOS` / `macOS` / `OAuth2` therefore never rewrites an ordinary multi-word
+    /// phrase such as `i os` / `mac os` / `o auth 2`. Context-aware "spoken phrase -> term" conversion is the LLM's
+    /// job (Layer 2 injects the glossary + transcript into the polish prompt). A run-on single token (`useeffect`)
+    /// is safe to normalize because it cannot collide with a normal multi-word phrase and is not a common word.
+    ///
+    /// Multiple tokens (`span` spanning >1 token) may only merge when the separators between them **contain only
+    /// whitespace/hyphens**, so an explicit variant `use effect` / `use-effect` can merge while `use. effect` cannot.
     private static func matchSpan(
         tokens: [Token],
         span: ClosedRange<Int>,
@@ -96,7 +107,7 @@ enum DictionaryMatcher {
             return nil
         }
 
-        // (1) Exact case-sensitive: surface equals some variant byte-for-byte (only effective for that rule's case-sensitive forms).
+        // (1) Exact case-sensitive: surface equals some form byte-for-byte (only effective for that rule's case-sensitive forms).
         for rule in rules {
             if rule.caseSensitive, rule.exactForms.contains(surface) {
                 return rule.canonical
@@ -111,12 +122,24 @@ enum DictionaryMatcher {
             }
         }
 
-        // (3) Multi-token merge: the normalized key (lowercased + stripped of whitespace/hyphens) is equal.
-        //     A single token also goes through this step to cover cases like "embedded hyphen" (e.g. `use-effect` split into two tokens).
+        // (3) Joined-lowercase canonical, single-token only: a run-on token such as `useeffect` (or an embedded-hyphen
+        //     spelling that tokenizes to one word) normalizes to the stored `useEffect`. Restricted to a single token so
+        //     it can never merge a multi-word phrase like `use effect` / `i os` into the canonical (over-correction guard).
         let key = normalizedKey(surface)
         guard !key.isEmpty else { return nil }
+        if tokenCount == 1 {
+            for rule in rules where !rule.caseSensitive {
+                if rule.canonicalKey == key {
+                    return rule.canonical
+                }
+            }
+        }
+
+        // (4) Explicit-variant multi-token merge: only the user's intentional `entry.variants` may match across the
+        //     mergeable span (single or multiple tokens). A learned/confirmed variant like `use effect` is a deliberate
+        //     user mapping, so it keeps the merge behavior; the canonical alone never participates here.
         for rule in rules where !rule.caseSensitive {
-            if rule.normalizedKeys.contains(key) {
+            if rule.variantKeys.contains(key) {
                 return rule.canonical
             }
         }
@@ -179,17 +202,24 @@ enum DictionaryMatcher {
 
     /// A matching rule pre-compiled from one ``DictionaryEntry`` (read-only, reusable).
     ///
-    /// `internal` (not `private`) so the pure ``derivedSpokenForms(from:)`` helper is unit-testable via
-    /// `@testable import`; the rest of its surface is incidental and only consumed by ``DictionaryMatcher``.
+    /// The deterministic Layer 3 deliberately does **not** synthesize multi-word spoken forms from the canonical
+    /// spelling (that was T55's `derivedSpokenForms`, which over-corrected ordinary text — `iOS` rewriting `i os`).
+    /// A single-word entry therefore matches its canonical only via exact / case-insensitive / joined-lowercase
+    /// (single token); context-aware "spoken phrase -> term" conversion is the LLM's job (Layer 2). Only the user's
+    /// explicit ``DictionaryEntry/variants`` may merge across multiple tokens, because those are deliberate mappings.
     struct Rule {
         let canonical: String
         let caseSensitive: Bool
-        /// The full raw set of "recognizable forms" (variants + the canonical form itself), preserving case -- for exact case-sensitive comparison.
+        /// The full raw set of "recognizable forms" (explicit variants + the canonical form itself), preserving case -- for exact case-sensitive comparison.
         let exactForms: Set<String>
         /// The lowercased set of the above forms -- for exact case-insensitive comparison.
         let lowercasedExactForms: Set<String>
-        /// The normalized-key set of the above forms (lowercased + whitespace/hyphens removed) -- for multi-token merge comparison.
-        let normalizedKeys: Set<String>
+        /// The normalized key (lowercased + whitespace/hyphens removed) of the **canonical only** -- matched against a
+        /// **single-token** surface so a run-on `useeffect` -> `useEffect`, while a multi-word phrase never collides.
+        let canonicalKey: String
+        /// The normalized-key set of the **explicit variants only** -- these are intentional user mappings and keep the
+        /// multi-token merge behavior (e.g. a learned variant `use effect` rewrites the two-word span `use effect`).
+        let variantKeys: Set<String>
         /// The maximum token count of any form when split on whitespace/hyphens -- determines the multi-token merge window size.
         let maxTokenCount: Int
 
@@ -198,37 +228,32 @@ enum DictionaryMatcher {
             var rules: [Rule] = []
             for entry in entries where entry.enabled {
                 let canonical = entry.canonical
-                // Recognizable forms = each variant + the canonical form itself (the canonical form is itself a spoken form that can be recognized and preserved/normalized).
-                var forms = entry.variants
-                forms.append(canonical)
-                // Auto-derive likely spoken/misheard forms from the canonical spelling, so the deterministic
-                // replacement still works when the user supplied no variants (the single-word/Typeless model):
-                // a typed "useEffect" gains "use effect" / "use-effect" / "useeffect" without any user input.
-                // These are additive and de-duped by the Set construction below; for a plain/Chinese/all-caps
-                // term `derivedSpokenForms` returns [] (over-correction guard), leaving exact matching as-is.
-                //
-                // Skipped for caseSensitive entries: derived forms are lowercase and would land in `exactForms`,
-                // where the case-sensitive layer matches byte-for-byte — that would defeat the user's strict-case
-                // choice (e.g. an `iOS`/caseSensitive entry must not match a lowercase "ios"). A caseSensitive entry
-                // therefore matches only its own user-supplied forms.
-                if !entry.caseSensitive {
-                    forms.append(contentsOf: derivedSpokenForms(from: canonical))
-                }
-                // Drop pure-whitespace forms.
-                let cleaned = forms.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-                guard !cleaned.isEmpty,
-                      !canonical.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+                guard !canonical.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
 
-                let exact = Set(cleaned)
-                let lowered = Set(cleaned.map { $0.lowercased() })
-                let keys = Set(cleaned.map { normalizedKey($0) }.filter { !$0.isEmpty })
-                let maxTokens = cleaned.map { tokenCount(of: $0) }.max() ?? 1
+                // Explicit user variants only (no auto-derived spoken forms); pure-whitespace ones are dropped.
+                let cleanedVariants = entry.variants.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+
+                // Recognizable forms for the exact / case-insensitive layers = each explicit variant + the canonical
+                // itself (the canonical is also a spoken form that should be preserved/normalized).
+                var forms = cleanedVariants
+                forms.append(canonical)
+
+                let exact = Set(forms)
+                let lowered = Set(forms.map { $0.lowercased() })
+                // The canonical's joined-lowercase key powers the single-token run-on normalization (e.g. `useeffect`).
+                let canonicalKey = normalizedKey(canonical)
+                // Variant keys keep the multi-token merge; they are intentional user mappings.
+                let variantKeys = Set(cleanedVariants.map { normalizedKey($0) }.filter { !$0.isEmpty })
+                // The merge window is driven by the explicit variants (the canonical never merges across tokens);
+                // a single token always works, so the floor is 1.
+                let maxTokens = cleanedVariants.map { tokenCount(of: $0) }.max() ?? 1
                 rules.append(Rule(
                     canonical: canonical,
                     caseSensitive: entry.caseSensitive,
                     exactForms: exact,
                     lowercasedExactForms: lowered,
-                    normalizedKeys: keys,
+                    canonicalKey: canonicalKey,
+                    variantKeys: variantKeys,
                     maxTokenCount: max(1, maxTokens)
                 ))
             }
@@ -247,106 +272,6 @@ enum DictionaryMatcher {
                 }
             }
             return count
-        }
-
-        /// Derives the likely spoken / misheard forms of a canonical term so the deterministic Layer-3 matcher can
-        /// normalize them back to the canonical even when the user supplied **no** variants (the single-word model).
-        ///
-        /// The canonical is split into segments on internal boundaries:
-        /// - existing whitespace / hyphens (so a typed `"feature flag"` yields `[feature, flag]`),
-        /// - lower→upper case boundaries (`useEffect` → `use|Effect`; `bigQuery` → `big|Query`),
-        /// - acronym→word boundaries: a run of uppercase letters followed by an upper+lower pair splits before that
-        ///   last uppercase (`HTTPServer` → `HTTP|Server`),
-        /// - letter↔digit boundaries (`PT1` → `PT|1`), matching the `PT时间` spirit.
-        ///
-        /// When the split produces a single segment — a plain word (`codex`), an all-caps token (`GPT`), or a
-        /// non-cased / CJK term (`拓荆科技`) — this returns `[]`: case-insensitive exact matching already covers those,
-        /// and we must not fabricate spoken variants for them (the over-correction guard).
-        ///
-        /// From two or more lowercased segments it builds the space-joined, hyphen-joined, and run-on lowercase forms
-        /// (e.g. `"use effect"`, `"use-effect"`, `"useeffect"`), de-duped, with any form equal (case-insensitively) to
-        /// the canonical or empty dropped. Pure and order-stable, so determinism is preserved. Derived forms are
-        /// lowercase and only ever consulted by the case-INSENSITIVE matching layers, so they are inert for a
-        /// `caseSensitive` entry (which correctly stays strict-case).
-        static func derivedSpokenForms(from canonical: String) -> [String] {
-            let segments = caseAwareSegments(of: canonical)
-            // One segment (or none): plain word / all-caps / CJK / non-cased term — exact handles it; do not fabricate.
-            guard segments.count >= 2 else { return [] }
-
-            let lowered = segments.map { $0.lowercased() }
-            let spaceJoined = lowered.joined(separator: " ")
-            let hyphenJoined = lowered.joined(separator: "-")
-            let runOn = lowered.joined()
-
-            var seen = Set<String>()
-            var result: [String] = []
-            for form in [spaceJoined, hyphenJoined, runOn] {
-                guard !form.isEmpty else { continue }
-                // Drop a form that is byte-for-byte the canonical itself (the canonical is already a form); a
-                // lowercased run-on like "useeffect" is kept on purpose — it documents intent and is inert (the
-                // canonical's own lowercased spelling already covers it via the case-insensitive layer).
-                guard form != canonical else { continue }
-                guard !seen.contains(form) else { continue }
-                seen.insert(form)
-                result.append(form)
-            }
-            return result
-        }
-
-        /// Splits a term into segments on whitespace/hyphens **and** internal case / script boundaries.
-        ///
-        /// Boundaries (a new segment starts at the character after the boundary):
-        /// - any whitespace or hyphen acts as a separator (consumed, not part of a segment),
-        /// - lower→upper (`useEffect`),
-        /// - upper-run→word: `XMLParser`-style — break before the last uppercase of an uppercase run when the next
-        ///   character is lowercase, so `HTTPServer` → `HTTP` + `Server`,
-        /// - letter↔digit in either direction (`PT1` → `PT` + `1`).
-        ///
-        /// Returns only non-empty segments. A term with no internal boundary yields a single segment.
-        private static func caseAwareSegments(of term: String) -> [String] {
-            let chars = Array(term)
-            guard !chars.isEmpty else { return [] }
-
-            var segments: [String] = []
-            var current = ""
-
-            func isSeparator(_ c: Character) -> Bool {
-                c.isWhitespace || c == "-" || c == "\u{2010}"
-            }
-
-            for index in chars.indices {
-                let c = chars[index]
-                if isSeparator(c) {
-                    if !current.isEmpty { segments.append(current); current = "" }
-                    continue
-                }
-                if current.isEmpty {
-                    current.append(c)
-                    continue
-                }
-                let prev = chars[index - 1]
-                var boundary = false
-                // lower → upper (useEffect, bigQuery)
-                if prev.isLowercase, c.isUppercase {
-                    boundary = true
-                }
-                // upper-run → word: prev is uppercase, current is uppercase, next is lowercase (HTTPServer -> HTTP|Server)
-                else if prev.isUppercase, c.isUppercase,
-                        index + 1 < chars.count, chars[index + 1].isLowercase {
-                    boundary = true
-                }
-                // letter ↔ digit, either direction (PT1 -> PT|1; 1x -> 1|x)
-                else if (prev.isLetter && c.isNumber) || (prev.isNumber && c.isLetter) {
-                    boundary = true
-                }
-                if boundary {
-                    segments.append(current)
-                    current = ""
-                }
-                current.append(c)
-            }
-            if !current.isEmpty { segments.append(current) }
-            return segments
         }
     }
 }
