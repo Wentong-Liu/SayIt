@@ -107,6 +107,75 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertFalse(ModelManager.hasRequiredModelFiles(in: folder))
     }
 
+    // MARK: - Partial / cancelled download detection (regression for "shows 已下载 after cancel")
+
+    func testHasRequiredModelFilesFalseWhenMlmodelcDirPresentButWeightMissing() throws {
+        // Reproduces the on-disk bug signature: every `.mlmodelc` directory exists, but one
+        // package's `weights/weight.bin` was never finished (the cancelled-download leftover).
+        // The old `fileExists(.mlmodelc dir)` check passed this; completeness checking must reject it.
+        let folder = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try createCompleteModelPackage(named: "MelSpectrogram", in: folder)
+        try createCompleteModelPackage(named: "TextDecoder", in: folder)
+        try createPartialModelPackage(named: "AudioEncoder", in: folder, emptyWeight: false) // weights/ present, no weight.bin
+
+        XCTAssertFalse(ModelManager.hasRequiredModelFiles(in: folder),
+                       "a `.mlmodelc` whose weights/ has no weight.bin must NOT count as downloaded")
+    }
+
+    func testHasRequiredModelFilesFalseWhenWeightBlobIsEmpty() throws {
+        // A zero-length weight.bin (interrupted mid-write) is also incomplete.
+        let folder = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try createCompleteModelPackage(named: "MelSpectrogram", in: folder)
+        try createCompleteModelPackage(named: "AudioEncoder", in: folder)
+        try createPartialModelPackage(named: "TextDecoder", in: folder, emptyWeight: true) // weights/weight.bin exists but 0 bytes
+
+        XCTAssertFalse(ModelManager.hasRequiredModelFiles(in: folder),
+                       "a zero-length weight.bin must NOT count as downloaded")
+    }
+
+    func testHasRequiredModelFilesFalseWhenDescriptorMissing() throws {
+        // A `.mlmodelc` directory with no coremldata.bin descriptor is not a loadable package.
+        let folder = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try createCompleteModelPackage(named: "MelSpectrogram", in: folder)
+        try createCompleteModelPackage(named: "AudioEncoder", in: folder)
+        // TextDecoder: bare empty .mlmodelc directory (what a `fileExists` check used to accept).
+        let bare = folder.appending(component: "TextDecoder.mlmodelc")
+        try FileManager.default.createDirectory(at: bare, withIntermediateDirectories: true)
+
+        XCTAssertFalse(ModelManager.hasRequiredModelFiles(in: folder),
+                       "a bare `.mlmodelc` directory (no descriptor) must NOT count as downloaded")
+    }
+
+    func testCachedModelFolderNilWhenPartialDownloadLeftMlmodelcDirs() throws {
+        // End-to-end through cachedModelFolder/isDownloaded: a variant folder whose `.mlmodelc`
+        // directories are present but one weight blob is missing -> NOT found -> NOT downloaded.
+        let repoRoot = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: repoRoot) }
+        let variantFolder = repoRoot.appending(component: "openai_whisper-base")
+        try createCompleteModelPackage(named: "MelSpectrogram", in: variantFolder)
+        try createCompleteModelPackage(named: "TextDecoder", in: variantFolder)
+        try createPartialModelPackage(named: "AudioEncoder", in: variantFolder, emptyWeight: false)
+
+        XCTAssertNil(ModelManager.cachedModelFolder(for: "base", in: repoRoot),
+                     "a partial/cancelled download must not be reported as a cached complete model")
+    }
+
+    func testIsCompleteModelPackagePassesWithoutWeightsDirectory() throws {
+        // Not over-requiring: a `.mlmodelc` that legitimately ships no `weights/` directory
+        // still counts as complete on its descriptor alone.
+        let folder = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let mlmodelc = folder.appending(component: "MelSpectrogram.mlmodelc")
+        try FileManager.default.createDirectory(at: mlmodelc, withIntermediateDirectories: true)
+        try Data("descriptor".utf8).write(to: mlmodelc.appending(component: "coremldata.bin"))
+
+        XCTAssertTrue(ModelManager.isCompleteModelPackage(at: mlmodelc),
+                      "a package with a descriptor and no weights/ directory is still complete")
+    }
+
     func testCachedModelFolderFindsByNormalizedNameWhenWeightsComplete() throws {
         // Put a really-named, weight-complete folder under the temp repo root; a hyphenated friendly name should hit it (equal after normalization).
         let repoRoot = try makeTempDir()
@@ -254,6 +323,153 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertNil(mgr.downloadTask, "a task that is still current should clear its own handle on completion")
     }
 
+    // MARK: - Download error classification (cancel is not a failure; no raw NSError in the reason)
+
+    func testIsCancellationTrueForSwiftCancellationError() {
+        XCTAssertTrue(ModelManager.isCancellation(CancellationError()),
+                      "a Swift CancellationError is a cancellation, not a failure")
+    }
+
+    func testIsCancellationTrueForNSURLErrorCancelled() {
+        // The file-transfer layer (`Downloader.cancel()`) surfaces a real URLError(.cancelled),
+        // i.e. domain NSURLErrorDomain, code -999. That shape must be treated as a cancellation.
+        let cancelled = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled, userInfo: nil)
+        XCTAssertTrue(ModelManager.isCancellation(cancelled),
+                      "NSURLErrorCancelled (-999) must be treated as a cancellation")
+    }
+
+    func testIsCancellationTrueForRealURLErrorCancelled() {
+        // The actual value `Downloader.cancel()` broadcasts is a Swift `URLError(.cancelled)`.
+        XCTAssertTrue(ModelManager.isCancellation(URLError(.cancelled)),
+                      "URLError(.cancelled) must be treated as a cancellation")
+    }
+
+    /// The real production cancel shape the previous fix MISSED: WhisperKit's `HubApi.httpGet`
+    /// catches the underlying `URLError(.cancelled)` in a generic `catch` and re-throws it
+    /// type-erased as the internal `Hub.HubClientError.downloadError(message)` (verified empirically:
+    /// type `HubClientError`, domain `ArgmaxCore.Hub.HubClientError`, code 2, message the localized
+    /// "cancelled"/"已取消"). We can't name that internal type, so `isCancellation` must recognize it by
+    /// message. This reproduces both the English and Simplified-Chinese localized cancel descriptions
+    /// (the two forms `URLError(.cancelled).localizedDescription` takes across the locales we ship).
+    func testIsCancellationTrueForWrappedHubCancellationMessage() {
+        // Stand-in for the type-erased Hub wrapper: a LocalizedError whose message carries the
+        // residual cancellation text, exactly as the Hub layer's re-thrown error does.
+        struct WrappedHubError: LocalizedError {
+            let errorDescription: String?
+        }
+        for message in ["Download failed: cancelled", "Download failed: 已取消", "已取消", "The operation couldn’t be completed. (cancelled)"] {
+            XCTAssertTrue(
+                ModelManager.isCancellation(WrappedHubError(errorDescription: message)),
+                "a wrapped Hub cancellation message (\(message)) must be classified as a cancellation, not a failure"
+            )
+        }
+    }
+
+    func testMessageLooksLikeCancellationRejectsUnrelatedMessages() {
+        // Narrow on purpose: a real failure message must NOT be misread as a cancel.
+        for message in ["network connection lost", "file not found", "HTTP error 500", "下载失败"] {
+            XCTAssertFalse(
+                ModelManager.messageLooksLikeCancellation(message),
+                "an unrelated message (\(message)) must not be classified as cancellation"
+            )
+        }
+    }
+
+    func testIsCancellationFalseForGenuineNetworkError() {
+        // A real failure (e.g. no connection) must NOT be mistaken for a cancellation.
+        let genuine = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet, userInfo: nil)
+        XCTAssertFalse(ModelManager.isCancellation(genuine),
+                       "a genuine network error must not be classified as cancellation")
+    }
+
+    func testIsCancellationFalseForUnrelatedError() {
+        let other = NSError(domain: "SomeOtherDomain", code: -999, userInfo: nil)
+        XCTAssertFalse(ModelManager.isCancellation(other),
+                       "code -999 in a non-URL domain must not be classified as cancellation")
+    }
+
+    /// The user-facing `.failed(reason:)` must be a clean short message — never the raw NSError dump.
+    /// (STTSettingsView renders `reason` verbatim via `Text(reason)`.) This drives the real download
+    /// catch path with a genuine, immediate error by pointing the download at an unreachable repo so
+    /// it fails fast without a multi-GB fetch, then asserts the reason carries no raw-error markers.
+    @MainActor
+    func testGenuineDownloadFailureReasonIsCleanNoRawNSError() async {
+        let mgr = ModelManager(model: "tiny")
+        // A bogus variant under the real repo resolves to no remote files; WhisperKit.download throws
+        // a genuine (non-cancellation) error quickly. We only assert on the resulting reason shape.
+        await mgr.download(model: "this-model-does-not-exist-\(UUID().uuidString)", force: true)
+
+        guard case let .failed(reason) = mgr.state else {
+            // If the environment has no network at all the call may still fail; tolerate any non-downloading
+            // terminal state, but when it IS .failed the reason must be clean.
+            return
+        }
+        XCTAssertFalse(reason.contains("NSURLErrorDomain"), "reason must not contain a raw NSError domain")
+        XCTAssertFalse(reason.contains("Error Domain"), "reason must not contain a raw NSError dump")
+        XCTAssertFalse(reason.contains("Code=-999"), "reason must not contain raw NSError codes")
+        XCTAssertFalse(reason.contains("Code="), "reason must not contain raw NSError codes")
+        XCTAssertEqual(reason, "下载失败，请重试", "a genuine failure shows the clean canned message")
+    }
+
+    /// Regression for BUG A: a REAL, mid-flight cancel must NEVER become `.failed`, and must never
+    /// stay stuck at `.downloading`.
+    ///
+    /// This drives the actual `download(force:)` path against the real `tiny` variant (smallest, so
+    /// the transfer genuinely starts) and cancels it via `cancelDownload()` once `.downloading` is
+    /// observed. On the PR branch the cancel surfaced as the type-erased
+    /// `Hub.HubClientError.downloadError("已取消")`, which the old `isCancellation` mis-classified, so
+    /// the terminal state was `.failed("下载失败，请重试")` — the exact BUG A symptom. The fix keys off
+    /// `Task.isCancelled` (authoritative) and resolves via `resolveStateFromDisk()` (bypassing
+    /// `refreshState()`'s `.downloading` early-return), so the cancel resolves to the real local state.
+    ///
+    /// Robust to environment: the *forbidden* outcomes are `.failed` (a user cancel is not a failure)
+    /// and a stuck `.downloading`. If connectivity is absent and the request fails before we ever see
+    /// `.downloading` (so nothing was cancelled), the assertion is skipped — we only assert when we
+    /// actually observed and cancelled an in-flight download. If `tiny` happened to finish before the
+    /// cancel landed, `.downloaded` is also acceptable.
+    @MainActor
+    func testRealMidFlightCancelIsNeverAFailure() async throws {
+        let mgr = ModelManager(model: "tiny")
+
+        let downloadTask = Task { await mgr.download(force: true) }
+
+        // Wait until the download has actually entered `.downloading`, then cancel it.
+        var observedDownloading = false
+        for _ in 0..<400 {
+            if case .downloading = mgr.state { observedDownloading = true; break }
+            // Bail early if the task already finished (it can resolve without ever exposing
+            // `.downloading` when there is no network, or once the transfer completes).
+            if downloadTask.isCancelled { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)  // 10 ms
+            await Task.yield()
+        }
+
+        guard observedDownloading else {
+            // Never entered `.downloading` (no network / instant resolution). There was no in-flight
+            // download to cancel, so this run can't exercise the regression; don't make a false claim.
+            await downloadTask.value
+            throw XCTSkip("download never entered .downloading (likely no network); cancel path not exercised")
+        }
+
+        mgr.cancelDownload()
+        // cancelDownload() must immediately resolve away from `.downloading`.
+        if case .downloading = mgr.state {
+            XCTFail("cancelDownload() left the state stuck at .downloading")
+        }
+
+        // Let the cancelled download task fully unwind (its catch block runs and re-resolves state).
+        await downloadTask.value
+
+        switch mgr.state {
+        case .notDownloaded, .downloaded:
+            break  // both fine: a cancelled partial → .notDownloaded; a race-completed tiny → .downloaded
+        case .downloading(let progress, _):
+            XCTFail("state stuck at .downloading(progress: \(progress)) after a real cancel")
+        case .failed(let reason):
+            XCTFail("a real mid-flight user cancel must NOT become a failure (got .failed(\(reason)))")
+        }
+    }
+
     // MARK: - Download-speed estimation (pure logic, no network)
 
     func testEstimatedDownloadBytesPositiveForKnownModels() {
@@ -344,14 +560,45 @@ final class ModelManagerTests: XCTestCase {
         return folder
     }
 
-    /// Creates a fake `.mlmodelc` directory for each name inside `folder` (detectModelURL directly hits the .mlmodelc path).
+    /// Creates a **complete** fake `.mlmodelc` package for each name inside `folder`.
+    ///
+    /// Mirrors the real on-disk layout of a finished WhisperKit download (inspected on this
+    /// machine): each `<name>.mlmodelc` directory carries a non-empty `coremldata.bin` descriptor
+    /// and a non-empty `weights/weight.bin` blob. This is what `hasRequiredModelFiles` now requires,
+    /// so a folder built this way must be judged "downloaded".
     private func createModelFiles(_ names: [String], in folder: URL) throws {
+        for name in names {
+            try createCompleteModelPackage(named: name, in: folder)
+        }
+    }
+
+    /// Writes a complete `<name>.mlmodelc` package (non-empty descriptor + non-empty weight blob).
+    private func createCompleteModelPackage(named name: String, in folder: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-        for name in names {
-            let mlmodelc = folder.appending(component: "\(name).mlmodelc")
-            try fm.createDirectory(at: mlmodelc, withIntermediateDirectories: true)
+        let mlmodelc = folder.appending(component: "\(name).mlmodelc")
+        let weightsDir = mlmodelc.appending(component: "weights")
+        try fm.createDirectory(at: weightsDir, withIntermediateDirectories: true)
+        try Data("descriptor".utf8).write(to: mlmodelc.appending(component: "coremldata.bin"))
+        try Data("weightblob".utf8).write(to: weightsDir.appending(component: "weight.bin"))
+    }
+
+    /// Writes a **partial** `<name>.mlmodelc` package that mimics an interrupted/cancelled
+    /// download: the `.mlmodelc` directory and its `weights/` subdirectory exist, but the
+    /// inner `weight.bin` is either absent or zero-length — the exact signature observed on disk
+    /// for a cancelled `openai_whisper-base` download (`AudioEncoder.mlmodelc/weights/` empty).
+    private func createPartialModelPackage(named name: String, in folder: URL, emptyWeight: Bool) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let mlmodelc = folder.appending(component: "\(name).mlmodelc")
+        let weightsDir = mlmodelc.appending(component: "weights")
+        try fm.createDirectory(at: weightsDir, withIntermediateDirectories: true)
+        try Data("descriptor".utf8).write(to: mlmodelc.appending(component: "coremldata.bin"))
+        if emptyWeight {
+            // weights/ exists with a zero-length weight.bin -> still incomplete.
+            try Data().write(to: weightsDir.appending(component: "weight.bin"))
         }
+        // else: weights/ exists but no weight.bin at all -> incomplete.
     }
 }
 

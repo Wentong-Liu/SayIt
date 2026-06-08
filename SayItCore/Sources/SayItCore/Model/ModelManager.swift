@@ -1,4 +1,5 @@
 import Foundation
+import os
 import WhisperKit
 
 /// Download / state manager for the local WhisperKit model.
@@ -123,6 +124,11 @@ public final class ModelManager {
     /// The official WhisperKit model repository id.
     nonisolated public static let modelRepo = "argmaxinc/whisperkit-coreml"
 
+    /// Diagnostic logger. The user-facing `.failed(reason:)` carries only a clean short message;
+    /// the underlying raw error (NSError dump, network/IO cause) is logged here so it stays
+    /// recoverable via `log show` without surfacing garbage in the settings UI.
+    nonisolated private static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "model")
+
     /// The local root directory of this repo in the cache: `downloadBase/models/argmaxinc/whisperkit-coreml`.
     /// Consistent with `HubApi.localRepoLocation`'s layout (`downloadBase/<repoType>/<repoId>`).
     nonisolated static var repoCacheDirectory: URL {
@@ -208,20 +214,74 @@ public final class ModelManager {
         raw.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
-    /// Whether the folder has the three CoreML weight packages required for WhisperKit loading (each in either .mlmodelc / .mlpackage form).
+    /// Whether the folder has the three CoreML weight packages required for WhisperKit loading (each in either .mlmodelc / .mlpackage form),
+    /// **and** each one is actually complete on disk (not just a directory left behind by an interrupted/cancelled download).
     ///
     /// Consistent with WhisperKit `loadModels`'s checking semantics (it requires all three of MelSpectrogram / AudioEncoder / TextDecoder
     /// to exist). Reuses `ModelUtilities.detectModelURL` here, to avoid hardcoding extension-name rules ourselves.
+    ///
+    /// ## Why a mere `fileExists` is not enough
+    /// `detectModelURL(inFolder:named:)` resolves a compiled package to its `<name>.mlmodelc`
+    /// **directory** URL. A cancelled/partial download leaves that directory present while its
+    /// inner weight blob (`weights/weight.bin`) is still missing or zero-length — so a plain
+    /// `fileExists(atPath: <.mlmodelc dir>)` returns `true` and the model is wrongly reported
+    /// "downloaded". Verified on disk: an interrupted `openai_whisper-base` download left
+    /// `AudioEncoder.mlmodelc/weights/` as an EMPTY directory (no `weight.bin`) yet the
+    /// `.mlmodelc` directory existed. Here each required package must instead pass
+    /// ``isCompleteModelPackage(at:)``, which checks the actual leaf payload.
     nonisolated static func hasRequiredModelFiles(in folder: URL) -> Bool {
         let names = ["MelSpectrogram", "AudioEncoder", "TextDecoder"]
-        let fm = FileManager.default
         for name in names {
             let url = ModelUtilities.detectModelURL(inFolder: folder, named: name)
-            if !fm.fileExists(atPath: url.path) {
+            if !isCompleteModelPackage(at: url) {
                 return false
             }
         }
         return true
+    }
+
+    /// Whether a single CoreML model package at `url` is fully present on disk (not a partial download).
+    ///
+    /// `detectModelURL` returns one of two URL shapes; both are validated against their real payload:
+    /// - **Compiled `.mlmodelc` directory**: requires a non-empty `coremldata.bin` descriptor; and if a
+    ///   `weights/` directory exists (it does for every WhisperKit encoder/decoder/mel package observed on
+    ///   disk), its `weight.bin` must exist and be non-empty. A `weights/` directory present but with a
+    ///   missing/zero-length `weight.bin` is exactly the cancelled-download signature, so it fails. A package
+    ///   that legitimately ships no `weights/` directory still passes on its descriptor alone (no over-require).
+    /// - **`.mlpackage` model file** (`.../model.mlmodel`): requires that leaf file to exist and be non-empty.
+    nonisolated static func isCompleteModelPackage(at url: URL) -> Bool {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { return false }
+
+        // `.mlpackage` form: detectModelURL points at the concrete `model.mlmodel` leaf file.
+        guard isDir.boolValue else {
+            return isNonEmptyFile(at: url)
+        }
+
+        // Compiled `.mlmodelc` form: the URL is the package directory. Require its descriptor,
+        // and (when present) its weight blob, to be real non-empty files.
+        let descriptor = url.appending(component: "coremldata.bin")
+        guard isNonEmptyFile(at: descriptor) else { return false }
+
+        let weightsDir = url.appending(component: "weights")
+        var weightsIsDir: ObjCBool = false
+        if fm.fileExists(atPath: weightsDir.path, isDirectory: &weightsIsDir), weightsIsDir.boolValue {
+            // A weights directory exists, so the package is supposed to carry a weight blob.
+            // An interrupted download leaves this directory empty / the blob zero-length -> incomplete.
+            let weightBlob = weightsDir.appending(component: "weight.bin")
+            guard isNonEmptyFile(at: weightBlob) else { return false }
+        }
+        return true
+    }
+
+    /// Whether `url` is an existing regular file with a size greater than zero.
+    nonisolated private static func isNonEmptyFile(at url: URL) -> Bool {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { return false }
+        let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+        return (size ?? 0) > 0
     }
 
     // MARK: - Download-speed estimation helpers
@@ -284,6 +344,19 @@ public final class ModelManager {
     /// Called on entering the settings page or after a download finishes. If a download is in progress it stays unchanged (avoiding overwriting progress).
     public func refreshState() {
         if case .downloading = state { return }
+        resolveStateFromDisk()
+    }
+
+    /// Forcibly re-aligns ``state`` to the actual local cache, **including** when the current
+    /// state is `.downloading`.
+    ///
+    /// This is the cancellation-resolution path. ``refreshState()`` deliberately early-returns
+    /// while `.downloading` so a stray refresh can't clobber live progress — but that same guard
+    /// would otherwise leave a just-cancelled download stuck at `.downloading` forever (the state
+    /// is still `.downloading` at the moment we cancel). Cancellation must instead land on the
+    /// real local state: `.notDownloaded` when only a partial cache exists, `.downloaded` only if
+    /// the weights happen to be complete. So the cancel paths call this, not ``refreshState()``.
+    private func resolveStateFromDisk() {
         state = Self.isDownloaded(model: model) ? .downloaded : .notDownloaded
     }
 
@@ -359,19 +432,75 @@ public final class ModelManager {
                     // Make the final decision based on the local weights' actual state, avoiding a "download returned success but files incomplete" false positive.
                     self.state = Self.isDownloaded(model: newModel) ? .downloaded : .failed(reason: "下载完成但模型文件不完整")
                 }
-            } catch is CancellationError {
-                await MainActor.run { [weak self] in
-                    guard let self, self.model == newModel else { return }
-                    self.refreshState()
-                }
             } catch {
+                // Cancellation is NOT a failure. The authoritative signal is `Task.isCancelled`:
+                // `cancelDownload()` calls `downloadTask?.cancel()`, which sets the cancellation flag
+                // on THIS very task (the one running this closure), so the flag is observable here no
+                // matter which layer threw. That matters because the thrown error's shape is NOT
+                // reliable: WhisperKit's Hub layer (`HubApi.httpGet`) catches the underlying
+                // `URLError(.cancelled)` in a generic `catch` and re-throws it type-erased as
+                // `Hub.HubClientError.downloadError("已取消")` (an internal enum we can't name), while the
+                // file-transfer layer instead surfaces a real `URLError(.cancelled)`. We therefore key
+                // off the task flag first, and fall back to `isCancellation(error)` to also catch a
+                // cancellation that arrived without our task being flagged. On cancel, fall back to the
+                // local actual state (`.notDownloaded` when partial); on a genuine failure, show a clean
+                // short message and log the raw cause for diagnostics (never store the NSError dump).
+                let cancelled = Task.isCancelled || Self.isCancellation(error)
+                if !cancelled {
+                    Self.log.error("Model download failed for \(newModel, privacy: .public): \(error, privacy: .public)")
+                }
                 await MainActor.run { [weak self] in
                     guard let self, self.model == newModel else { return }
-                    self.state = .failed(reason: String(describing: error))
+                    if cancelled {
+                        // Resolve to the REAL local state. Must bypass `refreshState()`'s
+                        // `.downloading` guard, since the state is still `.downloading` here; a
+                        // partial cache lands on `.notDownloaded`, not a stuck `.downloading`.
+                        self.resolveStateFromDisk()
+                    } else {
+                        self.state = .failed(reason: "下载失败，请重试")
+                    }
                 }
             }
         }
         await task.value
+    }
+
+    /// Whether `error` represents a cancelled download rather than a genuine failure.
+    ///
+    /// This is the **secondary** classifier; the primary signal at the call site is
+    /// `Task.isCancelled` (see the download `catch`). It exists to also catch a cancellation that
+    /// surfaced without our task being flagged. A cancel can arrive in several shapes depending on
+    /// which WhisperKit layer threw:
+    /// - a Swift `CancellationError` (cooperative task cancellation);
+    /// - an `NSError`/`URLError` with domain `NSURLErrorDomain` and code `NSURLErrorCancelled`
+    ///   (-999), which `URLSession` raises when its in-flight download task is cancelled (this is
+    ///   what the file-transfer layer's `Downloader.cancel()` broadcasts);
+    /// - a **type-erased** `Hub.HubClientError.downloadError(message)` — WhisperKit's `HubApi.httpGet`
+    ///   catches the underlying `URLError(.cancelled)` in a generic `catch` and re-throws it as this
+    ///   internal enum, so the original cancellation type is lost. We can't name that internal type,
+    ///   so we match the residual cancellation **message** the URLError carries (e.g. localized
+    ///   "cancelled" / "已取消").
+    /// Treating any of these as a cancellation keeps the UI out of `.failed` (and off the raw NSError
+    /// dump) when the user cancels.
+    nonisolated static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled { return true }
+        // Defense in depth for the type-erased Hub wrapper: the original cancellation type is gone,
+        // but the message is the localized description of `URLError(.cancelled)`. Match on that.
+        return messageLooksLikeCancellation(nsError.localizedDescription)
+            || messageLooksLikeCancellation((error as? LocalizedError)?.errorDescription ?? "")
+    }
+
+    /// Whether a human-readable error message looks like a cancellation rather than a real failure.
+    /// Matches the localized description of `URLError(.cancelled)` across locales we ship to
+    /// (English "cancelled"/"canceled", Simplified Chinese "已取消"). Kept narrow on purpose so an
+    /// unrelated message can't be misread as a cancel.
+    nonisolated static func messageLooksLikeCancellation(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        return lowered.contains("cancelled")
+            || lowered.contains("canceled")
+            || message.contains("已取消")
     }
 
     /// Wraps `operation` in a `Task`, stores it as the current ``downloadTask``, and on
@@ -416,7 +545,10 @@ public final class ModelManager {
         downloadTask?.cancel()
         downloadTask = nil
         if case .downloading = state {
-            refreshState()
+            // The state is `.downloading` right now, so `refreshState()` would early-return and
+            // leave it stuck there. Resolve straight from the local cache instead: a partial
+            // download becomes `.notDownloaded`, never a phantom `.downloading`/`.failed`.
+            resolveStateFromDisk()
         }
     }
 
