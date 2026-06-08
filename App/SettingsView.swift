@@ -23,7 +23,7 @@ struct SettingsView: View {
             PolishSettingsView(viewModel: viewModel)
                 .tabItem { Label("tab.polish", systemImage: "sparkles") }
 
-            DictionarySettingsView(store: dictionaryStore)
+            DictionarySettingsView(store: dictionaryStore, viewModel: viewModel)
                 .tabItem { Label("tab.dictionary", systemImage: "character.book.closed") }
 
             PermissionsSettingsView(viewModel: viewModel)

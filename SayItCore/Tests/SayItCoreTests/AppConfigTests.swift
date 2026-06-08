@@ -34,6 +34,7 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(config.cloudSTTModel, "gpt-4o-mini-transcribe")
         XCTAssertTrue(config.polishEnabled)
         XCTAssertTrue(config.soundCuesEnabled)
+        XCTAssertFalse(config.learnFromEditsEnabled, "learn-from-edits must default OFF (behavior-preserving)")
         XCTAssertEqual(config.polishStyle, .smart)
         XCTAssertEqual(config.providerKind, .openAI)
         XCTAssertEqual(config.model, ProviderKind.openAI.defaultModel)
@@ -95,6 +96,34 @@ final class AppConfigTests: XCTestCase {
         let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config)
         config.soundCuesEnabled = false
         wait(for: [exp], timeout: 1.0)
+    }
+
+    func testLearnFromEditsEnabledDefaultsOff() {
+        XCTAssertFalse(config.learnFromEditsEnabled)
+        XCTAssertFalse(AppConfig(defaults: defaults).learnFromEditsEnabled)
+    }
+
+    func testLearnFromEditsEnabledRoundTrip() {
+        config.learnFromEditsEnabled = true
+        XCTAssertTrue(config.learnFromEditsEnabled)
+        XCTAssertTrue(AppConfig(defaults: defaults).learnFromEditsEnabled)
+        config.learnFromEditsEnabled = false
+        XCTAssertFalse(config.learnFromEditsEnabled)
+        XCTAssertFalse(AppConfig(defaults: defaults).learnFromEditsEnabled)
+    }
+
+    func testLearnFromEditsEnabledChangePostsNotification() {
+        let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config)
+        config.learnFromEditsEnabled = true
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    func testLearnFromEditsEnabledUnchangedDoesNotPost() {
+        config.learnFromEditsEnabled = true
+        let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config)
+        exp.isInverted = true
+        config.learnFromEditsEnabled = true
+        wait(for: [exp], timeout: 0.3)
     }
 
     func testLocalModelRoundTrip() {
