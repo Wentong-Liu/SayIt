@@ -35,10 +35,10 @@ struct PermissionsSettingsView: View {
                 }
             } header: {
                 Text("perm.section.status")
+                    .settingsSectionHeader()
             } footer: {
                 Text("perm.footer")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .settingsCaption()
             }
 
             Section {
@@ -46,6 +46,7 @@ struct PermissionsSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .settingsFormTypography()
         .onAppear { viewModel.refreshPermissions() }
     }
 
@@ -80,12 +81,11 @@ struct PermissionsSettingsView: View {
                 .font(.title3)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
+                Text(title).font(Theme.Typography.label.weight(.semibold))
                 Text(detail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .settingsCaption()
                 Text(statusText)
-                    .font(.footnote)
+                    .font(Theme.Typography.caption)
                     .foregroundStyle(granted ? .green : .secondary)
             }
 

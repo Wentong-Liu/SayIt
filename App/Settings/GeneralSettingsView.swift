@@ -18,10 +18,10 @@ struct GeneralSettingsView: View {
                 }
             } header: {
                 Text("general.section.interfaceLanguage")
+                    .settingsSectionHeader()
             } footer: {
                 Text("general.uiLanguage.footer")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .settingsCaption()
             }
 
             Section {
@@ -39,20 +39,20 @@ struct GeneralSettingsView: View {
                 .pickerStyle(.segmented)
 
                 Text(interactionHint)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .settingsCaption()
             } header: {
                 Text("general.section.trigger")
+                    .settingsSectionHeader()
             }
 
             Section {
                 Toggle("general.soundCues", isOn: $viewModel.soundCuesEnabled)
             } header: {
                 Text("general.section.sound")
+                    .settingsSectionHeader()
             } footer: {
                 Text("general.soundCues.footer")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .settingsCaption()
             }
 
             Section {
@@ -73,13 +73,14 @@ struct GeneralSettingsView: View {
                 }
 
                 Text(micHint)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .settingsCaption()
             } header: {
                 Text("general.section.microphone")
+                    .settingsSectionHeader()
             }
         }
         .formStyle(.grouped)
+        .settingsFormTypography()
         .onAppear { micVM.refreshDevices() }
         .onDisappear { micVM.onDisappear() }
     }
