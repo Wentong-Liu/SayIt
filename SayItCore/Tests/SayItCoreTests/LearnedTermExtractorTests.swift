@@ -128,14 +128,23 @@ final class LearnedTermExtractorTests: XCTestCase {
         XCTAssertTrue(provider.receivedMessages.contains { $0.role == .system }, "should include a system prompt")
     }
 
-    /// The system prompt must tell the model the ORIGINAL is speech-recognizer output so its errors are PHONETIC (the core
-    /// of the fix): without that framing the model returns a null pair on sound-alike mishears.
-    func testSystemPromptMentionsSpeechAndPhonetic() async {
+    /// The system prompt must frame the task as a pure DIFF — compare ORIGINAL vs FINAL and return the single term the
+    /// user CHANGED — and must NOT instruct pronunciation / sound-alike / phonetic matching (that belongs to the polish
+    /// step, not here): the user has already typed the correct form, so finding it is a plain diff.
+    func testSystemPromptFramesPureDiff() async {
         let provider = FakeProvider(.returns(#"{"heard": null, "corrected": null}"#))
         let extractor = LearnedTermExtractor(provider: provider)
         _ = await extractor.extract(injected: "a", final: "b")
         let system = provider.receivedMessages.first { $0.role == .system }?.content ?? ""
-        XCTAssertTrue(system.uppercased().contains("PHONETIC"), "the system prompt should name PHONETIC errors")
-        XCTAssertTrue(system.lowercased().contains("speech"), "the system prompt should say the ORIGINAL is speech output")
+        // Positive: it compares ORIGINAL vs FINAL and frames the task as a diff over the changed term.
+        XCTAssertTrue(system.contains("ORIGINAL"), "the system prompt should reference the ORIGINAL text")
+        XCTAssertTrue(system.contains("FINAL"), "the system prompt should reference the FINAL text")
+        XCTAssertTrue(system.lowercased().contains("diff"), "the system prompt should frame the task as a DIFF")
+        XCTAssertTrue(system.lowercased().contains("changed"), "the system prompt should ask for the term the user CHANGED")
+        // Negative: it no longer instructs pronunciation-based matching.
+        XCTAssertFalse(system.uppercased().contains("PHONETIC"), "the diff prompt must not invoke PHONETIC reasoning")
+        XCTAssertFalse(system.lowercased().contains("pronunciation"), "the diff prompt must not invoke pronunciation matching")
+        XCTAssertFalse(system.lowercased().contains("sound-alike"), "the diff prompt must not invoke sound-alike matching")
+        XCTAssertFalse(system.lowercased().contains("speech"), "the diff prompt must not claim the ORIGINAL is speech output")
     }
 }

@@ -83,41 +83,37 @@ public struct LearnedTermExtractor: LearnedTermExtracting {
 
     // MARK: - Prompt
 
-    /// Builds the extraction prompt. The system prompt tells the model the ORIGINAL is raw speech-to-text output (so its
-    /// errors are PHONETIC / sound-alike — a term misheard, or one term split into several sound-alike words), asks it to
-    /// align the garbled "heard" form to the user's "corrected" form via pronunciation + context, and to stay robust to
-    /// incidental ordinary-word edits (return the term anyway). It requires a strict JSON object with the single corrected
-    /// term, or a null pair only when there is NO term correction at all; the examples pin the phonetic + robustness behavior.
+    /// Builds the extraction prompt. The system prompt frames the task as a pure DIFF: the ORIGINAL is the text the
+    /// dictation app inserted, the FINAL is that text after the user edited it in place. Because the user has already typed
+    /// the correct form, the model only has to compare the two versions and identify the SINGLE term/word that CHANGED,
+    /// aligning the two by the surrounding UNCHANGED context — no pronunciation / sound-alike inference is needed. It stays
+    /// robust to incidental ordinary-word edits (return the one changed term anyway), requires a strict JSON single-term
+    /// pair, and returns a null pair when the edit is not a single-term correction; the examples pin the diff + robustness
+    /// behavior.
     static func buildMessages(injected: String, final: String) -> [LLMMessage] {
         let system = """
-        You compare two versions of a piece of text. The ORIGINAL is the RAW OUTPUT of a SPEECH-TO-TEXT recognizer, so its \
-        mistakes are PHONETIC / sound-alike: a term was MISHEARD (it sounds similar but is the wrong word), or ONE term was \
-        split into SEVERAL sound-alike words. These are NOT typos. The FINAL is the text AFTER the user edited it in place to \
-        fix the recognizer.
-
-        Your job: find the SINGLE proper noun, brand, product name, personal name, or code identifier that the user \
-        corrected. Align the garbled ORIGINAL form ("heard", which may be ONE word OR SEVERAL adjacent words) to the user's \
-        FINAL form ("corrected") using PRONUNCIATION similarity together with the surrounding CONTEXT (the topic of the \
-        sentence tells you which term was meant).
+        You compare two versions of a piece of text. The ORIGINAL is the text a dictation app inserted; the FINAL is that \
+        text AFTER the user edited it in place. The user has already written the correct form in the FINAL. Your job is a \
+        pure DIFF: identify the SINGLE term/word that the user CHANGED between ORIGINAL and FINAL, aligning the two by the \
+        surrounding UNCHANGED context (the words on either side that stayed the same tell you which span was replaced).
 
         Respond with ONLY a JSON object, no prose, no code fence:
-        {"heard": <the original form of the corrected term as it appeared in the ORIGINAL text>, "corrected": <the user's fixed form>}
+        {"heard": <the term exactly as it appeared in the ORIGINAL>, "corrected": <the user's corrected form in the FINAL>}
 
         Rules:
         - "corrected" MUST be a SINGLE SHORT TERM (proper noun / brand / product name / personal name / code identifier). It \
         is NEVER a phrase, a clause, or a whole sentence.
-        - "heard" is that same term as it appeared in the ORIGINAL text (the form the recognizer got wrong); it may span ONE \
-        or SEVERAL adjacent words.
+        - "heard" is that same changed span as it appeared in the ORIGINAL; the changed span may be ONE word OR SEVERAL \
+        adjacent words (match it by the surrounding unchanged context).
         - BE ROBUST TO INCIDENTAL EDITS: if there are OTHER small or ordinary-word differences between ORIGINAL and FINAL \
-        that are NOT proper-noun / term corrections, IGNORE them and STILL return the one term correction.
-        - Return {"heard": null, "corrected": null} ONLY when there is NO proper-noun / term / identifier correction at all — \
-        i.e. the change is pure rephrasing, grammar, punctuation, or added/removed content.
+        that are not a single-term correction, IGNORE them and STILL return the one term the user changed.
+        - Return {"heard": null, "corrected": null} when the edit is NOT a single-term correction — i.e. it is rephrasing, \
+        added/removed content, grammar/punctuation, or ambiguous.
 
         Examples:
         ORIGINAL: "I added a use effect hook." FINAL: "I added a useEffect hook." -> {"heard": "use effect", "corrected": "useEffect"}
         ORIGINAL: "我之前用过 Tables 和闪电书。" FINAL: "我之前用过 Typeless 和闪电书。" -> {"heard": "Tables", "corrected": "Typeless"}
         ORIGINAL: "Let's check Trading Will for the chart." FINAL: "Let's check TradingView for the chart." -> {"heard": "Trading Will", "corrected": "TradingView"}
-        ORIGINAL: "我之前用过 Tables 和闪电书。" FINAL: "我之前用过 Typeless 和闪电说。" -> {"heard": "Tables", "corrected": "Typeless"}
         ORIGINAL: "Let's meet tomorrow." FINAL: "Let's meet on Tuesday instead." -> {"heard": null, "corrected": null}
         """
         let user = """
