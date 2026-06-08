@@ -58,11 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Open Settings on the Speech tab (not the default General) so the local-model section and the
-        // download progress are immediately visible. Reuses the standard macOS Settings-open action that
-        // backs the menu's `openSettings()`; SettingsView reads the requested tab in `.onAppear`.
-        SettingsRouter.shared.pendingTab = .stt
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        // download progress are immediately visible. Routed through ``SettingsRouter`` so the SwiftUI
+        // scene calls the live `@Environment(\.openSettings)` action: for an accessory (menu-bar) SwiftUI
+        // app the legacy AppKit `NSApp.sendAction(showSettingsWindow:)` selector has no reliable responder
+        // target at launch, so it silently failed to open anything. SettingsView reads the requested tab
+        // (set here via `requestOpen`) in `.onAppear`; the scene activates the app after opening.
+        SettingsRouter.shared.requestOpen(tab: .stt)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
