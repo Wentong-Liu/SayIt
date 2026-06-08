@@ -16,17 +16,17 @@ struct STTSettingsView: View {
                 .pickerStyle(.segmented)
             } header: {
                 Text("stt.section.engine")
+                    .settingsSectionHeader()
             } footer: {
                 Text(viewModel.sttMode == .local
                      ? "stt.footer.local"
                      : "stt.footer.cloud")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .settingsCaption()
             }
 
             switch viewModel.sttMode {
             case .local:
-                Section("stt.section.localModel") {
+                Section {
                     // The local model is fixed to large-v3-turbo (the recommended sweet spot); there is no
                     // longer a picker. Show it as a static labeled line so the user knows which model the
                     // Download/Re-download row below acts on. The localized `model.large-v3-turbo` value
@@ -36,9 +36,12 @@ struct STTSettingsView: View {
                     }
 
                     modelStatusRow
+                } header: {
+                    Text("stt.section.localModel")
+                        .settingsSectionHeader()
                 }
             case .cloud:
-                Section("stt.section.cloud") {
+                Section {
                     Picker("stt.transcribeModel", selection: $viewModel.cloudSTTModel) {
                         ForEach(viewModel.cloudSTTModelOptions, id: \.id) { option in
                             Text(option.label).tag(option.id)
@@ -50,18 +53,21 @@ struct STTSettingsView: View {
 
                     Button("stt.saveKey") { viewModel.saveCloudSTTAPIKey() }
                         .disabled(viewModel.cloudSTTAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                } header: {
+                    Text("stt.section.cloud")
+                        .settingsSectionHeader()
                 }
             }
 
             if let message = viewModel.sttStatusMessage {
                 Section {
                     Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .settingsCaption()
                 }
             }
         }
         .formStyle(.grouped)
+        .settingsFormTypography()
         .onAppear {
             viewModel.reloadCredentials()
             // On entering the page, refresh the download state per the current model's actual local cache.
@@ -143,7 +149,7 @@ struct STTSettingsView: View {
             }
             // Directly show the real failure reason (not just a tooltip), to help the user/support pinpoint it (network, parsing, incomplete files, etc.).
             Text(reason)
-                .font(.footnote)
+                .font(Theme.Typography.caption)
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
         }

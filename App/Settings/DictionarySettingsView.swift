@@ -78,7 +78,7 @@ struct DictionarySettingsView: View {
     private var header: some View {
         HStack {
             Text("dictionary.section.entries")
-                .font(.title3.weight(.semibold))
+                .font(Theme.Typography.paneTitle)
             Spacer()
             Button {
                 editorContext = .add
@@ -98,10 +98,9 @@ struct DictionarySettingsView: View {
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary)
             Text("dictionary.empty.title")
-                .font(.headline)
+                .font(Theme.Typography.label.weight(.semibold))
             Text("dictionary.empty.hint")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .settingsCaption()
                 .multilineTextAlignment(.center)
             Button {
                 editorContext = .add
@@ -159,7 +158,7 @@ private struct EntryRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Text(entry.canonical)
-                .fontWeight(.semibold)
+                .font(Theme.Typography.label.weight(.semibold))
                 .lineLimit(2)
                 .truncationMode(.tail)
                 .multilineTextAlignment(.leading)

@@ -45,7 +45,7 @@ struct SettingsView: View {
                     .frame(width: 22, height: 22)
                     .foregroundStyle(Theme.accent)
                 Text(verbatim: "SayIt")
-                    .font(.title3.weight(.semibold))
+                    .font(Theme.Typography.paneTitle)
             }
             // Extra top inset (~28pt over the base 16) so the floating traffic-light buttons,
             // now overlaying the title-bar-less window, clear the "SayIt" brand header.
@@ -149,7 +149,7 @@ private struct SidebarRow: View {
     var body: some View {
         Button(action: action) {
             Label(tab.labelKey, systemImage: tab.systemImage)
-                .font(.system(size: 15))
+                .font(Theme.Typography.label)
                 .foregroundStyle(isSelected ? Color.white : Color.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 8)

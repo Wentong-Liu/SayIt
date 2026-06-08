@@ -12,20 +12,22 @@ struct PolishSettingsView: View {
                 Toggle("polish.enable", isOn: $viewModel.polishEnabled)
             } footer: {
                 Text("polish.enable.footer")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .settingsCaption()
             }
 
             if viewModel.polishEnabled {
-                Section("polish.section.style") {
+                Section {
                     Picker("polish.style", selection: $viewModel.polishStyle) {
                         ForEach(PolishStyle.allCases) { style in
                             Text(LocalizedStringKey(style.localizationKey)).tag(style)
                         }
                     }
+                } header: {
+                    Text("polish.section.style")
+                        .settingsSectionHeader()
                 }
 
-                Section("polish.section.model") {
+                Section {
                     Picker("polish.provider", selection: $viewModel.providerKind) {
                         ForEach(ProviderKind.allCases) { kind in
                             Text(LocalizedStringKey(kind.localizationKey)).tag(kind)
@@ -40,26 +42,32 @@ struct PolishSettingsView: View {
                             Text(option.label).tag(option.id)
                         }
                     }
+                } header: {
+                    Text("polish.section.model")
+                        .settingsSectionHeader()
                 }
 
-                Section("polish.section.credentials") {
+                Section {
                     if viewModel.providerUsesOAuth {
                         chatGPTCredentialView
                     } else {
                         apiKeyCredentialView
                     }
+                } header: {
+                    Text("polish.section.credentials")
+                        .settingsSectionHeader()
                 }
 
                 if let message = viewModel.polishStatusMessage {
                     Section {
                         Text(message)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .settingsCaption()
                     }
                 }
             }
         }
         .formStyle(.grouped)
+        .settingsFormTypography()
         .onAppear { viewModel.reloadCredentials() }
     }
 
