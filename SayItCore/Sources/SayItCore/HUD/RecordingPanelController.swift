@@ -89,6 +89,10 @@ public final class RecordingPanelController {
     /// The current normalized input level (0...1). For the orchestration-layer test to assert "each session's level has been forwarded to the HUD".
     public var currentLevel: Double { model.level }
 
+    /// The current HUD state. For the orchestration-layer test to assert which state the panel was shown in (e.g. that the
+    /// "preparing model" phase preceded transcribing on a cold local-model load); mirrors ``currentLevel``'s test-affordance pattern.
+    public var currentState: RecordingState { model.state }
+
     /// Hides and destroys the panel.
     public func hide() {
         model.state = .idle

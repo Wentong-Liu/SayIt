@@ -14,6 +14,10 @@ import Foundation
 public enum RecordingState: Equatable, Sendable {
     /// The processing phase: transcribing (STT) or polish (LLM). It only selects the HUD copy and does not map to the progress-bar position.
     public enum ProcessingPhase: Equatable, Sendable {
+        /// The local model is being loaded into memory (cold start) before transcription can begin. The copy shows Preparing model….
+        /// Rides inside the existing `.processing(_:phase:)` state so it reuses the progress-bar ramp and never disturbs
+        /// ``RecordingPanelView``'s exhaustive top-level switch over ``RecordingState`` (which never switches on the phase value).
+        case preparingModel
         /// Transcribing to text. The copy shows Transcribing….
         case transcribing
         /// LLM polish. The copy shows Polishing….
@@ -42,6 +46,8 @@ public enum RecordingState: Equatable, Sendable {
             // The processing copy switches with the phase; both phases resolve through the shared
             // in-bundle localized helper (en + zh-Hans), so no phase diverges from the catalog path.
             switch phase {
+            case .preparingModel:
+                return Self.localized("hud.preparingModel", fallback: "Preparing model…")
             case .transcribing:
                 return Self.localized("hud.transcribing", fallback: "Transcribing…")
             case .polishing:
