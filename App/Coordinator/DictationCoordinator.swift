@@ -35,8 +35,9 @@ final class DictationCoordinator {
     /// Reuses the ``DictionaryStore`` actor from PR-1; injectable so tests can pass an empty dictionary backed by a temp directory to verify "zero behavior change".
     private let dictionaryStore: DictionaryStore
     /// The focused-element text reader (learn-from-edits Part B). Reads the focused field's current text right after an inject
-    /// (to snapshot the baseline) and again after the user makes an in-place edit (to diff). Returns nil on secure/unreadable
-    /// fields, in which case the feature degrades silently. Injectable so tests can drive arm/read-back without a live UI.
+    /// (to confirm the field is readable + arm) and again when editing is DONE (to send the final text to the extractor).
+    /// Returns nil on secure/unreadable fields, in which case the feature degrades silently. Injectable so tests can drive
+    /// arm/compare without a live UI.
     private let axReader: FocusedTextReading
     /// The dismissible "add to dictionary?" suggestion prompt (learn-from-edits Part B). A SEPARATE clickable panel from the
     /// dictation HUD (which ignores mouse events). Injectable so tests can drive Accept/Dismiss deterministically.
@@ -106,33 +107,60 @@ final class DictationCoordinator {
     /// Whether monitoring has started (idempotency protection).
     private var isStarted = false
 
-    // MARK: Learn-from-edits state (Part B; entirely gated behind config.learnFromEditsEnabled)
+    // MARK: Learn-from-edits state (Part B v2; always on — no opt-in)
 
-    /// A pending injection that the user may edit in place. Armed right after a successful inject (only when learn-from-edits
-    /// is enabled AND the focused field's text was readable) and consulted on the next edit-key signal to decide whether to
-    /// diff. Has a freshness window so a stale injection (the user moved on long ago) never triggers a suggestion.
+    /// A pending injection that the user may edit in place. Armed right after a successful, non-drifted inject (when the
+    /// focused field's text was readable). The compare fires when editing is DONE — on commit (Return/keypad-Enter), focus
+    /// loss (app deactivation), ~idle of keystrokes, or a new dictation — whichever happens FIRST, exactly ONCE. Has a
+    /// generous freshness window (until the next dictation OR ~120s) since the user may edit for a while before committing.
     private struct InjectionRecord {
-        /// The exact string SayIt injected (the diff baseline for ``LearnedEditDetector``).
+        /// The exact string SayIt injected (the baseline sent to the term extractor as `injected`).
         let injectedText: String
-        /// When this record expires; after this instant the edit signal is ignored (treated as normal typing).
+        /// When this record expires; after this instant a compare trigger is ignored (the user moved on long ago).
         let expiresAt: Date
+        /// When this record was armed (diagnostic / future tuning).
+        let armedAt: Date
+        /// The process id of the focused app at arm time (a lightweight focus identity to detect "armed field lost focus").
+        let targetPID: pid_t?
     }
 
-    /// The current pending injection record (learn-from-edits). `nil` means nothing is armed (the common case: feature off,
-    /// or no recent inject). Replaced on each arm; cleared on suggestion resolution, teardown, and ESC cancel.
+    /// The current pending injection record (learn-from-edits). `nil` means nothing is armed (the common case: no recent
+    /// inject). Replaced on each arm; cleared on the first compare trigger, suggestion resolution, teardown, ESC cancel,
+    /// and at the start of a new dictation. Clearing it makes any later trigger for the same inject a no-op (compare runs once).
     private var injectionRecord: InjectionRecord?
 
-    /// The in-flight debounce task started on an edit-key signal: it waits ``learnDebounce`` then re-reads + diffs. Cancelled
-    /// and replaced on each new edit-key (so a burst of deletes collapses into one read), and cancelled on teardown / cancel.
-    private var learnDebounceTask: Task<Void, Never>?
+    /// The in-flight idle timer: started on arm and reset (cancel + reschedule) on every keystroke while armed; when it
+    /// fires (the user paused ~`idleAfter`) the compare runs. Cancelled on teardown / cancel / first compare / next dictation.
+    private var idleTimerTask: Task<Void, Never>?
 
-    /// How long an armed injection record stays fresh (learn-from-edits). After this the edit signal is ignored. Injectable
-    /// so tests use a tiny/large value instead of waiting the production window. Defaults to ~8s (per the approved spike).
+    /// The in-flight term-extraction LLM task. Cancelled on teardown / cancel / next dictation so an in-flight extraction
+    /// never outlives the session and never fires a suggestion after stop.
+    private var extractTask: Task<Void, Never>?
+
+    /// The focus-loss observer token (NSWorkspace didDeactivateApplicationNotification). Registered in ``start()``,
+    /// removed in ``stop()`` — when the armed app deactivates (the user clicked away / switched apps) the edit is treated
+    /// as committed and the compare fires once.
+    private var focusLossObserver: NSObjectProtocol?
+
+    /// How long an armed injection record stays fresh (learn-from-edits). After this a compare trigger is ignored.
+    /// Injectable so tests use a tiny/large value instead of waiting the production window. Defaults to ~120s (the user may
+    /// edit for a while before committing; a new dictation also drops the record regardless).
     private let learnFreshness: Duration
 
-    /// The debounce applied between an edit-key signal and the AX read-back + diff (learn-from-edits). Collapses a burst of
-    /// deletes into one read. Injectable so tests pass a tiny value. Defaults to ~700ms (per the approved spike).
-    private let learnDebounce: Duration
+    /// How long after the LAST keystroke (while armed) the idle compare fires. Reset on every keystroke. Injectable so
+    /// tests pass a tiny value. Defaults to ~3s.
+    private let learnIdleAfter: Duration
+
+    /// The injected override for building the term-extraction provider (learn-from-edits Part C). `nil` (production
+    /// default) means reuse ``makePolishProvider()`` exactly (same provider/model/key path as polish) — see
+    /// ``buildLearnProvider()``. If no provider/key is configured the build throws and the compare drops silently (feature
+    /// inactive). Tests inject one that returns a dummy provider deterministically (or throws to exercise the no-provider
+    /// drop) without touching the real Keychain.
+    private let learnProviderFactoryOverride: (() async throws -> any LLMProvider)?
+
+    /// Builds the term extractor for a given provider (learn-from-edits Part C). Defaults to a real
+    /// ``LearnedTermExtractor`` backed by the constructed provider; tests inject a fake returning a chosen result / nil.
+    private let termExtractorFactory: (any LLMProvider) -> any LearnedTermExtracting
 
     /// The long-lived task listening for hotkey events.
     private var eventLoopTask: Task<Void, Never>?
@@ -220,8 +248,12 @@ final class DictationCoordinator {
     ///   - cloudKeyReader: reads the trimmed cloud STT API key; defaults to the ``KeychainStore`` `openAIAPIKey` account. Tests can inject it to drive the cloud-key signature and assert it is not read per dictation.
     ///   - axReader: the focused-element text reader for learn-from-edits; defaults to ``AXTextReader``. Tests inject a stub.
     ///   - suggestionPanel: the "add to dictionary?" prompt controller; defaults to the shared instance. Tests inject a fresh one.
-    ///   - learnFreshness: how long an armed injection record stays fresh; defaults to ~8s. Tests pass a tiny/large value.
-    ///   - learnDebounce: the edit-key -> read-back debounce; defaults to ~700ms. Tests pass a tiny value.
+    ///   - learnFreshness: how long an armed injection record stays fresh; defaults to ~120s. Tests pass a tiny/large value.
+    ///   - learnIdleAfter: the no-keystroke idle window after which the compare fires; defaults to ~3s. Tests pass a tiny value.
+    ///   - learnProviderFactory: builds the term-extraction provider; defaults to reusing ``makePolishProvider()``. Tests
+    ///     inject one that returns a dummy provider (or throws to exercise the no-provider drop) without the real Keychain.
+    ///   - termExtractorFactory: builds the learn-from-edits term extractor from a provider; defaults to a real
+    ///     ``LearnedTermExtractor``. Tests inject a fake returning a chosen ``LearnedTerm`` / nil.
     init(config: AppConfig = .shared,
          hotkeyManager: HotkeyManager? = nil,
          recorder: AudioRecording = AudioRecorder(),
@@ -236,8 +268,10 @@ final class DictationCoordinator {
          cloudKeyReader: (@Sendable () -> String)? = nil,
          axReader: FocusedTextReading = AXTextReader(),
          suggestionPanel: SuggestionPanelController = .shared,
-         learnFreshness: Duration = .seconds(8),
-         learnDebounce: Duration = .milliseconds(700)) {
+         learnFreshness: Duration = .seconds(120),
+         learnIdleAfter: Duration = .seconds(3),
+         learnProviderFactory: (() async throws -> any LLMProvider)? = nil,
+         termExtractorFactory: ((any LLMProvider) -> any LearnedTermExtracting)? = nil) {
         self.config = config
         self.recorder = recorder
         self.panel = panel
@@ -246,7 +280,8 @@ final class DictationCoordinator {
         self.axReader = axReader
         self.suggestionPanel = suggestionPanel
         self.learnFreshness = learnFreshness
-        self.learnDebounce = learnDebounce
+        self.learnIdleAfter = learnIdleAfter
+        self.termExtractorFactory = termExtractorFactory ?? { LearnedTermExtractor(provider: $0) }
         self.soundCues = soundCues
         self.hotkeyManager = hotkeyManager
             ?? HotkeyManager(triggerKey: config.triggerKey,
@@ -263,6 +298,18 @@ final class DictationCoordinator {
             (KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        // Store the override as-is; nil means buildLearnProvider() reuses makePolishProvider() (resolved at call time, so no
+        // self-capturing closure is stored during init — which Swift forbids on a stored property).
+        self.learnProviderFactoryOverride = learnProviderFactory
+    }
+
+    /// Builds the term-extraction provider: the injected override if present, else reuses ``makePolishProvider()`` exactly
+    /// (same provider/model/key path as polish). Throws when no provider/key is configured (the caller drops silently).
+    private func buildLearnProvider() async throws -> any LLMProvider {
+        if let learnProviderFactoryOverride {
+            return try await learnProviderFactoryOverride()
+        }
+        return try await makePolishProvider()
     }
 
     // MARK: Lifecycle
@@ -292,9 +339,20 @@ final class DictationCoordinator {
         // ESC-to-cancel wiring: the manager fires onCancel only while a dictation session is active (phase != .idle), so ESC is never swallowed when idle.
         hotkeyManager.isSessionActive = { [weak self] in (self?.phase ?? .idle) != .idle }
         hotkeyManager.onCancel = { [weak self] in self?.cancel() }
-        // Learn-from-edits: a passive Backspace / Forward-Delete signal. handleEditKey is a no-op unless a fresh injection
-        // record exists (which is itself only armed when learnFromEditsEnabled), so wiring this is harmless when the feature is off.
-        hotkeyManager.onEditKey = { [weak self] in self?.handleEditKey() }
+        // Learn-from-edits (always on): every keystroke resets the idle timer (so the compare fires only after the user
+        // pauses); a Return/keypad-Enter commit fires the compare immediately. Both are no-ops unless a fresh injection
+        // record is armed, so wiring them is harmless when nothing is pending.
+        hotkeyManager.onUserKeystroke = { [weak self] in self?.handleUserKeystroke() }
+        hotkeyManager.onCommitKey = { [weak self] in self?.handleCommitKey() }
+        // Learn-from-edits focus-loss trigger: when the armed app deactivates (the user switched / clicked away) the edit
+        // is treated as committed, so fire the compare once. Removed in stop().
+        focusLossObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didDeactivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleFocusLoss() }
+        }
         startEventLoop()
         hotkeyManager.start()
         phase = .idle
@@ -325,9 +383,13 @@ final class DictationCoordinator {
         // Teardown cancels an in-flight ~1.6s transient sleeper so it cannot run panel.hide() after stop().
         transientTask?.cancel()
         transientTask = nil
-        // Learn-from-edits teardown: drop any armed record + in-flight debounce + visible suggestion so a stale
-        // record/suggestion never survives teardown (and a late debounce can never fire a read after stop()).
+        // Learn-from-edits teardown: drop any armed record + in-flight idle timer + in-flight extraction + visible
+        // suggestion so a stale record/suggestion never survives teardown (and a late timer/extraction can never fire after stop()).
         clearLearnFromEdits()
+        if let focusLossObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(focusLossObserver)
+            self.focusLossObserver = nil
+        }
         if let configObserver {
             NotificationCenter.default.removeObserver(configObserver)
             self.configObserver = nil
@@ -410,6 +472,11 @@ final class DictationCoordinator {
         // Guide accessibility authorization on demand: pop the system dialog when the dictation key is first pressed and unauthorized (no longer disturbing at launch).
         // When unauthorized the global hotkey can be established but receives no events -- but reaching here means this one was received, so just do an informative guide.
         guard (accessibilityGateOverride ?? ensureAccessibilityOrGuide)() else { return }
+
+        // Learn-from-edits next-dictation policy: a new dictation is starting, so DROP any prior armed record (+ its idle
+        // timer / in-flight extraction / visible suggestion). Never carry a stale record into a new dictation; the
+        // Enter/idle/focus-loss triggers already cover the common commit cases for the prior inject.
+        clearLearnFromEdits()
 
         // Record the injection target (for injection back-fill + focus-drift verification).
         capturedTarget = currentFrontmostTarget()
@@ -512,8 +579,8 @@ final class DictationCoordinator {
         // (the sole start/stop driver) must be forced back to inactive — otherwise the user's NEXT tap would emit a phantom
         // `.stop` against the now-idle coordinator and be silently wasted (forcing a double tap to resume). Hold mode is unaffected.
         hotkeyManager.sessionDidEndExternally()
-        // Learn-from-edits: an ESC cancel ends the session — drop any armed record / in-flight debounce / visible suggestion
-        // so a stale record from a prior inject can never trigger a suggestion after the user cancelled.
+        // Learn-from-edits: an ESC cancel ends the session — drop any armed record / in-flight idle timer / in-flight
+        // extraction / visible suggestion so a stale record from a prior inject can never trigger a suggestion after cancel.
         clearLearnFromEdits()
         // Reset the HUD to idle. Inject NOTHING.
         panel.hide()
@@ -921,9 +988,9 @@ final class DictationCoordinator {
             }
             // Learn-from-edits ARM: only on a clean, non-drifted success (the focus target did not move, so the just-injected
             // text is what the focused field now holds). Drift means the paste landed elsewhere, so there is nothing reliable
-            // to diff later — skip arming there. Gated + no-op internally when the feature is off (see armLearnFromEditsIfEnabled).
+            // to compare later — skip arming there. No-op internally when the field is unreadable (see armLearnFromEdits).
             if !drifted {
-                armLearnFromEditsIfEnabled(injected: text)
+                armLearnFromEdits(injected: text)
             }
         case .failedTextLeftInPasteboard:
             // The text is left in the clipboard, hinting the user to paste manually.
@@ -945,71 +1012,129 @@ final class DictationCoordinator {
         return captured.processIdentifier != current.processIdentifier
     }
 
-    // MARK: Learn from edits (Part B)
+    // MARK: Learn from edits (Part B v2 — always on)
     //
-    // The whole feature is gated behind config.learnFromEditsEnabled (default OFF): when OFF nothing is armed, the edit-key
-    // handler is a no-op, and no AX read ever happens — ZERO behavior change. Flow: ARM after a successful inject -> the user
-    // edits in place (a Backspace/Forward-Delete fires onEditKey) -> debounce -> re-read the focused field -> diff against the
-    // injected baseline (LearnedEditDetector) -> if a single-token proper-noun substitution is found, SUGGEST adding it.
+    // The feature is unconditionally active (no opt-in). Flow: ARM after a clean, non-drifted inject when the focused
+    // field is readable -> the user edits in place -> the compare fires when editing is DONE (commit Return/keypad-Enter,
+    // focus loss, ~idle of keystrokes, or a new dictation), whichever happens FIRST, exactly ONCE per armed inject ->
+    // read the FINAL focused text via AX -> send (injected, final) to the LLM term extractor -> apply a hard single-term
+    // guard -> if a single corrected term is found, SUGGEST adding it. No local diff, so a sentence can never be suggested.
 
-    /// ARM: snapshot the just-injected text as a diff baseline, but ONLY when learn-from-edits is enabled AND the focused
-    /// field's text is currently readable (we cannot diff what we cannot read — secure/web/terminal fields return nil here).
-    /// Replaces any prior record (the latest inject is the only one worth learning from) and sets a freshness expiry.
-    private func armLearnFromEditsIfEnabled(injected: String) {
-        guard config.learnFromEditsEnabled else { return }
-        // Drop any prior debounce/suggestion: a new inject supersedes an older pending one.
-        learnDebounceTask?.cancel()
-        learnDebounceTask = nil
-        // Read the focused field right after the paste landed. nil (secure/unreadable) -> do not arm (can't diff later).
+    /// ARM: snapshot the just-injected text as the extraction baseline, but ONLY when the focused field's text is currently
+    /// readable (we cannot compare what we cannot read — secure/web/terminal fields return nil here). Replaces any prior
+    /// record (the latest inject is the only one worth learning from), captures a lightweight focus identity + a generous
+    /// freshness expiry, and starts the idle timer (so a long pause after the inject still triggers a compare).
+    private func armLearnFromEdits(injected: String) {
+        // Drop any prior idle timer / in-flight extraction: a new inject supersedes an older pending one.
+        idleTimerTask?.cancel()
+        idleTimerTask = nil
+        extractTask?.cancel()
+        extractTask = nil
+        // Read the focused field right after the paste landed. nil (secure/unreadable) -> do not arm (can't compare later).
         guard axReader.readFocusedText() != nil else {
             injectionRecord = nil
             return
         }
-        injectionRecord = InjectionRecord(injectedText: injected,
-                                          expiresAt: Date().addingTimeInterval(learnFreshness.timeIntervalValue))
+        injectionRecord = InjectionRecord(
+            injectedText: injected,
+            expiresAt: Date().addingTimeInterval(learnFreshness.timeIntervalValue),
+            armedAt: Date(),
+            targetPID: capturedTarget?.processIdentifier
+        )
+        startIdleTimer()
     }
 
-    /// TRIGGER (edit key): called on a Backspace / Forward-Delete signal. A no-op unless a FRESH injection record exists —
-    /// so it never interferes with normal typing/deleting. Starts/restarts a short debounce so a burst of deletes collapses
-    /// into a single read-back + diff.
-    private func handleEditKey() {
-        // Gate first: when the feature is off nothing was ever armed, so this is already a no-op, but guard explicitly so a
-        // stray record (e.g. toggled off mid-window) is also ignored and cleared.
-        guard config.learnFromEditsEnabled else {
-            clearLearnFromEdits()
-            return
-        }
-        guard let record = injectionRecord else { return }    // nothing armed -> normal typing, ignore.
-        guard record.expiresAt > Date() else {                // stale -> drop and ignore (never interfere with typing).
-            clearLearnFromEdits()
-            return
-        }
-
-        // Debounce: cancel+replace the pending read so a run of edit keys results in one read after the user pauses.
-        learnDebounceTask?.cancel()
-        learnDebounceTask = Task { [weak self, learnDebounce] in
-            try? await Task.sleep(for: learnDebounce)
+    /// Starts/restarts the idle timer: after ``learnIdleAfter`` of no keystrokes (while armed) the compare fires. Reset on
+    /// every keystroke (cancel + reschedule). A no-op when nothing is armed.
+    private func startIdleTimer() {
+        guard injectionRecord != nil else { return }
+        idleTimerTask?.cancel()
+        idleTimerTask = Task { [weak self, learnIdleAfter] in
+            try? await Task.sleep(for: learnIdleAfter)
             if Task.isCancelled { return }
             guard let self else { return }
-            self.runLearnReadBackAndDiff()
+            self.fireCompare()
         }
     }
 
-    /// DEBOUNCE fire -> READ + DIFF: re-read the focused field and diff against the injected baseline. Silently drops the
-    /// suggestion on any of: record cleared/expired while debouncing, AX read returns nil (focus moved to a secure/unreadable
-    /// field), or the detector finds no learnable single-token substitution. Otherwise presents the suggestion.
-    private func runLearnReadBackAndDiff() {
-        guard config.learnFromEditsEnabled else { return }
-        guard let record = injectionRecord, record.expiresAt > Date() else {
-            clearLearnFromEdits()
-            return
+    /// KEYSTROKE: any keyDown while armed resets the idle timer (so the compare fires only after the user pauses). A no-op
+    /// when nothing is armed (the common case), so it never interferes with normal typing.
+    private func handleUserKeystroke() {
+        guard injectionRecord != nil else { return }
+        startIdleTimer()
+    }
+
+    /// COMMIT (Return / keypad-Enter): the edit is done — fire the compare immediately. A no-op when nothing is armed.
+    private func handleCommitKey() {
+        guard injectionRecord != nil else { return }
+        fireCompare()
+    }
+
+    /// FOCUS LOSS (the armed app deactivated): the user switched / clicked away — treat the edit as committed and fire the
+    /// compare. A no-op when nothing is armed.
+    private func handleFocusLoss() {
+        guard injectionRecord != nil else { return }
+        fireCompare()
+    }
+
+    /// TRIGGER -> COMPARE: consume the armed record exactly once (Enter + idle + focus-loss can race; clearing the record
+    /// here makes subsequent triggers no-ops), then read the FINAL focused text and run the LLM extraction. Drops silently
+    /// when: the record is missing/expired, the AX read returns nil, the final text equals the injected text (no edit), no
+    /// provider/key is configured, or the LLM errors/times out / returns no single-term result.
+    private func fireCompare() {
+        guard let record = injectionRecord else { return }
+        // Consume the record up front so a racing trigger (Enter then idle, etc.) cannot run the compare twice. Cancel the
+        // idle timer too (its scheduled fire is now moot).
+        injectionRecord = nil
+        idleTimerTask?.cancel()
+        idleTimerTask = nil
+
+        // Expired -> the user moved on long ago; drop without reading.
+        guard record.expiresAt > Date() else { return }
+
+        // Read the FINAL focused text. nil -> no longer readable (moved away / secure) -> drop silently.
+        guard let final = axReader.readFocusedText() else { return }
+        // Identical to what we injected -> the user made no edit -> drop WITHOUT calling the LLM.
+        guard final.value != record.injectedText else { return }
+
+        // Build the provider exactly like polish; no provider/key configured -> feature inactive -> drop silently.
+        extractTask?.cancel()
+        extractTask = Task { [weak self] in
+            guard let self else { return }
+            let provider: any LLMProvider
+            do {
+                provider = try await self.buildLearnProvider()
+            } catch {
+                return    // no provider / key -> drop silently.
+            }
+            if Task.isCancelled { return }
+            let extractor = self.termExtractorFactory(provider)
+            let term = await extractor.extract(injected: record.injectedText, final: final.value)
+            if Task.isCancelled { return }
+            guard let term, Self.passesSingleTermGuard(term, finalText: final.value) else {
+                return    // not a single-term correction, or the guard rejected it -> drop silently.
+            }
+            self.presentSuggestion(heard: term.heard, corrected: term.corrected)
         }
-        // Re-read the current focused text. nil -> the field is no longer readable (moved away / secure) -> drop silently.
-        guard let current = axReader.readFocusedText() else { return }
-        guard let suggestion = LearnedEditDetector.suggestion(injected: record.injectedText, edited: current.value) else {
-            return    // no learnable single-token proper-noun substitution -> drop silently.
-        }
-        presentSuggestion(heard: suggestion.heard, corrected: suggestion.corrected)
+    }
+
+    /// HARD single-term guard, applied to the extractor's result before suggesting. Structurally prevents the "whole
+    /// sentence" bug even if the LLM misbehaves: `corrected` must be non-empty, differ from `heard`, be short (<= 40
+    /// chars), contain NO sentence punctuation / newline beyond what a single identifier could hold, and must not be or
+    /// contain the whole final sentence.
+    static func passesSingleTermGuard(_ term: LearnedTerm, finalText: String) -> Bool {
+        let corrected = term.corrected
+        guard !corrected.isEmpty else { return false }
+        guard corrected != term.heard else { return false }
+        guard corrected.count <= 40 else { return false }
+        // Reject sentence punctuation / newlines a single proper-noun / brand / identifier would never contain.
+        let forbidden = CharacterSet(charactersIn: "。．.,!?！？、\n\r")
+        guard corrected.rangeOfCharacter(from: forbidden) == nil else { return false }
+        // The corrected term must not be the whole final sentence (or, defensively, contain it).
+        let trimmedFinal = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard corrected != trimmedFinal else { return false }
+        guard !corrected.contains(trimmedFinal) || trimmedFinal.isEmpty else { return false }
+        return true
     }
 
     /// SUGGEST: show the dismissible "Add \"corrected\" to dictionary?" prompt. On Accept -> persist a `.learnedFromEdit`
@@ -1032,12 +1157,15 @@ final class DictationCoordinator {
         )
     }
 
-    /// Clears all learn-from-edits transient state: the armed record, the in-flight debounce, and any visible suggestion.
-    /// Called on teardown (``stop()``), ESC cancel (``cancel()``), and when the feature is observed off mid-window.
+    /// Clears all learn-from-edits transient state: the armed record, the in-flight idle timer, any in-flight extraction,
+    /// and any visible suggestion. Called on teardown (``stop()``), ESC cancel (``cancel()``), and at the start of a new
+    /// dictation (``handleStart()``) so a stale record never carries into a new dictation.
     private func clearLearnFromEdits() {
         injectionRecord = nil
-        learnDebounceTask?.cancel()
-        learnDebounceTask = nil
+        idleTimerTask?.cancel()
+        idleTimerTask = nil
+        extractTask?.cancel()
+        extractTask = nil
         suggestionPanel.hide()
     }
 
@@ -1223,29 +1351,50 @@ final class DictationCoordinator {
 
     // MARK: Test support — learn from edits
 
-    /// Whether an injection record is currently armed (learn-from-edits). Lets a test assert ARM happened (toggle ON) or did
-    /// NOT happen (toggle OFF / AX nil), without exposing the private record's contents.
+    /// Whether an injection record is currently armed (learn-from-edits). Lets a test assert ARM happened (field readable)
+    /// or did NOT (AX nil), without exposing the private record's contents.
     var _test_injectionRecordArmed: Bool { injectionRecord != nil }
 
     /// Force-arms a learn-from-edits injection record with a custom expiry, bypassing the AX read at arm time. Lets a test
     /// exercise the expired-record path deterministically (pass a past `expiresAt`) without waiting the real freshness window.
     func _test_armInjectionRecord(injected: String, expiresAt: Date) {
-        injectionRecord = InjectionRecord(injectedText: injected, expiresAt: expiresAt)
+        injectionRecord = InjectionRecord(injectedText: injected, expiresAt: expiresAt, armedAt: Date(), targetPID: nil)
     }
 
-    /// Directly drives the edit-key handler (equivalent to a Backspace/Forward-Delete signal), then awaits the debounce
-    /// read-back so the test is deterministic. No-op if the handler started no debounce (gated off / no fresh record).
-    func _test_handleEditKey() async {
-        handleEditKey()
-        await learnDebounceTask?.value
+    /// Directly drives the COMMIT trigger (equivalent to a Return / keypad-Enter while armed), then awaits the in-flight
+    /// extraction so the test is deterministic. No-op if nothing is armed.
+    func _test_handleCommitKey() async {
+        handleCommitKey()
+        await extractTask?.value
     }
+
+    /// Directly drives the FOCUS-LOSS trigger (equivalent to the armed app deactivating), then awaits the in-flight
+    /// extraction so the test is deterministic. No-op if nothing is armed.
+    func _test_handleFocusLoss() async {
+        handleFocusLoss()
+        await extractTask?.value
+    }
+
+    /// Directly drives one keystroke (equivalent to a keyDown while armed): resets the idle timer. For tests asserting the
+    /// idle-timer reset path.
+    func _test_handleUserKeystroke() { handleUserKeystroke() }
+
+    /// Awaits the idle-timer fire AND the extraction it kicks off, so a test using a tiny `learnIdleAfter` can
+    /// deterministically observe the idle-triggered compare. No-op if nothing is armed / no idle timer is running.
+    func _test_awaitIdleCompare() async {
+        await idleTimerTask?.value
+        await extractTask?.value
+    }
+
+    /// Awaits any in-flight term-extraction task (no-op if none). Lets a test wait for an async compare to finish.
+    func _test_awaitExtraction() async { await extractTask?.value }
 
     /// Exposes the suggestion panel so a test can drive Accept/Dismiss and assert visibility deterministically.
     var _test_suggestionPanel: SuggestionPanelController { suggestionPanel }
 }
 
 /// Converts a `Duration` to a `TimeInterval` (seconds) for `Date` arithmetic. `Duration.components` yields whole seconds +
-/// attoseconds (1e-18); both are summed so sub-second debounce/freshness values survive the conversion.
+/// attoseconds (1e-18); both are summed so sub-second freshness values survive the conversion.
 private extension Duration {
     var timeIntervalValue: TimeInterval {
         let c = components

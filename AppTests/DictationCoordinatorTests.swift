@@ -36,7 +36,9 @@ final class DictationCoordinatorTests: XCTestCase {
         axReader: FocusedTextReading? = nil,
         suggestionPanel: SuggestionPanelController? = nil,
         learnFreshness: Duration = .seconds(8),
-        learnDebounce: Duration = .milliseconds(1),
+        learnIdleAfter: Duration = .milliseconds(1),
+        learnProviderFactory: (() async throws -> any LLMProvider)? = nil,
+        termExtractorFactory: ((any LLMProvider) -> any LearnedTermExtracting)? = nil,
         transcriber: @escaping () throws -> any Transcriber
     ) -> DictationCoordinator {
         // By default inject an empty-dictionary store backed by a temp directory: an empty dictionary -> Layer 3 rewriting is identity (zero behavior change),
@@ -45,7 +47,8 @@ final class DictationCoordinatorTests: XCTestCase {
             baseDirectory: FileManager.default.temporaryDirectory
                 .appending(component: "sayit-coord-dict-\(UUID().uuidString)"))
         // Default learn-from-edits reader returns nil (never arms) so tests that don't exercise the feature are unaffected;
-        // a fresh suggestion panel avoids touching the shared singleton. The debounce defaults to ~1ms for fast tests.
+        // a fresh suggestion panel avoids touching the shared singleton. The idle window defaults to ~1ms for fast tests.
+        // By default the provider factory throws (no provider configured), so a compare never reaches a (real) LLM call.
         return DictationCoordinator(
             config: config,
             recorder: recorder,
@@ -61,7 +64,9 @@ final class DictationCoordinatorTests: XCTestCase {
             axReader: axReader ?? FakeFocusedTextReader(single: nil),
             suggestionPanel: suggestionPanel ?? SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true),
             learnFreshness: learnFreshness,
-            learnDebounce: learnDebounce
+            learnIdleAfter: learnIdleAfter,
+            learnProviderFactory: learnProviderFactory ?? { throw ProviderError.missingAPIKey },
+            termExtractorFactory: termExtractorFactory
         )
     }
 
@@ -1038,133 +1043,296 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(readCount.value, 2, "the cloud key should be re-read after a model change (a transcriber rebuild is required anyway)")
     }
 
-    // MARK: - Learn from edits (Part B): arm + edit-key + diff + persist; OFF / AX-nil / expired / non-proper-noun
+    // MARK: - Learn from edits (Part B v2): arm + commit/idle/focus-loss trigger + LLM extract + guard + persist
 
-    /// End-to-end happy path: toggle ON + a successful inject arms the record (reader returns the baseline), an edit-key
-    /// then a read-back returning a single proper-noun substitution presents a suggestion; Accept persists a
+    /// A reader queuing the ARM baseline read then the read-back (edited) value: a small helper so the learn tests stay readable.
+    private func learnReader(armed: String, edited: String) -> FakeFocusedTextReader {
+        FakeFocusedTextReader(results: [
+            FocusedText(value: armed, selectedLocation: nil, selectedLength: nil),    // arm baseline
+            FocusedText(value: edited, selectedLocation: nil, selectedLength: nil),   // final (edited)
+        ])
+    }
+
+    /// End-to-end happy path (TRIGGER ON COMMIT): a successful inject arms the record; a commit key fires the compare; the
+    /// LLM extractor returns a single corrected term; the suggestion shows that single term; Accept persists a
     /// `.learnedFromEdit` entry (canonical=corrected, variants=[heard]) to the store.
-    func testLearnFromEditsArmEditAcceptPersistsEntry() async {
+    func testLearnFromEditsCommitExtractAcceptPersistsEntry() async {
         let config = makeConfig()
-        config.learnFromEditsEnabled = true
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
         let store = DictionaryStore(
             baseDirectory: FileManager.default.temporaryDirectory
                 .appending(component: "sayit-coord-learn-\(UUID().uuidString)"))
-        // First read (ARM): the injected baseline. Second read (read-back): the user-corrected text (jon -> John).
-        let reader = FakeFocusedTextReader(results: [
-            FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),   // arm baseline
-            FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),  // edited
-        ])
+        let reader = learnReader(armed: "我之前用过Type+和闪电书。", edited: "我之前用过Typeless和闪电书。")
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "Type+", corrected: "Typeless"))
         let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
-            dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel
+            dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "我之前用过Type+和闪电书。")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertEqual(injector.injectedTexts, ["我之前用过Type+和闪电书。"], "should inject the transcribed text")
+        XCTAssertTrue(coordinator._test_injectionRecordArmed, "a successful inject should arm one injection record")
+
+        // Commit (Return) -> the compare fires, the extractor runs, the suggestion shows the SINGLE term.
+        await coordinator._test_handleCommitKey()
+        XCTAssertEqual(extractor.callCount, 1, "the commit trigger should call the extractor once")
+        XCTAssertEqual(extractor.calls.first?.final, "我之前用过Typeless和闪电书。", "the extractor should receive the final edited text")
+        XCTAssertTrue(suggestionPanel._test_isShown, "a single-term correction should pop up a suggestion")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "the record is consumed once on the first trigger")
+
+        // Accept -> persist + clear.
+        suggestionPanel._test_accept()
+        let added = await waitForEntry(in: store)
+        XCTAssertEqual(added?.canonical, "Typeless", "Accept should persist corrected as the canonical")
+        XCTAssertEqual(added?.variants, ["Type+"], "Accept should persist heard as the variant")
+        XCTAssertEqual(added?.source, .learnedFromEdit, "the source should be learnedFromEdit")
+    }
+
+    /// TRIGGER ON IDLE: with a tiny `learnIdleAfter`, the compare fires after the user pauses (no commit key), shows the
+    /// suggestion, and the extractor is called once.
+    func testLearnFromEditsIdleTrigger() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let reader = learnReader(armed: "I met jon today", edited: "I met John today")
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnIdleAfter: .milliseconds(1),
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
         ) {
             FakeTranscriber(text: "I met jon today")
         }
 
         await coordinator._test_start()
         await coordinator._test_stop()
+        XCTAssertTrue(coordinator._test_injectionRecordArmed)
 
-        XCTAssertEqual(injector.injectedTexts, ["I met jon today"], "should inject the transcribed text")
-        XCTAssertTrue(coordinator._test_injectionRecordArmed, "after enabling, a successful inject should arm one injection record")
-
-        // Simulate the user editing in place (Backspace), then the debounced read-back + diff.
-        await coordinator._test_handleEditKey()
-        XCTAssertTrue(suggestionPanel._test_isShown, "a single-token proper-noun substitution should pop up a suggestion")
-
-        // Accept -> persist + clear the record.
-        suggestionPanel._test_accept()
-        // The persist runs in a detached Task off the main actor; poll the store until it lands.
-        let added = await waitForEntry(in: store)
-        XCTAssertEqual(added?.canonical, "John", "Accept should persist corrected as the canonical")
-        XCTAssertEqual(added?.variants, ["jon"], "Accept should persist heard as the variant")
-        XCTAssertEqual(added?.source, .learnedFromEdit, "the source should be learnedFromEdit")
-        XCTAssertFalse(coordinator._test_injectionRecordArmed, "the record should be cleared after Accept")
+        // The idle timer (~1ms) fires on its own; await it + the extraction it kicks off.
+        await coordinator._test_awaitIdleCompare()
+        XCTAssertEqual(extractor.callCount, 1, "the idle trigger should call the extractor once")
+        XCTAssertTrue(suggestionPanel._test_isShown, "the idle-triggered compare should show a suggestion")
     }
 
-    /// Dismiss path: the same arm + edit + suggestion, but Dismiss adds NOTHING and clears the record.
+    /// TRIGGER ON FOCUS LOSS: a focus-loss (app deactivation) while armed fires the compare and shows the suggestion.
+    func testLearnFromEditsFocusLossTrigger() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let reader = learnReader(armed: "I use sequoia", edited: "I use Sequoia")
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "sequoia", corrected: "Sequoia"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "I use sequoia")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertTrue(coordinator._test_injectionRecordArmed)
+
+        await coordinator._test_handleFocusLoss()
+        XCTAssertEqual(extractor.callCount, 1, "the focus-loss trigger should call the extractor once")
+        XCTAssertTrue(suggestionPanel._test_isShown, "the focus-loss-triggered compare should show a suggestion")
+    }
+
+    /// NEXT DICTATION drops the prior armed record: a new dictation start clears the record so it never carries over.
+    func testLearnFromEditsNextDictationDropsPriorRecord() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        // Arm-read for the first inject; the new dictation start should clear before any second read matters.
+        let reader = FakeFocusedTextReader(results: [
+            FocusedText(value: "I met jon today", selectedLocation: nil, selectedLength: nil),
+        ])
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertTrue(coordinator._test_injectionRecordArmed, "the first inject arms a record")
+
+        // A new dictation start should DROP the prior record (next-dictation policy).
+        await coordinator._test_start()
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "a new dictation should drop the prior armed record")
+
+        // A commit now is a no-op (nothing armed) -> the extractor is never called.
+        await coordinator._test_handleCommitKey()
+        XCTAssertEqual(extractor.callCount, 0, "after the record is dropped, a commit should not call the extractor")
+        XCTAssertFalse(suggestionPanel._test_isShown)
+    }
+
+    /// LLM returns nil (not a single-term correction): no suggestion is shown.
+    func testLearnFromEditsExtractorNilNoSuggestion() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let reader = learnReader(armed: "let's meet tomorrow", edited: "let's meet on Tuesday instead")
+        let extractor = FakeLearnedTermExtractor(result: nil)   // not a single-term correction
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "let's meet tomorrow")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        await coordinator._test_handleCommitKey()
+
+        XCTAssertEqual(extractor.callCount, 1, "the extractor is still consulted")
+        XCTAssertFalse(suggestionPanel._test_isShown, "a nil extraction should yield no suggestion")
+    }
+
+    /// The single-term GUARD rejects a sentence-like `corrected` even if the LLM misbehaves: no suggestion.
+    func testLearnFromEditsGuardRejectsSentenceLikeCorrected() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let final = "我之前用过Typeless和闪电书。"
+        let reader = learnReader(armed: "我之前用过Type+和闪电书。", edited: final)
+        // A misbehaving extractor that returns the WHOLE sentence as the corrected term — the guard must reject it.
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "Type+", corrected: final))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "我之前用过Type+和闪电书。")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        await coordinator._test_handleCommitKey()
+
+        XCTAssertFalse(suggestionPanel._test_isShown, "the hard single-term guard must reject a sentence-like corrected term")
+    }
+
+    /// NO PROVIDER configured: `learnProviderFactory` throws, so the compare drops silently — the extractor is never called.
+    func testLearnFromEditsNoProviderNoSuggestion() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let reader = learnReader(armed: "I met jon today", edited: "I met John today")
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        // learnProviderFactory defaults to throwing (no provider configured).
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        await coordinator._test_handleCommitKey()
+
+        XCTAssertEqual(extractor.callCount, 0, "with no provider configured the extractor is never called")
+        XCTAssertFalse(suggestionPanel._test_isShown, "no provider -> no suggestion")
+    }
+
+    /// finalText == injectedText (the user made no edit): the compare drops BEFORE any LLM call (no extractor invocation).
+    func testLearnFromEditsIdenticalFinalNoLLMCall() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        // Both the ARM read and the read-back return the SAME (unedited) text.
+        let reader = FakeFocusedTextReader(single:
+            FocusedText(value: "I met jon today", selectedLocation: nil, selectedLength: nil))
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        await coordinator._test_handleCommitKey()
+
+        XCTAssertEqual(extractor.callCount, 0, "an identical final text must NOT call the LLM")
+        XCTAssertFalse(suggestionPanel._test_isShown, "no edit -> no suggestion")
+    }
+
+    /// Dismiss path: a shown suggestion + Dismiss adds NOTHING and the suggestion hides.
     func testLearnFromEditsDismissPersistsNothing() async {
         let config = makeConfig()
-        config.learnFromEditsEnabled = true
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
         let store = DictionaryStore(
             baseDirectory: FileManager.default.temporaryDirectory
                 .appending(component: "sayit-coord-learn-dismiss-\(UUID().uuidString)"))
-        let reader = FakeFocusedTextReader(results: [
-            FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),
-            FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),
-        ])
+        let reader = learnReader(armed: "I met jon today", edited: "I met John today")
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
         let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
-            dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel
+            dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
         ) {
             FakeTranscriber(text: "I met jon today")
         }
 
         await coordinator._test_start()
         await coordinator._test_stop()
-        await coordinator._test_handleEditKey()
+        await coordinator._test_handleCommitKey()
         XCTAssertTrue(suggestionPanel._test_isShown)
 
         suggestionPanel._test_dismiss()
-        // Give any (erroneous) persist a chance to run, then assert the store stayed empty.
         for _ in 0..<10 { await Task.yield() }
         let entries = await store.all()
         XCTAssertTrue(entries.isEmpty, "Dismiss should not persist any entry")
-        XCTAssertFalse(coordinator._test_injectionRecordArmed, "the record should be cleared after Dismiss")
+        XCTAssertFalse(suggestionPanel._test_isShown, "the suggestion should hide after Dismiss")
     }
 
-    /// Toggle OFF: ZERO behavior change. injectFinalText arms NOTHING, an edit-key is a no-op, no suggestion, store empty,
-    /// and the injected text is byte-identical (reusing the empty-dictionary regression).
-    func testLearnFromEditsOffArmsNothingAndNoSuggestion() async {
-        let config = makeConfig()  // learnFromEditsEnabled defaults to false
-        XCTAssertFalse(config.learnFromEditsEnabled, "precondition: the default should be off")
-        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
-        let injector = FakeTextInjector(result: .success(method: .pasteboard))
-        let store = DictionaryStore(
-            baseDirectory: FileManager.default.temporaryDirectory
-                .appending(component: "sayit-coord-learn-off-\(UUID().uuidString)"))
-        // A reader that WOULD yield a learnable diff if it were ever consulted — proving OFF never reads/diffs.
-        let reader = FakeFocusedTextReader(results: [
-            FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),
-            FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),
-        ])
-        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
-        let coordinator = makeCoordinator(
-            config: config, recorder: recorder, injector: injector,
-            dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel
-        ) {
-            FakeTranscriber(text: "I met jon today")
-        }
-
-        await coordinator._test_start()
-        await coordinator._test_stop()
-
-        XCTAssertEqual(injector.injectedTexts, ["I met jon today"], "when OFF the injected text should be byte-for-byte unchanged (zero behavior change)")
-        XCTAssertFalse(coordinator._test_injectionRecordArmed, "when OFF no record should be armed")
-        XCTAssertEqual(reader.readCount, 0, "when OFF no AX read should ever happen")
-
-        await coordinator._test_handleEditKey()
-        XCTAssertFalse(suggestionPanel._test_isShown, "when OFF the edit key should be a no-op, no suggestion")
-        let entries = await store.all()
-        XCTAssertTrue(entries.isEmpty, "when OFF the dictionary should stay empty")
-    }
-
-    /// AX read returns nil at ARM time (secure/unreadable field): the record is NOT armed, so a later edit-key is a no-op.
+    /// AX read returns nil at ARM time (secure/unreadable field): the record is NOT armed, so a later commit is a no-op.
     func testLearnFromEditsAXNilAtArmDoesNotArm() async {
         let config = makeConfig()
-        config.learnFromEditsEnabled = true
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
         let reader = FakeFocusedTextReader(single: nil)  // unreadable everywhere
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
         let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
-            axReader: reader, suggestionPanel: suggestionPanel
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
         ) {
             FakeTranscriber(text: "I met jon today")
         }
@@ -1173,25 +1341,28 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
 
         XCTAssertFalse(coordinator._test_injectionRecordArmed, "an AX nil at ARM time should not arm a record")
-        await coordinator._test_handleEditKey()
-        XCTAssertFalse(suggestionPanel._test_isShown, "when not armed the edit key should yield no suggestion")
+        await coordinator._test_handleCommitKey()
+        XCTAssertEqual(extractor.callCount, 0, "when not armed a commit should not call the extractor")
+        XCTAssertFalse(suggestionPanel._test_isShown, "when not armed the commit should yield no suggestion")
     }
 
-    /// AX read returns nil at READ-BACK time (focus moved to a secure/unreadable field after arming): no suggestion.
+    /// AX read returns nil at READ-BACK time (focus moved to a secure/unreadable field after arming): no suggestion / no LLM.
     func testLearnFromEditsAXNilAtReadBackNoSuggestion() async {
         let config = makeConfig()
-        config.learnFromEditsEnabled = true
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
         // Read 1 (ARM) succeeds (baseline), read 2 (read-back) returns nil.
         let reader = FakeFocusedTextReader(results: [
-            FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),
+            FocusedText(value: "I met jon today", selectedLocation: nil, selectedLength: nil),
             nil,
         ])
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
         let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
-            axReader: reader, suggestionPanel: suggestionPanel
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
         ) {
             FakeTranscriber(text: "I met jon today")
         }
@@ -1200,24 +1371,26 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
         XCTAssertTrue(coordinator._test_injectionRecordArmed, "a successful ARM read should arm")
 
-        await coordinator._test_handleEditKey()
+        await coordinator._test_handleCommitKey()
+        XCTAssertEqual(extractor.callCount, 0, "an unreadable final text must NOT call the LLM")
         XCTAssertFalse(suggestionPanel._test_isShown, "an AX nil on read-back should be silently dropped, no suggestion")
     }
 
-    /// An expired record: the edit-key is ignored entirely (never interferes with typing), no suggestion.
+    /// An expired record: a commit is ignored (never interferes with typing), no read, no LLM, no suggestion.
     func testLearnFromEditsExpiredRecordIgnored() async {
         let config = makeConfig()
-        config.learnFromEditsEnabled = true
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
-        // The read-back WOULD diff if consulted, but the expired record should short-circuit before any read.
         let reader = FakeFocusedTextReader(results: [
-            FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),
+            FocusedText(value: "I met John today", selectedLocation: nil, selectedLength: nil),
         ])
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
         let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
         let coordinator = makeCoordinator(
             config: config, recorder: recorder, injector: injector,
-            axReader: reader, suggestionPanel: suggestionPanel
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
         ) {
             FakeTranscriber(text: "I met jon today")
         }
@@ -1226,35 +1399,11 @@ final class DictationCoordinatorTests: XCTestCase {
         coordinator._test_armInjectionRecord(injected: "I met jon today", expiresAt: Date(timeIntervalSinceNow: -1))
         XCTAssertTrue(coordinator._test_injectionRecordArmed)
 
-        await coordinator._test_handleEditKey()
+        await coordinator._test_handleCommitKey()
         XCTAssertFalse(suggestionPanel._test_isShown, "an expired record should be ignored, no suggestion")
-        XCTAssertFalse(coordinator._test_injectionRecordArmed, "an expired record should be cleared")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "an expired record should be consumed/cleared")
         XCTAssertEqual(reader.readCount, 0, "an expired record should short-circuit before any read")
-    }
-
-    /// A non-proper-noun edit (cat -> dog, both common words): the detector returns nil, so no suggestion is shown.
-    func testLearnFromEditsNonProperNounEditNoSuggestion() async {
-        let config = makeConfig()
-        config.learnFromEditsEnabled = true
-        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
-        let injector = FakeTextInjector(result: .success(method: .pasteboard))
-        let reader = FakeFocusedTextReader(results: [
-            FocusedText(value: "the cat sat", selectedLocation: 11, selectedLength: 0),  // arm baseline
-            FocusedText(value: "the dog sat", selectedLocation: 11, selectedLength: 0),  // edited (common->common)
-        ])
-        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
-        let coordinator = makeCoordinator(
-            config: config, recorder: recorder, injector: injector,
-            axReader: reader, suggestionPanel: suggestionPanel
-        ) {
-            FakeTranscriber(text: "the cat sat")
-        }
-
-        await coordinator._test_start()
-        await coordinator._test_stop()
-        await coordinator._test_handleEditKey()
-
-        XCTAssertFalse(suggestionPanel._test_isShown, "common-word -> common-word (cat->dog) the detector returns nil, so there should be no suggestion")
+        XCTAssertEqual(extractor.callCount, 0, "an expired record should never call the extractor")
     }
 
     /// Polls the store until it has at least one entry (the Accept persist runs in a detached Task off the main actor),

@@ -214,6 +214,43 @@ final class FakeFocusedTextReader: FocusedTextReading {
     }
 }
 
+/// A minimal no-op ``LLMProvider`` for the learn-from-edits coordinator tests: lets `learnProviderFactory` succeed
+/// deterministically (without the real Keychain) so the fake term extractor — which ignores the provider — runs. The
+/// actual extraction is driven by ``FakeLearnedTermExtractor``, so this provider's reply is never consulted.
+struct DummyLLMProvider: LLMProvider {
+    func complete(messages: [LLMMessage]) async throws -> String { "" }
+}
+
+/// A controllable fake term extractor for the learn-from-edits tests: returns a chosen ``LearnedTerm`` (or nil) and
+/// records whether/how it was invoked, so a test can assert "LLM returns a term", "LLM returns nil", and "finalText ==
+/// injectedText -> no LLM call" (the coordinator drops before constructing/calling the extractor in the identical case).
+/// `@unchecked Sendable` (lock-guarded) because ``LearnedTermExtracting`` requires `Sendable`.
+final class FakeLearnedTermExtractor: LearnedTermExtracting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let result: LearnedTerm?
+    private var _calls: [(injected: String, final: String)] = []
+
+    /// - Parameter result: the term to return from every `extract`, or nil to simulate "not a single-term correction".
+    init(result: LearnedTerm?) {
+        self.result = result
+    }
+
+    func extract(injected: String, final: String) async -> LearnedTerm? {
+        lock.withLock { _calls.append((injected, final)) }
+        return result
+    }
+
+    /// The (injected, final) pairs the extractor was called with, in order.
+    var calls: [(injected: String, final: String)] {
+        lock.withLock { _calls }
+    }
+
+    /// How many times `extract` was invoked.
+    var callCount: Int {
+        lock.withLock { _calls.count }
+    }
+}
+
 /// A no-op sound-cue player for the coordinator tests: satisfies ``SoundCuePlaying`` while rendering ZERO audio,
 /// so driven `_test_start()`/`_test_stop()` never emit an audible chime. Reuses the existing ``SoundCuePlaying``
 /// protocol (does not redeclare it). Production keeps using the real ``SoundCuePlayer`` via the init default.

@@ -99,18 +99,6 @@ final class SettingsViewModelObservationTests: XCTestCase {
         XCTAssertEqual(config.soundCuesEnabled, !original)
     }
 
-    func testLearnFromEditsEnabledChangeFiresObservationAndPersists() {
-        let config = makeConfig()
-        let vm = SettingsViewModel(config: config)
-        XCTAssertFalse(vm.learnFromEditsEnabled, "should mirror the OFF default on init")
-
-        assertObservationFires(read: { _ = vm.learnFromEditsEnabled },
-                               mutate: { vm.learnFromEditsEnabled = true },
-                               "learnFromEditsEnabled change should invalidate the view")
-        XCTAssertTrue(vm.learnFromEditsEnabled)
-        XCTAssertTrue(config.learnFromEditsEnabled, "new value should persist to config")
-    }
-
     // MARK: - STT
 
     func testSTTModeChangeFiresObservationAndPersists() {

@@ -9,8 +9,8 @@ import SayItCore
 struct DictionarySettingsView: View {
     @State private var dictionaryViewModel: DictionaryViewModel
 
-    /// The shared settings view model, threaded in to bind the "learn from edits" toggle through the established
-    /// AppConfig + stored-mirror single-source-of-truth pattern (same as every other settings pane).
+    /// The shared settings view model. Retained on the initializer so the existing (unnamed) call sites stay
+    /// byte-identical; learn-from-edits is now always-on with no toggle, so this pane no longer reads it.
     @Bindable var viewModel: SettingsViewModel
 
     /// The entry currently being edited in the sheet (`nil` = adding a new one); non-nil drives sheet presentation.
@@ -32,7 +32,7 @@ struct DictionarySettingsView: View {
     /// - Parameters:
     ///   - store: the shared dictionary store (the App injects a single instance pointing at the same
     ///     `dictionary.json` the dictation pipeline reads).
-    ///   - viewModel: the shared settings view model (carries the "learn from edits" toggle's persisted mirror).
+    ///   - viewModel: the shared settings view model (retained to keep the existing call sites unchanged; no longer read).
     init(store: DictionaryStore, viewModel: SettingsViewModel) {
         _dictionaryViewModel = State(initialValue: DictionaryViewModel(store: store))
         self.viewModel = viewModel
@@ -45,7 +45,6 @@ struct DictionarySettingsView: View {
             } else {
                 entriesSection
             }
-            learnFromEditsSection
         }
         .formStyle(.grouped)
         // The add affordance lives INSIDE the pane content (the entries-section header and the empty-state button),
@@ -124,19 +123,6 @@ struct DictionarySettingsView: View {
         }
     }
 
-    /// The opt-in "learn words from my edits" toggle (default OFF). Lives in the content region (not the toolbar) with a
-    /// footnote explaining it learns from in-place corrections. As of this PR the toggle is a placeholder — nothing in the
-    /// live dictation pipeline reads it yet (live detection lands in the next Part-B PR), hence the "coming soon" footer.
-    @ViewBuilder
-    private var learnFromEditsSection: some View {
-        Section {
-            Toggle("dictionary.learnFromEdits", isOn: $viewModel.learnFromEditsEnabled)
-        } footer: {
-            Text("dictionary.learnFromEdits.footer")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-    }
 }
 
 // MARK: - Row

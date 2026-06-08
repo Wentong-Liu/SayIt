@@ -72,18 +72,6 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "启用" } }
       }
     },
-    "dictionary.learnFromEdits" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Learn words from my edits" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "从我的修改中学习生词" } }
-      }
-    },
-    "dictionary.learnFromEdits.footer" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "When you correct a dictated word in place, SayIt can learn the spelling for next time. (Coming soon.)" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "当你就地更正听写出的某个词时，SayIt 可以记住它的拼写，以便下次直接写对。（即将推出。）" } }
-      }
-    },
     "dictionary.save" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Save" } },

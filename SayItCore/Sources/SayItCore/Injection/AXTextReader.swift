@@ -37,9 +37,9 @@ public protocol FocusedTextReading: Sendable {
 ///
 /// This is the "read" counterpart to ``AXTextInserter`` and reuses the exact same AX primitives
 /// (`AXUIElementCreateSystemWide` + `kAXFocusedUIElementAttribute` + `kAXValueAttribute` + `kAXSelectedTextRangeAttribute`).
-/// It is the reader half of the "learn from edits" feature (Part B): the next PR will call it right after the user makes
-/// an in-place correction, then diff the old vs. new value (see ``LearnedEditDetector``). As of this PR it has **no**
-/// production call sites — it is a tested building block only.
+/// It is the reader half of the "learn from edits" feature (Part B): the coordinator calls it right after an inject (to
+/// confirm the field is readable) and again when editing is done, then sends the (injected, final) pair to the
+/// ``LearnedTermExtracting`` LLM seam to extract the single corrected term.
 ///
 /// Robustness contract — it returns `nil` (never crashes, never guesses) when:
 /// - Secure Input is active (password/secure fields) — checked via `IsSecureEventInputEnabled()`;
