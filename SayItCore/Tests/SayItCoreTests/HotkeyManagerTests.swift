@@ -58,4 +58,20 @@ final class HotkeyManagerTests: XCTestCase {
         _ = manager.isProcessTrusted
         _ = HotkeyManager.isProcessTrusted
     }
+
+    /// `sessionDidEndExternally()` is safe to call in both modes and at any time (idle / running). The single-tap-toggle
+    /// resync logic itself is covered deterministically by the pure SingleTapToggleStateMachine.deactivate() tests; here
+    /// we only assert the manager surface does not crash and leaves the mode unchanged in either configuration.
+    func testSessionDidEndExternallyIsSafeInBothModes() {
+        let singleTap = HotkeyManager(mode: .singleTapToggle)
+        singleTap.sessionDidEndExternally()  // idle, never started
+        singleTap.start()
+        singleTap.sessionDidEndExternally()  // running
+        XCTAssertEqual(singleTap.mode, .singleTapToggle)
+        singleTap.stop()
+
+        let hold = HotkeyManager(mode: .holdToTalk)
+        hold.sessionDidEndExternally()  // hold mode: no-op, must not affect the hold key tracking
+        XCTAssertEqual(hold.mode, .holdToTalk)
+    }
 }

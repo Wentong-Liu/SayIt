@@ -374,10 +374,24 @@ final class DictationCoordinator {
                 // new start races the cancel's not-yet-finished AVAudioEngine teardown: the recorder is still `recording` / the device
                 // still busy, so recorder.start() throws `.alreadyRecording` or stalls — the exact "can't restart right after ESC" bug.
                 await self.awaitPendingStop()
+                // Cancellation guard #1: an ESC cancel can land while suspended in awaitPendingStop(). awaitPendingStop()
+                // does NOT throw on cancel, so without this guard the closure would proceed to start the recorder and
+                // resurrect the session AFTER cancel() already reset phase to .idle. cancel() already cleared state and
+                // released the device; nothing started yet here, so just bail.
+                guard !Task.isCancelled else { return }
                 // Start recording with the persisted input device: read config.inputDeviceUID fresh on each press,
                 // letting the microphone selected in the settings page take effect immediately for the next dictation (no App restart needed).
                 // nil = follow the system default (equivalent to start()); when the UID is invalid, AudioRecorder automatically falls back to the system default.
                 try await self.recorder.start(deviceUID: self.config.inputDeviceUID)
+                // Cancellation guard #2: an ESC cancel can land while suspended in recorder.start(). recorder.start() does
+                // NOT throw on cancel, so without this guard the closure would set isRecording=true + start level forwarding
+                // while phase is already .idle — a resurrected, unstoppable session whose device is left open. Since
+                // start() already succeeded here, release the device via the same pending-stop path cancel() uses, so the
+                // next start awaits it before recorder.start() (no .alreadyRecording race). Do NOT mark recording / forward levels.
+                guard !Task.isCancelled else {
+                    self.beginPendingStop()
+                    return
+                }
                 self.isRecording = true
                 // Recording started: subscribe to this session's rebuilt level stream, driving the HUD dots to rise and fall with speech amplitude.
                 self.startLevelForwarding()
@@ -441,6 +455,10 @@ final class DictationCoordinator {
         // Track this best-effort stop so the NEXT start awaits it before recorder.start() — otherwise the new start races the
         // not-yet-finished engine teardown and fails with `.alreadyRecording`/stalls (the "can't restart right after ESC" bug).
         beginPendingStop()
+        // Resync the single-tap-toggle state machine: this session is ending WITHOUT a second tap, so its `isActive` toggle
+        // (the sole start/stop driver) must be forced back to inactive — otherwise the user's NEXT tap would emit a phantom
+        // `.stop` against the now-idle coordinator and be silently wasted (forcing a double tap to resume). Hold mode is unaffected.
+        hotkeyManager.sessionDidEndExternally()
         // Reset the HUD to idle. Inject NOTHING.
         panel.hide()
         phase = .idle
@@ -904,6 +922,11 @@ final class DictationCoordinator {
             // Track this best-effort stop (same reasoning as cancel()): a restart immediately after a failure must await the teardown before recorder.start().
             beginPendingStop()
         }
+        // Resync the single-tap-toggle state machine. The load-bearing case is a recording START-failure (e.g. microphone
+        // denied): the first tap already flipped `isActive` true, but recording never began, so without this the user's NEXT
+        // tap emits a phantom `.stop` and is wasted. The post-stop-tap failure paths (transcribe timeout/failure) reach here
+        // with `isActive` already inactive, so this is a harmless no-op there. Hold mode is unaffected. (Same call as cancel().)
+        hotkeyManager.sessionDidEndExternally()
         showTransientError(message)
     }
 
@@ -988,6 +1011,11 @@ final class DictationCoordinator {
     /// Awaits the in-flight start Task's completion (no-op if none).
     func _test_awaitStart() async { await startTask?.value }
 
+    /// The current in-flight start Task handle, captured for a test to `await` AFTER ``cancel()`` has nilled out
+    /// ``startTask`` — letting the test deterministically wait for the cancelled (orphaned) start closure to fully run
+    /// its `Task.isCancelled` guard / pending-stop path, so the no-resurrection assertions are not racy.
+    var _test_startTask: Task<Void, Never>? { startTask }
+
     /// Directly triggers one "stop" and waits for the whole pipeline (transcribe -> polish -> inject) to finish (equivalent to receiving a `.stop`).
     func _test_stop() async {
         handleStop()
@@ -1029,4 +1057,8 @@ final class DictationCoordinator {
     /// Whether a recorder stop is currently pending (``beginPendingStop()`` ran and has not yet self-cleared). Lets a test
     /// assert the failToIdle guard did NOT leave a misleading pendingStop on the already-stopped path.
     var _test_hasPendingStop: Bool { pendingStopTask != nil }
+
+    /// Whether a level-forwarding task currently exists (cancelled or not). Lets a test assert that a cancel landing
+    /// mid-start did NOT resurrect the session by starting level forwarding after the phase was already reset to idle.
+    var _test_hasLevelTask: Bool { levelTask != nil }
 }
