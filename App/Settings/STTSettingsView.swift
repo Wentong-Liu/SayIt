@@ -27,10 +27,12 @@ struct STTSettingsView: View {
             switch viewModel.sttMode {
             case .local:
                 Section("stt.section.localModel") {
-                    Picker("stt.model", selection: $viewModel.localModel) {
-                        ForEach(viewModel.localModelOptions, id: \.id) { option in
-                            Text(option.label).tag(option.id)
-                        }
+                    // The local model is fixed to large-v3-turbo (the recommended sweet spot); there is no
+                    // longer a picker. Show it as a static labeled line so the user knows which model the
+                    // Download/Re-download row below acts on. The localized `model.large-v3-turbo` value
+                    // ("large-v3-turbo (recommended)") follows the chosen UI language.
+                    LabeledContent("stt.model") {
+                        Text("model.large-v3-turbo")
                     }
 
                     modelStatusRow

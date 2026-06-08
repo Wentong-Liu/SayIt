@@ -97,10 +97,24 @@ final class AppConfigTests: XCTestCase {
         wait(for: [exp], timeout: 1.0)
     }
 
-    func testLocalModelRoundTrip() {
+    /// The local model is effectively fixed to large-v3-turbo (the picker was removed): the getter
+    /// always returns the constant regardless of any previously-stored value, so a user who selected
+    /// a non-turbo model in an older build is transparently served turbo and a stray write can never
+    /// resurrect a non-turbo model.
+    func testLocalModelIsAlwaysTurbo() {
+        // Fresh store already serves turbo.
+        XCTAssertEqual(config.localModel, "large-v3-turbo")
+
+        // A previously-stored non-turbo value must be ignored on read.
+        defaults.set("large-v3", forKey: "stt.localModel")
+        XCTAssertEqual(AppConfig(defaults: defaults).localModel, "large-v3-turbo")
+        defaults.set("base", forKey: "stt.localModel")
+        XCTAssertEqual(AppConfig(defaults: defaults).localModel, "large-v3-turbo")
+
+        // Even an explicit write does not change what is read back.
         config.localModel = "tiny.en"
-        XCTAssertEqual(config.localModel, "tiny.en")
-        XCTAssertEqual(AppConfig(defaults: defaults).localModel, "tiny.en")
+        XCTAssertEqual(config.localModel, "large-v3-turbo")
+        XCTAssertEqual(AppConfig(defaults: defaults).localModel, "large-v3-turbo")
     }
 
     func testCloudSTTModelRoundTrip() {

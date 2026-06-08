@@ -356,34 +356,10 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "设置…" } }
       }
     },
-    "model.base" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "base (fastest)" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "base（最快）" } }
-      }
-    },
-    "model.large-v3" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "large-v3 (highest accuracy)" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "large-v3（最高精度）" } }
-      }
-    },
     "model.large-v3-turbo" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "large-v3-turbo (recommended)" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "large-v3-turbo（推荐）" } }
-      }
-    },
-    "model.medium" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "medium (balanced)" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "medium（均衡）" } }
-      }
-    },
-    "model.small" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "small (lightweight)" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "small（轻量）" } }
       }
     },
     "perm.accessibility" : {

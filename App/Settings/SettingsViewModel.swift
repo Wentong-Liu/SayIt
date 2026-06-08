@@ -36,7 +36,6 @@ final class SettingsViewModel {
         self.interactionMode = config.interactionMode
         self.uiLanguage = config.uiLanguage
         self.sttMode = config.sttMode
-        self.localModel = config.localModel
         self.cloudSTTModel = config.cloudSTTModel
         self.polishEnabled = config.polishEnabled
         self.polishStyle = config.polishStyle
@@ -108,17 +107,11 @@ final class SettingsViewModel {
         }
     }
 
-    /// The local STT model identifier. On write, also makes ``modelManager`` switch to that model and refresh state per the local cache.
-    /// Stored mirror, same rationale as ``triggerKey``.
-    var localModel: String {
-        didSet {
-            guard localModel != oldValue else { return }
-            config.localModel = localModel
-            modelManager.setModel(localModel)
-        }
-    }
-
     // MARK: Local model download
+    //
+    // The local model is fixed to ``AppConfig/localModel`` (always `"large-v3-turbo"`); there is no
+    // user-selectable model and therefore no observable mirror. The download/state UI below reads the
+    // model straight from `config` (always turbo), so it cannot drift from what the STT path loads.
 
     /// The download/cache state of the current local model (maintained in real time by ``ModelManager``, for the UI to observe).
     var localModelState: ModelManager.State { modelManager.state }
@@ -155,21 +148,6 @@ final class SettingsViewModel {
             guard cloudSTTModel != oldValue else { return }
             config.cloudSTTModel = cloudSTTModel
         }
-    }
-
-    /// Local model candidates: (id, display name). Common WhisperKit quantized models, defaulting to large-v3-turbo.
-    /// A computed property: the descriptor words in the display name are localized per the current UI language (built on each access, taking effect instantly on language switch).
-    var localModelOptions: [(id: String, label: String)] {
-        // Resolve through the UI-language override (not the system locale) so the descriptor words match
-        // the chosen Display Language — otherwise on a Chinese-system Mac in English UI mode the picker
-        // showed Chinese labels ("large-v3-turbo（推荐）", …). Same root cause / fix pattern as PR #67.
-        [
-            ("large-v3-turbo", uiLanguageLocalized("model.large-v3-turbo", defaultValue: "large-v3-turbo (recommended)")),
-            ("large-v3", uiLanguageLocalized("model.large-v3", defaultValue: "large-v3 (highest accuracy)")),
-            ("medium", uiLanguageLocalized("model.medium", defaultValue: "medium (balanced)")),
-            ("small", uiLanguageLocalized("model.small", defaultValue: "small (lightweight)")),
-            ("base", uiLanguageLocalized("model.base", defaultValue: "base (fastest)")),
-        ]
     }
 
     /// Cloud transcription model candidates: (id, display name). Currently mainly the OpenAI transcribe series.
