@@ -259,6 +259,13 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型下载中…… %d%%，请稍候" } }
       }
     },
+    "hud.modelStillPreparing" : {
+      "comment" : "HUD hint when the cold-start model-load wait elapsed; the load keeps running in the background, so a retry shortly after succeeds — non-alarming on purpose.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Model is still preparing — try again in a moment" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "模型仍在准备中——请稍后再试一次" } }
+      }
+    },
     "hud.needAccessibility" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Accessibility permission required — enable it in System Settings" } },
