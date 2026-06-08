@@ -348,6 +348,50 @@ final class PolishPromptBuilderTests: XCTestCase {
         XCTAssertTrue(system.contains("原样保留"), "the negative example should state that text is left unchanged when no glossary term is present")
     }
 
+    func testGlossaryBlockInstructsPhoneticMishearingCorrection() {
+        let system = systemContent(
+            PolishPromptBuilder.build(
+                rawText: "x", context: PolishContext(), style: .smart, glossary: sampleGlossary()
+            )
+        )
+        // The broadened Layer-2 instruction must tell the model to correct phonetic mishearings toward a listed term.
+        XCTAssertTrue(system.contains("音近"),
+                      "glossary should instruct phonetic-mishearing correction toward a listed term")
+        XCTAssertTrue(system.contains("误听") || system.contains("听错"),
+                      "glossary should describe STT mishearing a dictionary term")
+        // The rule-10 reconciliation: correcting toward a listed term is a high-confidence exception, not guessing.
+        XCTAssertTrue(system.contains("高置信") && system.contains("并非凭空猜测"),
+                      "should frame phonetic correction as a high-confidence convergence toward a listed term, not arbitrary guessing")
+    }
+
+    func testGlossaryPositiveFewShotShowsPhoneticCorrection() {
+        let system = systemContent(
+            PolishPromptBuilder.build(
+                rawText: "x", context: PolishContext(), style: .smart, glossary: sampleGlossary()
+            )
+        )
+        // The positive few-shot demonstrates the Tables -> Typeless phonetic correction (the actual bug).
+        XCTAssertTrue(system.contains("正样本"), "should contain a positive-example note")
+        XCTAssertTrue(system.contains("Typeless"), "the positive few-shot should name the canonical term Typeless")
+        XCTAssertTrue(system.contains("Tables"),
+                      "the positive few-shot should show the mishearing Tables (Tables appears only via this example)")
+    }
+
+    func testPhoneticInstructionAbsentWithoutGlossary() {
+        // The broadening is gated on a non-empty dictionary: with no glossary the prompt is unaffected.
+        let system = systemContent(
+            PolishPromptBuilder.build(
+                rawText: "x", context: PolishContext(), style: .smart
+            )
+        )
+        XCTAssertFalse(system.contains("音近"),
+                       "the phonetic-mishearing instruction must not appear when there is no glossary")
+        XCTAssertFalse(system.contains("误听"),
+                       "the phonetic-mishearing instruction must not appear when there is no glossary")
+        XCTAssertFalse(system.contains("Tables"),
+                       "the positive few-shot must not appear when there is no glossary")
+    }
+
     func testGlossaryStaysInSystemNeverLeaksIntoUser() {
         let raw = "重构这段代码"
         let messages = PolishPromptBuilder.build(
