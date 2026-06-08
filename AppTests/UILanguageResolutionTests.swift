@@ -45,6 +45,37 @@ final class UILanguageResolutionTests: XCTestCase {
         }
     }
 
+    /// The transient HUD copy that ``DictationCoordinator`` builds imperatively (transcription failed,
+    /// microphone/accessibility required, "didn't catch that", paste-manually hints, …) must follow the
+    /// chosen UI language too. These feed straight into `RecordingState.error/.info`, whose `displayText`
+    /// returns the message verbatim, bypassing the in-bundle resolver — so before the fix they stayed in
+    /// the system locale. This guards that whole HUD category, not just the fixed-state pill. If any key
+    /// reverted to a raw `String(localized:)`, en and zh-Hans would collapse and this fails.
+    func testCoordinatorHUDCopyFollowsLanguage() {
+        let keys: [(String, String)] = [
+            ("hud.needAccessibility", "Accessibility permission required — enable it in System Settings"),
+            ("hud.stopRecordingFailed", "Failed to finish recording"),
+            ("hud.transcriptionFailed", "Transcription failed"),
+            ("hud.pastedToCurrentWindow", "Pasted to the current window"),
+            ("hud.injectedPolishFailed", "Inserted (polish failed, used original text)"),
+            ("hud.driftedCopiedPasteManually", "Focus changed — text copied, please paste manually"),
+            ("hud.copiedPasteManually", "Copied to clipboard, please paste manually"),
+            ("hud.didNotCatchThat", "Didn’t catch that, please try again"),
+            ("hud.needMicrophone", "Microphone permission required"),
+            ("hud.cannotStartRecording", "Cannot start recording"),
+            ("hud.transcriberNotReady", "Transcription not ready — check model/API key"),
+            ("hud.unsupportedAudioFormat", "Unsupported audio format"),
+        ]
+        for (key, def) in keys {
+            let en = resolve(key, def, .english)
+            let zh = resolve(key, def, .simplifiedChinese)
+            XCTAssertNotEqual(en, zh, "HUD key \(key) must differ between en and zh-Hans")
+            XCTAssertNotEqual(en, key, "HUD key \(key) must not resolve to the bare key (en)")
+            XCTAssertNotEqual(zh, key, "HUD key \(key) must not resolve to the bare key (zh)")
+            XCTAssertEqual(en, def, "HUD key \(key) English value must match the source defaultValue")
+        }
+    }
+
     /// The "System Default (%@)" wrapper follows the UI language while the interpolated device name is
     /// inserted verbatim. Verifies both the English and Chinese wrapper resolve and substitute.
     func testSystemDefaultNamedFormatFollowsLanguage() {
