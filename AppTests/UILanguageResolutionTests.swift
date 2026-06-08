@@ -76,6 +76,32 @@ final class UILanguageResolutionTests: XCTestCase {
         }
     }
 
+    /// The not-ready / not-configured copy added for the truthful-feedback feature must follow the chosen UI language too
+    /// (each carries a real en/zh-Hans pair). The percent-format key is exercised through `String(format:)`. If any key
+    /// were missing from the catalog or reverted to a system-locale resolve, en and zh-Hans would collapse and this fails.
+    func testNotReadyAndNotConfiguredCopyFollowsLanguage() {
+        let keys: [(String, String)] = [
+            ("hud.noLocalModel", "No local model yet — open Settings ▸ Speech to download (or switch to Cloud)."),
+            ("hud.insertedNoPolishSignIn", "Inserted without polish — sign in to ChatGPT under Settings ▸ Polish."),
+            ("hud.insertedNoPolishAddKey", "Inserted without polish — add an API key under Settings ▸ Polish."),
+        ]
+        for (key, def) in keys {
+            let en = resolve(key, def, .english)
+            let zh = resolve(key, def, .simplifiedChinese)
+            XCTAssertEqual(en, def, "key \(key) English value must match the source defaultValue")
+            XCTAssertNotEqual(en, zh, "key \(key) must differ between en and zh-Hans")
+            XCTAssertNotEqual(en, key, "key \(key) must not resolve to the bare key (en)")
+            XCTAssertNotEqual(zh, key, "key \(key) must not resolve to the bare key (zh)")
+        }
+        // The downloading percent format: the wrapper follows the UI language; the integer percent substitutes verbatim.
+        let pctKey = "hud.modelDownloadingPct %d"
+        let enFormat = resolve(pctKey, "Local model downloading… %d%% — please wait", .english)
+        let zhFormat = resolve(pctKey, "Local model downloading… %d%% — please wait", .simplifiedChinese)
+        XCTAssertNotEqual(enFormat, zhFormat, "the downloading-percent format must differ between en and zh-Hans")
+        XCTAssertTrue(String(format: enFormat, 42).contains("42%"), "en downloading copy must carry the integer percent")
+        XCTAssertTrue(String(format: zhFormat, 42).contains("42%"), "zh downloading copy must carry the integer percent")
+    }
+
     /// The fixed local-model label (`model.large-v3-turbo`, shown as a static line now the picker is
     /// gone) must still follow the chosen UI language: English value in English mode, Chinese value in
     /// Chinese mode. The other model.* keys were removed with the picker, so only turbo is guarded.
