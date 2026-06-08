@@ -177,18 +177,36 @@ private struct SidebarRow: View {
 ///
 /// The `Settings` scene is not a `WindowGroup`/`Window`, so SwiftUI's `.windowStyle(.hiddenTitleBar)`
 /// does not apply to it. Placed in the settings view's background, this grabs `view.window` once it
-/// resolves and makes the chrome disappear (titleless, transparent, full-size content), leaving the
-/// custom sidebar + content to fill the window with the traffic lights floating top-left. Idempotent:
-/// the guard skips once the title bar is already hidden, so repeated layout passes don't thrash.
+/// resolves and makes the chrome disappear, leaving the custom sidebar + content to fill the window
+/// with the traffic lights floating over the sidebar's top-left (Typeless-style).
+///
+/// Why a deferred `DispatchQueue.main.async`: in `makeNSView` (and often the first `updateNSView`
+/// pass) `view.window` is still `nil` because the representable's view has not yet been attached to a
+/// window. PR #66 applied the config synchronously in `updateNSView`, so on the pass where the window
+/// finally existed the early-return guard had already (in the same run loop) raced the layout — the
+/// result was a still-visible title bar. We instead hop to the next main-loop turn, by which point the
+/// view is reliably hosted, and configure the resolved window then.
+///
+/// Why `titlebarSeparatorStyle = .none`: even with a hidden, transparent, full-size-content title bar,
+/// macOS draws a 1pt hairline separator under the title-bar area by default. That hairline was the
+/// visible remnant in #66 that made the bar still read as present; `.none` removes it.
+///
+/// Idempotent: every step is a set-to-a-fixed-value (or an insert into an `OptionSet`), so re-running
+/// it on later layout passes is a no-op and never thrashes the chrome.
 private struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        guard let window = nsView.window, window.titleVisibility != .hidden else { return }
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.styleMask.insert(.fullSizeContentView)
-        window.title = ""
+        // Defer to the next main-loop turn: the view is reliably attached to its window by then,
+        // whereas `nsView.window` is typically still nil during make/first-update.
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.styleMask.insert(.fullSizeContentView)
+            window.titlebarSeparatorStyle = .none
+            window.title = ""
+        }
     }
 }
 

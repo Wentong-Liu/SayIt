@@ -12,10 +12,22 @@ enum Theme {
     /// Selection highlight + primary ("add new entry") buttons. Indigo/purple per the design.
     static let accent = Color.indigo
 
-    /// The sidebar's background: a darker neutral surface a clear step below the content pane,
-    /// so the column reads as separate without a divider (light/dark adaptive — `underPageBackgroundColor`
-    /// is reliably a notch darker than `windowBackgroundColor` in light mode and adapts in dark).
-    static let sidebarBackground = Color(nsColor: .underPageBackgroundColor)
+    /// The sidebar's background: a SUBTLE LIGHT panel a hair darker than the content pane, so the
+    /// column reads as separate without a divider — but stays light, never a dark slab (Typeless's
+    /// gentle light-gray sidebar). It is the standard window background nudged a *small* fraction
+    /// toward a neutral gray: in light mode that yields a soft, slightly-off-white panel; in dark mode
+    /// the same gentle blend keeps the column a touch distinct, so it stays light/dark adaptive.
+    /// (`underPageBackgroundColor` — used previously — reads as a medium-dark gray in light mode, far
+    /// too heavy for a sidebar; this faint blend is the deliberately gentle replacement.)
+    static let sidebarBackground = Color(nsColor: NSColor(name: nil) { appearance in
+        // Resolve the semantic window background for THIS appearance, then blend just 8% toward gray
+        // so the panel reads as "a hair darker than the content", not as a dark panel.
+        var base = NSColor.windowBackgroundColor
+        appearance.performAsCurrentDrawingAppearance {
+            base = NSColor.windowBackgroundColor.usingColorSpace(.deviceRGB) ?? .windowBackgroundColor
+        }
+        return base.blended(withFraction: 0.08, of: .gray) ?? base
+    })
 
     /// The content pane background: the standard window background, a light neutral.
     static let contentBackground = Color(nsColor: .windowBackgroundColor)
