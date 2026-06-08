@@ -10,6 +10,13 @@ struct SayItApp: App {
     /// The application config: observes its changes to instantly apply the UI language.
     @State private var uiLocale: Locale = AppConfig.shared.uiLanguage.locale
 
+    /// The last ``SettingsRouter/openRequestID`` this scene has already handled by calling `openSettings()`.
+    /// Guards the open-on-request observer so it fires exactly once per *new*, non-zero id — not on every
+    /// view update (where `.onChange`/`.task` could otherwise re-run). The first-run guidance issues its
+    /// request at launch (possibly before this label first appears), so the request is honored on appear
+    /// AND on later change.
+    @State private var handledSettingsOpenRequestID = 0
+
     var body: some Scene {
         // The status item uses the app's own speech mark as a monochrome
         // template image ("MenuBarIcon"), so AppKit recolors it for light/dark
@@ -57,6 +64,15 @@ struct SayItApp: App {
             // change with NO polling. While downloading, append a "NN%" readout; while the local engine
             // is selected but the model is missing, overlay a persistent "setup needed" badge.
             menuBarLabel
+                // Open Settings when ``SettingsRouter`` requests it (first-run guidance). This must live
+                // here, in the MenuBarExtra label, because `@Environment(\.openSettings)` is only live in
+                // a SwiftUI scene — the path the menu's "Settings…" button already uses successfully. The
+                // accessory app's launch-time `NSApp.sendAction(showSettingsWindow:)` had no reliable
+                // responder target, so it never opened. The request may be issued at launch before this
+                // label first appears, so honor it both on appear (.task) and on later change (.onChange);
+                // the `handledSettingsOpenRequestID` guard makes it fire exactly once per new, non-zero id.
+                .task { openSettingsIfRequested() }
+                .onChange(of: SettingsRouter.shared.openRequestID) { openSettingsIfRequested() }
         }
         .environment(\.locale, uiLocale)
 
@@ -68,6 +84,22 @@ struct SayItApp: App {
                     uiLocale = AppConfig.shared.uiLanguage.locale
                 }
         }
+    }
+
+    // MARK: - First-run / programmatic Settings open
+
+    /// Open the Settings window via the live `@Environment(\.openSettings)` action if ``SettingsRouter``
+    /// has a new, unhandled, non-zero open request, then bring the window to front (an accessory app does
+    /// not auto-activate). Idempotent: the `handledSettingsOpenRequestID` guard ensures exactly one open
+    /// per request id, so re-running on every view update / appear does nothing extra. `SettingsView`
+    /// reads `SettingsRouter.shared.pendingTab` in `.onAppear` to select the requested tab.
+    @MainActor
+    private func openSettingsIfRequested() {
+        let requestID = SettingsRouter.shared.openRequestID
+        guard requestID != 0, requestID != handledSettingsOpenRequestID else { return }
+        handledSettingsOpenRequestID = requestID
+        openSettings()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Menu-bar model-status presentation
