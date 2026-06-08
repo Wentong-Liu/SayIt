@@ -534,6 +534,13 @@ final class DictationCoordinator {
         // the HUD goes straight to the error toast (no listening→error flicker, no misleading "started" chime). The :730
         // gate stays as a belt-and-suspenders backstop. Cloud mode is never gated here (CloudTranscriber needs no local model).
         if config.sttMode == .local, !modelReadiness(config.localModel) {
+            // Resync the single-tap-toggle state machine BEFORE returning. single-tap-toggle is the DEFAULT InteractionMode,
+            // so in the headline scenario (first launch, model still downloading) the first tap already flipped `isActive`
+            // true and emitted this `.start`; returning here leaves the toggle active, and the user's retry tap is then
+            // consumed as a phantom `.stop` (an empty handleStop, flashing a working HUD over the error toast) — forcing a
+            // wasted THIRD tap to resume. Recording never began, so force the toggle back to inactive, exactly as
+            // failToIdle/cancel do for the structurally identical "recording never began" paths. Hold mode is unaffected.
+            hotkeyManager.sessionDidEndExternally()
             showSetupBlockingError(modelNotReadyMessage())
             return
         }
