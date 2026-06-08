@@ -166,6 +166,14 @@ final class DictationCoordinator {
     /// actively debugging) so they appear unredacted.
     private nonisolated static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "learn")
 
+    /// End-to-end pipeline metrics logger (observability only, no behavior). Emits ONE `.notice` key=value summary per
+    /// COMPLETED dictation (one that reached injection) so the dev can see where the stop -> transcribe -> dict -> polish ->
+    /// inject latency goes and target optimizations. Reuses the existing subsystem with a dedicated `metrics` category; the
+    /// higher-level sibling of the #63 `stt` line (which measures pure WhisperKit inference) — both are retained. Only
+    /// numbers are logged (`privacy: .public`); the transcribed/injected TEXT is never interpolated, only its char count.
+    /// `static` so it is reachable without actor-isolation friction (mirrors the `learn` logger above).
+    private nonisolated static let metricsLog = Logger(subsystem: "com.liuwentong.SayIt", category: "metrics")
+
     /// The injected override for building the term-extraction provider (learn-from-edits Part C). `nil` (production
     /// default) means reuse ``makePolishProvider()`` exactly (same provider/model/key path as polish) — see
     /// ``buildLearnProvider()``. If no provider/key is configured the build throws and the compare drops silently (feature
@@ -248,6 +256,13 @@ final class DictationCoordinator {
     /// per-dictation hot path (see ``cachedCloudKey``). `@Sendable` so it can be called from the off-main-actor prewarm path.
     private let cloudKeyReader: @Sendable () -> String
 
+    /// Optional test sink that ALSO receives the pipeline metrics summary line (observability only). `nil` (production)
+    /// means only the ``metricsLog`` `.notice` call runs; when present, the SAME formatted string is additionally handed to
+    /// the sink so a headless test can assert "exactly one summary line per successful dictation, none on early exits"
+    /// without scraping the system log. The production `metricsLog.notice` always fires regardless, so this never changes
+    /// the shipped behavior. (Mirrors the injectable-seam pattern the init already uses.)
+    private let metricsSink: ((String) -> Void)?
+
     /// - Parameters:
     ///   - config: the application config; defaults to `.shared`.
     ///   - hotkeyManager: the hotkey manager; defaults to constructing per the current config.
@@ -286,7 +301,8 @@ final class DictationCoordinator {
          learnFreshness: Duration = .seconds(120),
          learnIdleAfter: Duration = .seconds(3),
          learnProviderFactory: (() async throws -> any LLMProvider)? = nil,
-         termExtractorFactory: ((any LLMProvider) -> any LearnedTermExtracting)? = nil) {
+         termExtractorFactory: ((any LLMProvider) -> any LearnedTermExtracting)? = nil,
+         metricsSink: ((String) -> Void)? = nil) {
         self.config = config
         self.recorder = recorder
         self.panel = panel
@@ -316,6 +332,7 @@ final class DictationCoordinator {
         // Store the override as-is; nil means buildLearnProvider() reuses makePolishProvider() (resolved at call time, so no
         // self-capturing closure is stored during init — which Swift forbids on a stored property).
         self.learnProviderFactoryOverride = learnProviderFactory
+        self.metricsSink = metricsSink
     }
 
     /// Builds the term-extraction provider: the injected override if present, else reuses ``makePolishProvider()`` exactly
@@ -632,9 +649,46 @@ final class DictationCoordinator {
         }
     }
 
+    /// Observability-only per-dictation latency accumulator. Carries the total clock + its start instant (set at the
+    /// pipeline entry, right after the user stops) plus per-stage wall-clock milliseconds, and the context needed for the
+    /// summary line (STT mode, polish on/off, clip seconds). Stages that are skipped keep their default `0` (e.g. `prepareMs`
+    /// stays 0 when the model is already warm; `polishMs` stays 0 when polish is off) — matching the spec's "0 when …".
+    /// Built in ``runPipeline`` and threaded into ``injectFinalText`` so the line is emitted exactly once, only on the
+    /// genuinely completed success path. No control-flow role: purely a data carrier read at emit time.
+    private struct PipelineMetrics {
+        let clock: ContinuousClock
+        let pipelineStart: ContinuousClock.Instant
+        var prepareMs = 0.0
+        var sttMs = 0.0
+        var dictMs = 0.0
+        var polishMs = 0.0
+        let mode: STTMode
+        let polishOn: Bool
+        var clipSeconds = 0.0
+    }
+
+    /// Converts a `ContinuousClock.Duration` to wall-clock milliseconds. Mirrors the #63 `WhisperKitTranscriber` math
+    /// (`components.seconds + components.attoseconds / 1e18`, then * 1000) so both logs use the identical conversion.
+    private static func milliseconds(_ duration: ContinuousClock.Duration) -> Double {
+        let c = duration.components
+        return (Double(c.seconds) + Double(c.attoseconds) / 1e18) * 1000
+    }
+
     /// The complete pipeline: stop recording -> transcribe -> (optional) polish -> inject. Runs in a background task, switching back to the main thread for UI calls.
     /// - Parameter pendingStart: this round's recording start Task (may still be in progress); `await` its completion before stopping.
     private func runPipeline(awaiting pendingStart: Task<Void, Never>?) async {
+        // Observability only (no behavior change): start the end-to-end clock at the pipeline entry — "right after the user
+        // stops dictation". Placed before the start-await so the total also captures the short-press join (part of the
+        // stop->ready latency); this and every stage read below are pure measurement around the EXISTING stages, never
+        // reordering / branching / returning differently. The summary line is emitted once, only on the success path.
+        let clock = ContinuousClock()
+        let pipelineStart = clock.now
+        var metrics = PipelineMetrics(
+            clock: clock,
+            pipelineStart: pipelineStart,
+            mode: config.sttMode,
+            polishOn: config.polishEnabled
+        )
         // 0) Wait for the recording start to wrap up, to avoid stop triggering `.notRecording` before start.
         await pendingStart?.value
 
@@ -665,6 +719,9 @@ final class DictationCoordinator {
             emptyToIdle()
             return
         }
+
+        // Metrics context (observability only): the clip length the rest of the pipeline operates on.
+        metrics.clipSeconds = Double(samples.count) / AudioFormat.sampleRate
 
         // 1.5) Local model readiness gate: local transcription depends on the WhisperKit engine, and the engine downloads first when the model is not cached
         // (possibly taking several minutes), during which the HUD stays stuck at "transcribing", appearing permanently frozen. Here, before calling transcribe,
@@ -697,11 +754,15 @@ final class DictationCoordinator {
             // The preload is wrapped in the SAME timeout envelope as transcribe, and a load failure throws STTError, so both
             // fall through to the existing TranscribeTimeout / STTError catch arms below — the preparing state can never hang.
             if config.sttMode == .local, await transcriber.isReady == false {
+                // Metrics (observability only): bracket the model load/warmup wait. When this branch is skipped (warm model
+                // / cloud) prepareMs stays 0 — exactly "0 when the model was already warm".
+                let prepareStart = clock.now
                 updateProcessing(0.0, .preparingModel)
                 _ = try await withTranscribeTimeout {
                     try await transcriber.preload()
                 }
                 updateProcessing(0.0, .transcribing)
+                metrics.prepareMs = Self.milliseconds(clock.now - prepareStart)
             }
             // User-dictionary Layer 1 biasing: order the enabled entries' canonical terms by usageCount ascending
             // (most-used LAST, see GlossaryPrompt) and pass them as biasing options so STT is steered toward the user's
@@ -710,6 +771,9 @@ final class DictationCoordinator {
             // An empty dictionary -> empty terms -> no prompt is built anywhere (byte-identical to before this feature).
             let biasTerms = GlossaryPrompt.orderedCanonicals(from: entries)
             // Speech recognition always auto-detects the language (T24): always passes nil to let the backend judge by the speech, no longer reading AppConfig.language.
+            // Metrics (observability only): bracket the coordinator-side transcribe await (the transcribe wrapper). The #63
+            // `stt` line measures pure WhisperKit inference — both are kept (this is the higher-level end-to-end breakdown).
+            let sttStart = clock.now
             let result = try await withTranscribeTimeout {
                 try await transcriber.transcribe(
                     samples,
@@ -718,6 +782,7 @@ final class DictationCoordinator {
                     options: TranscribeOptions(biasTerms: biasTerms)
                 )
             }
+            metrics.sttMs = Self.milliseconds(clock.now - sttStart)
             transcript = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch is CancellationError {
             // ESC cancelled the dictation mid-transcribe: abort silently (the user intentionally aborted), no HUD error flash, inject nothing.
@@ -755,7 +820,11 @@ final class DictationCoordinator {
 
         // 3) Polish (on -> go through the LLM, auto-falls back to the original on failure/off, built into PolishPipeline).
         //    Threads the same per-utterance `entries` snapshot so the polish glossary (Layer 2) sees the same dictionary.
+        // Metrics (observability only): bracket the polish step. When polish is off, polishIfEnabled returns immediately so
+        // polishMs stays ~0 and the summary is tagged polish=off (the spec allows omit-or-0).
+        let polishStart = clock.now
         let polished = await polishIfEnabled(transcript, entries: entries)
+        metrics.polishMs = Self.milliseconds(clock.now - polishStart)
 
         // ESC cancel during polish: discard the polished result and inject nothing.
         guard !Task.isCancelled else { return }
@@ -767,13 +836,18 @@ final class DictationCoordinator {
 
         // 3.5) User-dictionary Layer 3: deterministic rewriting (exact case / spacing) after polish, before injection.
         //      Reuses the same per-utterance `entries` snapshot (no extra actor read). An empty dictionary is identity (zero behavior change).
+        // Metrics (observability only): bracket the Layer-3 dictionary rewrite.
+        let dictStart = clock.now
         let finalText = DictionaryRewriter.apply(to: polished.text, using: entries)
+        metrics.dictMs = Self.milliseconds(clock.now - dictStart)
 
         // Load-bearing cancel guard: even if transcribe + polish + dictionary all completed, an ESC cancel before this line means injectFinalText is never reached — no text is injected.
         guard !Task.isCancelled else { return }
 
         // 4) Inject at the target App's cursor (with a light hint on polish failure, but never losing characters).
-        injectFinalText(finalText, polishFailed: polished.failed)
+        //    Threads the accumulated metrics so the one-line summary is emitted from inside the `.success` branch — the sole
+        //    place injection actually completed (every early exit above already returned, so no misleading success line).
+        injectFinalText(finalText, polishFailed: polished.failed, metrics: metrics)
     }
 
     // MARK: Polish
@@ -1007,12 +1081,26 @@ final class DictationCoordinator {
     /// - Parameters:
     ///   - text: the text to inject.
     ///   - polishFailed: whether polish failed and fell back (only used for a light hint after successful injection, not affecting the injection itself).
-    private func injectFinalText(_ text: String, polishFailed: Bool) {
+    ///   - metrics: the accumulated per-stage pipeline metrics (observability only). When non-nil AND injection succeeds,
+    ///     ONE `.notice` summary line is emitted (the inject stage timed here, total measured to now). `nil` (e.g. older
+    ///     test callsites) emits nothing. Never affects injection behavior — purely read at emit time.
+    private func injectFinalText(_ text: String, polishFailed: Bool, metrics: PipelineMetrics? = nil) {
         let drifted = focusDrifted()
+        // Metrics (observability only): bracket the injection (pasteboard + paste / AX). Read regardless of outcome; only
+        // emitted below on `.success` (the sole place injection completed — `.failedTextLeftInPasteboard` did NOT inject).
+        let injectStart = metrics?.clock.now
         let result = injector.inject(text)
 
         switch result {
         case .success:
+            // Emit the ONE end-to-end summary line, only here on the genuinely completed success path (text injected). Every
+            // early exit upstream already returned, and the pasteboard-fallback branch below does NOT emit — so the line is
+            // never a misleading success. No text is logged, only its char count.
+            if let metrics, let injectStart {
+                let injectMs = Self.milliseconds(metrics.clock.now - injectStart)
+                let totalMs = Self.milliseconds(metrics.clock.now - metrics.pipelineStart)
+                emitPipelineMetrics(metrics, injectMs: injectMs, totalMs: totalMs, chars: text.count)
+            }
             if drifted {
                 // Focus drifted but the paste still succeeded: give a brief neutral hint, informing it was pasted into the current window.
                 showTransientInfo(uiLanguageLocalized("hud.pastedToCurrentWindow",
@@ -1042,6 +1130,31 @@ final class DictationCoordinator {
                                       defaultValue: "Copied to clipboard, please paste manually")
             showTransientError(hint)
         }
+    }
+
+    /// Builds and emits the ONE end-to-end pipeline metrics summary line for a completed dictation (observability only).
+    /// Format is concise, parseable `key=value` (mirrors the #63 `stt` line style), e.g.
+    /// `pipeline: total=1820ms stt=410ms dict=2ms polish=1290ms inject=70ms prepare=0ms mode=local polish=on clip=2.3s chars=14`.
+    /// Always logs at `.notice` to ``metricsLog``; ALSO hands the same string to ``metricsSink`` when a test injected one.
+    /// Only numbers are interpolated (`privacy: .public`); the transcribed/injected TEXT is never logged, only `chars`. The
+    /// `mode`/`polish` tags are precomputed `String`s because `os.Logger` cannot take a ternary mixing types in interpolation
+    /// (the same trick the learn-flow logging uses).
+    private func emitPipelineMetrics(_ metrics: PipelineMetrics, injectMs: Double, totalMs: Double, chars: Int) {
+        let modeTag = metrics.mode == .local ? "local" : "cloud"
+        let polishTag = metrics.polishOn ? "on" : "off"
+        let line = "pipeline: "
+            + "total=\(Int(totalMs.rounded()))ms "
+            + "stt=\(Int(metrics.sttMs.rounded()))ms "
+            + "dict=\(Int(metrics.dictMs.rounded()))ms "
+            + "polish=\(Int(metrics.polishMs.rounded()))ms "
+            + "inject=\(Int(injectMs.rounded()))ms "
+            + "prepare=\(Int(metrics.prepareMs.rounded()))ms "
+            + "mode=\(modeTag) "
+            + "polish=\(polishTag) "
+            + "clip=\(String(format: "%.1f", metrics.clipSeconds))s "
+            + "chars=\(chars)"
+        Self.metricsLog.notice("\(line, privacy: .public)")
+        metricsSink?(line)
     }
 
     /// Whether the injection target is no longer frontmost (focus drift). When there is no recorded target it is treated as no drift.

@@ -39,6 +39,7 @@ final class DictationCoordinatorTests: XCTestCase {
         learnIdleAfter: Duration = .milliseconds(1),
         learnProviderFactory: (() async throws -> any LLMProvider)? = nil,
         termExtractorFactory: ((any LLMProvider) -> any LearnedTermExtracting)? = nil,
+        metricsSink: ((String) -> Void)? = nil,
         transcriber: @escaping () throws -> any Transcriber
     ) -> DictationCoordinator {
         // By default inject an empty-dictionary store backed by a temp directory: an empty dictionary -> Layer 3 rewriting is identity (zero behavior change),
@@ -66,7 +67,8 @@ final class DictationCoordinatorTests: XCTestCase {
             learnFreshness: learnFreshness,
             learnIdleAfter: learnIdleAfter,
             learnProviderFactory: learnProviderFactory ?? { throw ProviderError.missingAPIKey },
-            termExtractorFactory: termExtractorFactory
+            termExtractorFactory: termExtractorFactory,
+            metricsSink: metricsSink
         )
     }
 
@@ -238,6 +240,79 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
 
         XCTAssertTrue(injector.injectedTexts.isEmpty, "an empty transcript should not inject")
+    }
+
+    // MARK: - Pipeline metrics (observability only): one summary line per COMPLETED dictation, none on early exits
+
+    /// A happy-path dictation that reaches injection emits exactly ONE parseable `pipeline:` summary line, carrying the
+    /// success context (mode/polish/clip/char count). Asserts on the injected metrics sink (no system-log scraping); does
+    /// NOT assert wall-clock magnitudes (timing is real and machine-dependent). chars=3 = the 3-char injected text "abc".
+    func testHappyPathEmitsPipelineMetrics() async {
+        let config = makeConfig(polishEnabled: false)
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        var lines: [String] = []
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            metricsSink: { lines.append($0) }
+        ) {
+            FakeTranscriber(text: "abc")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertEqual(injector.injectedTexts, ["abc"], "sanity: the happy path injected")
+        XCTAssertEqual(lines.count, 1, "exactly one metrics line per completed dictation")
+        let line = lines.first ?? ""
+        XCTAssertTrue(line.hasPrefix("pipeline: "), "line should be the parseable pipeline summary: \(line)")
+        XCTAssertTrue(line.contains("chars=3"), "char count of the final injected text: \(line)")
+        XCTAssertTrue(line.contains("mode=local"), "local STT mode tag: \(line)")
+        XCTAssertTrue(line.contains("polish=off"), "polish-off tag (polish disabled): \(line)")
+        // All stage keys present (parseable key=value contract).
+        for key in ["total=", "stt=", "dict=", "polish=", "inject=", "prepare=", "clip="] {
+            XCTAssertTrue(line.contains(key), "summary should contain \(key): \(line)")
+        }
+    }
+
+    /// An empty transcript never reaches injection, so NO metrics line is emitted — the line is never a misleading success.
+    func testEmptyTranscriptEmitsNoPipelineMetrics() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        var lines: [String] = []
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            metricsSink: { lines.append($0) }
+        ) {
+            FakeTranscriber(text: "   \n  ")  // silence/unintelligible -> empty after trim
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "sanity: an empty transcript does not inject")
+        XCTAssertTrue(lines.isEmpty, "no metrics line on an early exit that never injected")
+    }
+
+    /// A pasteboard-fallback (injection did NOT paste into the field) is NOT a completed pipeline, so no metrics line is
+    /// emitted — only a genuinely injected `.success` counts.
+    func testPasteboardFallbackEmitsNoPipelineMetrics() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .failedTextLeftInPasteboard(reason: "no focus"))
+        var lines: [String] = []
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            metricsSink: { lines.append($0) }
+        ) {
+            FakeTranscriber(text: "保住的话")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertTrue(lines.isEmpty, "no metrics line when text was left in the pasteboard (not injected)")
     }
 
     // MARK: - Transcription failure: no injection
