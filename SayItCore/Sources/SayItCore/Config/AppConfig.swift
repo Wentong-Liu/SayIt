@@ -50,7 +50,7 @@ public final class AppConfig {
 
     // MARK: Trigger / interaction
 
-    /// The modifier key that triggers dictation. Defaults to the right Command; the listener reads it live, changes take effect immediately.
+    /// The modifier key that triggers dictation. Defaults to the right Option; the listener reads it live, changes take effect immediately.
     public var triggerKey: TriggerKey {
         get { enumValue(Key.triggerKey, default: .default) }
         set { setEnum(newValue, forKey: Key.triggerKey) }

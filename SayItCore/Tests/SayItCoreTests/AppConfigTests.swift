@@ -27,7 +27,7 @@ final class AppConfigTests: XCTestCase {
     // MARK: Default values
 
     func testDefaultsOnFreshStore() {
-        XCTAssertEqual(config.triggerKey, .rightCommand)
+        XCTAssertEqual(config.triggerKey, .rightOption)
         XCTAssertEqual(config.interactionMode, .singleTap)
         XCTAssertEqual(config.sttMode, .local)
         XCTAssertEqual(config.localModel, "large-v3-turbo")
@@ -240,7 +240,7 @@ final class AppConfigTests: XCTestCase {
         defaults.set("nope", forKey: "polish.style")
         defaults.set("nope", forKey: "provider.kind")
         let fresh = AppConfig(defaults: defaults)
-        XCTAssertEqual(fresh.triggerKey, .rightCommand)
+        XCTAssertEqual(fresh.triggerKey, .rightOption)
         XCTAssertEqual(fresh.interactionMode, .singleTap)
         XCTAssertEqual(fresh.sttMode, .local)
         XCTAssertEqual(fresh.polishStyle, .smart)
@@ -276,7 +276,7 @@ final class AppConfigTests: XCTestCase {
 @MainActor
 final class ConfigEnumTests: XCTestCase {
     func testTriggerKeyDefault() {
-        XCTAssertEqual(TriggerKey.default, .rightCommand)
+        XCTAssertEqual(TriggerKey.default, .rightOption)
     }
 
     func testInteractionModeDefault() {

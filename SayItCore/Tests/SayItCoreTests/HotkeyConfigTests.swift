@@ -5,8 +5,8 @@ import AppKit
 /// Config-layer unit test for TriggerKey and HotkeyMode (does not touch system event monitoring).
 final class HotkeyConfigTests: XCTestCase {
 
-    func testDefaultTriggerKeyIsRightCommand() {
-        XCTAssertEqual(TriggerKey.default, .rightCommand)
+    func testDefaultTriggerKeyIsRightOption() {
+        XCTAssertEqual(TriggerKey.default, .rightOption)
     }
 
     func testTriggerKeyKeyCodesAreDistinct() {
