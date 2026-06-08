@@ -76,6 +76,93 @@ final class UILanguageResolutionTests: XCTestCase {
         }
     }
 
+    /// The local-model picker labels (`SettingsViewModel.localModelOptions`) are built imperatively with
+    /// the resolver, so they must follow the chosen UI language. Before this fix they used a raw
+    /// `String(localized:)` and resolved against the system locale — so on a Chinese-system Mac in English
+    /// UI mode the dropdown showed "large-v3-turbo（推荐）", "large-v3（最高精度）", … . This asserts the
+    /// English value in English mode and the Chinese value in Chinese mode, per model key.
+    func testLocalModelLabelsFollowLanguage() {
+        let cases: [(key: String, en: String, zh: String)] = [
+            ("model.large-v3-turbo", "large-v3-turbo (recommended)", "large-v3-turbo（推荐）"),
+            ("model.large-v3", "large-v3 (highest accuracy)", "large-v3（最高精度）"),
+            ("model.medium", "medium (balanced)", "medium（均衡）"),
+            ("model.small", "small (lightweight)", "small（轻量）"),
+            ("model.base", "base (fastest)", "base（最快）"),
+        ]
+        for c in cases {
+            XCTAssertEqual(resolve(c.key, c.en, .english), c.en, "\(c.key) must be English in English mode")
+            XCTAssertEqual(resolve(c.key, c.en, .simplifiedChinese), c.zh, "\(c.key) must be Chinese in Chinese mode")
+            XCTAssertNotEqual(resolve(c.key, c.en, .english), resolve(c.key, c.en, .simplifiedChinese),
+                              "\(c.key) en and zh-Hans must diverge")
+        }
+    }
+
+    /// End-to-end guard through the live `SettingsViewModel.localModelOptions` computed property — the exact
+    /// call site the bug names — not just the resolver. `localModelOptions` resolves through the convenience
+    /// `uiLanguageLocalized`, which reads the persisted UI language from `UserDefaults.standard`; so this
+    /// drives that key directly (saving/restoring it) and asserts the built picker labels switch language.
+    func testLocalModelOptionsResolveInSelectedLanguage() {
+        let key = "ui.language"
+        let saved = UserDefaults.standard.string(forKey: key)
+        defer {
+            if let saved { UserDefaults.standard.set(saved, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let vm = SettingsViewModel(config: AppConfig())
+
+        UserDefaults.standard.set(UILanguage.english.rawValue, forKey: key)
+        let enLabels = vm.localModelOptions.map(\.label)
+        XCTAssertEqual(enLabels.first, "large-v3-turbo (recommended)")
+        XCTAssertTrue(enLabels.contains("base (fastest)"))
+        for label in enLabels {
+            XCTAssertFalse(label.contains("推荐") || label.contains("精度") || label.contains("均衡")
+                           || label.contains("轻量") || label.contains("最快"),
+                           "English-mode picker label leaked Chinese: \(label)")
+        }
+
+        UserDefaults.standard.set(UILanguage.simplifiedChinese.rawValue, forKey: key)
+        let zhLabels = vm.localModelOptions.map(\.label)
+        XCTAssertEqual(zhLabels.first, "large-v3-turbo（推荐）")
+        XCTAssertTrue(zhLabels.contains("base（最快）"))
+    }
+
+    /// The settings status/login copy swept alongside the model labels (key-save status, ChatGPT login
+    /// status, the OAuth error descriptions surfaced as the polish-pane status, the browser "done" page)
+    /// must also follow the UI language. Each carries a real en/zh-Hans pair in the catalog, so before the
+    /// fix they leaked the system locale.
+    func testSweptSettingsCopyFollowsLanguage() {
+        let keys: [(String, String)] = [
+            ("polish.openingBrowser", "Opening browser to authorize ChatGPT…"),
+            ("polish.loginSucceeded", "ChatGPT login succeeded"),
+            ("polish.loggedOut", "Signed out of ChatGPT"),
+            ("polish.logoutFailed", "Sign-out failed"),
+            ("polish.keySaved %@", "%@ key saved"),
+            ("polish.keySaveFailed %@", "Failed to save %@ key"),
+            ("polish.apiKeyField %@", "%@ API Key"),
+            ("login.stateMismatch", "State verification failed"),
+            ("login.noCode", "No authorization code in callback"),
+            ("login.cancelled", "Login cancelled"),
+            ("login.timedOut", "Login timed out, please try again"),
+            ("login.serverFailed %lld", "Local loopback server failed to start (port %lld may be in use)"),
+            ("login.exchangeFailed %@", "Token exchange failed: %@"),
+            ("login.keychainWriteFailed", "Unable to write to keychain"),
+            ("login.browserDone", "SayIt: Login complete. You can close this page and return to the app."),
+            ("polish.loginFailed %@", "ChatGPT login failed: %@"),
+        ]
+        for (key, def) in keys {
+            let en = resolve(key, def, .english)
+            let zh = resolve(key, def, .simplifiedChinese)
+            XCTAssertEqual(en, def, "key \(key) English value must match the source defaultValue")
+            // polish.apiKeyField is identical across languages by design (it is "%@ API Key" in both),
+            // so it is exempt from the divergence check; every other swept key genuinely differs.
+            if key != "polish.apiKeyField %@" {
+                XCTAssertNotEqual(en, zh, "key \(key) must differ between en and zh-Hans")
+            }
+            XCTAssertNotEqual(en, key, "key \(key) must not resolve to the bare key (en)")
+            XCTAssertNotEqual(zh, key, "key \(key) must not resolve to the bare key (zh)")
+        }
+    }
+
     /// The "System Default (%@)" wrapper follows the UI language while the interpolated device name is
     /// inserted verbatim. Verifies both the English and Chinese wrapper resolve and substitute.
     func testSystemDefaultNamedFormatFollowsLanguage() {

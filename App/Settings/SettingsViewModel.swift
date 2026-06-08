@@ -160,12 +160,15 @@ final class SettingsViewModel {
     /// Local model candidates: (id, display name). Common WhisperKit quantized models, defaulting to large-v3-turbo.
     /// A computed property: the descriptor words in the display name are localized per the current UI language (built on each access, taking effect instantly on language switch).
     var localModelOptions: [(id: String, label: String)] {
+        // Resolve through the UI-language override (not the system locale) so the descriptor words match
+        // the chosen Display Language — otherwise on a Chinese-system Mac in English UI mode the picker
+        // showed Chinese labels ("large-v3-turbo（推荐）", …). Same root cause / fix pattern as PR #67.
         [
-            ("large-v3-turbo", String(localized: "model.large-v3-turbo", defaultValue: "large-v3-turbo (recommended)")),
-            ("large-v3", String(localized: "model.large-v3", defaultValue: "large-v3 (highest accuracy)")),
-            ("medium", String(localized: "model.medium", defaultValue: "medium (balanced)")),
-            ("small", String(localized: "model.small", defaultValue: "small (lightweight)")),
-            ("base", String(localized: "model.base", defaultValue: "base (fastest)")),
+            ("large-v3-turbo", uiLanguageLocalized("model.large-v3-turbo", defaultValue: "large-v3-turbo (recommended)")),
+            ("large-v3", uiLanguageLocalized("model.large-v3", defaultValue: "large-v3 (highest accuracy)")),
+            ("medium", uiLanguageLocalized("model.medium", defaultValue: "medium (balanced)")),
+            ("small", uiLanguageLocalized("model.small", defaultValue: "small (lightweight)")),
+            ("base", uiLanguageLocalized("model.base", defaultValue: "base (fastest)")),
         ]
     }
 
@@ -278,11 +281,11 @@ final class SettingsViewModel {
         guard !trimmed.isEmpty else { return }
         let ok = KeychainStore.set(trimmed, account: KeychainStore.Account.openAIAPIKey)
         if ok {
-            sttStatusMessage = String(localized: "stt.keySaved", defaultValue: "Cloud transcription key saved")
+            sttStatusMessage = uiLanguageLocalized("stt.keySaved", defaultValue: "Cloud transcription key saved")
             // Posting lets the coordinator refresh its cached cloud key, so a same-model key-only re-save takes effect next dictation.
             config.notifyExternalChange()
         } else {
-            sttStatusMessage = String(localized: "stt.keySaveFailed", defaultValue: "Failed to save cloud transcription key")
+            sttStatusMessage = uiLanguageLocalized("stt.keySaveFailed", defaultValue: "Failed to save cloud transcription key")
         }
     }
 
@@ -294,8 +297,8 @@ final class SettingsViewModel {
         let ok = KeychainStore.set(trimmed, account: account)
         let name = providerKind.displayName
         polishStatusMessage = ok
-            ? String(localized: "polish.keySaved \(name)")
-            : String(localized: "polish.keySaveFailed \(name)")
+            ? uiLanguageLocalized(format: "polish.keySaved %@", defaultValue: "%@ key saved", name)
+            : uiLanguageLocalized(format: "polish.keySaveFailed %@", defaultValue: "Failed to save %@ key", name)
     }
 
     // MARK: ChatGPT OAuth
@@ -304,19 +307,21 @@ final class SettingsViewModel {
     func loginWithChatGPT() {
         guard !isLoggingIn else { return }
         isLoggingIn = true
-        polishStatusMessage = String(localized: "polish.openingBrowser",
-                                     defaultValue: "Opening browser to authorize ChatGPT…")
+        polishStatusMessage = uiLanguageLocalized("polish.openingBrowser",
+                                                  defaultValue: "Opening browser to authorize ChatGPT…")
         CodexLoginService.shared.login { [weak self] result in
             guard let self else { return }
             self.isLoggingIn = false
             switch result {
             case .success:
                 self.isChatGPTLoggedIn = true
-                self.polishStatusMessage = String(localized: "polish.loginSucceeded",
-                                                   defaultValue: "ChatGPT login succeeded")
+                self.polishStatusMessage = uiLanguageLocalized("polish.loginSucceeded",
+                                                               defaultValue: "ChatGPT login succeeded")
             case .failure(let error):
                 self.isChatGPTLoggedIn = KeychainStore.loadChatGPTTokens() != nil
-                self.polishStatusMessage = String(localized: "polish.loginFailed \(String(describing: error))")
+                self.polishStatusMessage = uiLanguageLocalized(format: "polish.loginFailed %@",
+                                                               defaultValue: "ChatGPT login failed: %@",
+                                                               String(describing: error))
             }
         }
     }
@@ -326,8 +331,8 @@ final class SettingsViewModel {
         let ok = KeychainStore.clearChatGPTTokens()
         isChatGPTLoggedIn = KeychainStore.loadChatGPTTokens() != nil
         polishStatusMessage = ok
-            ? String(localized: "polish.loggedOut", defaultValue: "Signed out of ChatGPT")
-            : String(localized: "polish.logoutFailed", defaultValue: "Sign-out failed")
+            ? uiLanguageLocalized("polish.loggedOut", defaultValue: "Signed out of ChatGPT")
+            : uiLanguageLocalized("polish.logoutFailed", defaultValue: "Sign-out failed")
     }
 
     // MARK: Permissions
