@@ -220,16 +220,26 @@ func renderMenuBarMark(pointSize: CGFloat, scale: CGFloat) -> CGImage {
     ctx.interpolationQuality = .high
 
     // Content rect with only a hairline breathing margin so the mark fills the
-    // canvas like neighboring menu-bar icons. The tail extends down-left of the
-    // blob box, so the blob box is sized large (0.80) within this inset content
-    // rect and re-centered so the overflowing tail stays on-canvas without
-    // clipping. Enlarging the whole mark also proportionally thickens the
-    // soundwave bars (barWidth = blobW * 0.115 in the shared helper), keeping
-    // them legible at 18px @1x.
-    let margin = size * 0.03
+    // canvas like neighboring menu-bar icons (WeChat / Messages). The tail
+    // extends down-left of the blob box, so the blob box is sized large (0.86)
+    // within this inset content rect and re-centered so the overflowing tail
+    // stays on-canvas without clipping. Enlarging the whole mark also
+    // proportionally thickens the soundwave bars (barWidth = blobW * 0.115 in
+    // the shared helper), keeping them legible at 18px @1x.
+    //
+    // CEILING: the mark's horizontal extent (blobW * 1.16, the tail reaches
+    // tailTipX = minX - blobW * 0.16 on the left) is WIDER than its vertical
+    // extent, so WIDTH is the binding constraint. With the tail aspect frozen
+    // in the shared speechMarkPath helper (which must NOT change — the app icon
+    // depends on it), the largest blobW that keeps a positive geometric margin
+    // at 18px @1x is ~0.86 (smallest drawn margin ~0.29px; the rasterized
+    // alpha-bbox then fills ~89% of the height and is edge-to-edge in width).
+    // Pushing blobW past ~0.87-0.88 crowds the right/bottom edge to zero margin
+    // and would clip ink, so do not raise it without also reshaping the tail.
+    let margin = size * 0.015
     let content = CGRect(x: margin, y: margin, width: size - margin * 2, height: size - margin * 2)
 
-    let blobW = content.width * 0.80
+    let blobW = content.width * 0.86
     let blobH = blobW * 0.86
     // markYOffset mirrors the app icon's optical-center nudge, scaled to the
     // content rect rather than the full canvas.
