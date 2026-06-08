@@ -200,7 +200,7 @@ final class DictionaryStoreTests: XCTestCase {
         let fileURL = tempDir.appending(component: "dictionary.json")
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: fileURL.path),
-            "replaceAll 作为首个操作时应建目录并落盘")
+            "when replaceAll is the first operation it should create the directory and write to disk")
         XCTAssertEqual(try decodeOnDisk().entries, entries)
 
         // A fresh store pointing at the same directory must re-read the content from disk (not read empty).
@@ -225,7 +225,7 @@ final class DictionaryStoreTests: XCTestCase {
 
         let store = makeStore()
         let entries = await store.all()
-        XCTAssertTrue(entries.isEmpty, "损坏文件应以空词典起步")
+        XCTAssertTrue(entries.isEmpty, "a corrupt file should start with an empty dictionary")
 
         // Afterwards it can still add/update normally and persist as legal JSON (the corrupt content is overwritten).
         let entry = sampleEntry()
@@ -369,15 +369,15 @@ final class DictionaryStoreTests: XCTestCase {
 
         let store = makeStore()
         let entries = await store.all()
-        XCTAssertTrue(entries.isEmpty, "完全损坏的文件应以空词典起步")
+        XCTAssertTrue(entries.isEmpty, "a fully corrupt file should start with an empty dictionary")
 
         // The original (recoverable) bytes must have been preserved at the .corrupt sidecar.
         let backupURL = tempDir.appending(component: "dictionary.json.corrupt")
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: backupURL.path),
-            "完全损坏的文件应在起步前备份到 .corrupt")
+            "a fully corrupt file should be backed up to .corrupt before starting")
         let backupContents = try String(contentsOf: backupURL, encoding: .utf8)
-        XCTAssertEqual(backupContents, corruptPayload, "备份内容应与原始损坏字节一致")
+        XCTAssertEqual(backupContents, corruptPayload, "the backup content should match the original corrupt bytes")
 
         // A subsequent save must not crash and produces legal JSON.
         let entry = sampleEntry()

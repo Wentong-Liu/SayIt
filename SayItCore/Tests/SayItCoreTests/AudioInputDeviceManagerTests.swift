@@ -13,15 +13,15 @@ final class AudioInputDeviceManagerTests: XCTestCase {
     func testAvailableDevicesHaveNonEmptyStableFields() {
         let devices = AudioInputDeviceManager.availableInputDevices()
         for device in devices {
-            XCTAssertFalse(device.uid.isEmpty, "设备 UID 不应为空")
-            XCTAssertFalse(device.name.isEmpty, "设备名不应为空")
-            XCTAssertEqual(device.id, device.uid, "Identifiable.id 应即 uid")
+            XCTAssertFalse(device.uid.isEmpty, "the device UID should not be empty")
+            XCTAssertFalse(device.name.isEmpty, "the device name should not be empty")
+            XCTAssertEqual(device.id, device.uid, "Identifiable.id should equal uid")
         }
     }
 
     func testDeviceUIDsAreUnique() {
         let uids = AudioInputDeviceManager.availableInputDevices().map(\.uid)
-        XCTAssertEqual(Set(uids).count, uids.count, "设备 UID 应唯一")
+        XCTAssertEqual(Set(uids).count, uids.count, "device UIDs should be unique")
     }
 
     func testDefaultDeviceIsAmongAvailableWhenPresent() {
@@ -32,7 +32,7 @@ final class AudioInputDeviceManagerTests: XCTestCase {
         }
         XCTAssertTrue(
             devices.contains(where: { $0.uid == defaultUID }),
-            "系统默认输入设备应出现在可用设备列表中"
+            "the system default input device should appear in the available devices list"
         )
     }
 
@@ -41,7 +41,7 @@ final class AudioInputDeviceManagerTests: XCTestCase {
             return // No available devices, skip.
         }
         let resolved = AudioInputDeviceManager.deviceID(forUID: first.uid)
-        XCTAssertNotNil(resolved, "已枚举到的设备 UID 应能解析为 AudioDeviceID")
+        XCTAssertNotNil(resolved, "an already-enumerated device UID should resolve to an AudioDeviceID")
         if let resolved {
             XCTAssertNotEqual(resolved, AudioDeviceID(kAudioObjectUnknown))
             XCTAssertNotEqual(resolved, 0)
@@ -50,7 +50,7 @@ final class AudioInputDeviceManagerTests: XCTestCase {
 
     func testUnknownUIDResolvesToNil() {
         let resolved = AudioInputDeviceManager.deviceID(forUID: "definitely-not-a-real-device-uid-\(UUID().uuidString)")
-        XCTAssertNil(resolved, "不存在的 UID 不应解析出设备")
+        XCTAssertNil(resolved, "a non-existent UID should not resolve to a device")
     }
 
     func testEmptyUIDResolvesToNil() {

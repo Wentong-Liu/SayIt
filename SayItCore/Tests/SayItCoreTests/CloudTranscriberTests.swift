@@ -163,12 +163,12 @@ final class CloudTranscriberTests: XCTestCase {
         let transcriber = makeTranscriber()
         _ = try await transcriber.transcribe([0.1], sampleRate: 16_000, language: nil,
                                              options: TranscribeOptions(biasTerms: ["SwiftUI", "WhisperKit"]))
-        XCTAssertNotNil(captured.bodyString.range(of: "name=\"prompt\""), "提供偏置词时应附带 prompt 字段")
+        XCTAssertNotNil(captured.bodyString.range(of: "name=\"prompt\""), "the prompt field should be attached when bias terms are provided")
         // The glossary string is the comma-joined canonical terms; both terms should appear in the body.
         XCTAssertNotNil(captured.bodyString.range(of: "SwiftUI"))
         XCTAssertNotNil(captured.bodyString.range(of: "WhisperKit"))
         XCTAssertNotNil(captured.bodyString.range(of: "SwiftUI, WhisperKit"),
-                        "prompt 应为逗号+空格拼接的术语表")
+                        "prompt should be the glossary joined by comma + space")
     }
 
     func testPromptFieldOmittedWhenBiasTermsEmpty() async throws {
@@ -182,7 +182,7 @@ final class CloudTranscriberTests: XCTestCase {
         // No options arg -> .none -> empty bias terms -> prompt field omitted (byte-identical multipart to today).
         _ = try await transcriber.transcribe([0.1], sampleRate: 16_000, language: nil)
         XCTAssertNil(captured.bodyString.range(of: "name=\"prompt\""),
-                     "空词典时不应附带 prompt 字段（multipart 与改动前逐字节一致）")
+                     "with an empty dictionary the prompt field must not be attached (the multipart stays byte-identical to before the change)")
     }
 
     func testPromptFieldOmittedWhenBiasTermsAllBlank() async throws {
@@ -196,7 +196,7 @@ final class CloudTranscriberTests: XCTestCase {
         _ = try await transcriber.transcribe([0.1], sampleRate: 16_000, language: nil,
                                              options: TranscribeOptions(biasTerms: ["  ", ""]))
         XCTAssertNil(captured.bodyString.range(of: "name=\"prompt\""),
-                     "全空白偏置词应被裁掉，glossary 为空 -> 省略 prompt 字段")
+                     "all-blank bias terms should be trimmed away; an empty glossary -> the prompt field is omitted")
     }
 
     /// A bias term carrying an interior CR/LF must be sanitized (collapsed to a space) before it is written into the
@@ -214,7 +214,7 @@ final class CloudTranscriberTests: XCTestCase {
         _ = try await transcriber.transcribe([0.1], sampleRate: 16_000, language: nil,
                                              options: TranscribeOptions(biasTerms: ["foo\nbar", "baz\r\nqux"]))
 
-        XCTAssertNotNil(captured.bodyString.range(of: "name=\"prompt\""), "提供偏置词时应附带 prompt 字段")
+        XCTAssertNotNil(captured.bodyString.range(of: "name=\"prompt\""), "the prompt field should be attached when bias terms are provided")
         // Isolate the prompt field's value: between the prompt Content-Disposition header (terminated by \r\n\r\n) and its trailing \r\n.
         let body = captured.bodyString
         guard let headerRange = body.range(of: "name=\"prompt\"\r\n\r\n") else {
@@ -225,11 +225,11 @@ final class CloudTranscriberTests: XCTestCase {
             return XCTFail("prompt field value terminator not found")
         }
         let promptValue = String(afterHeader[afterHeader.startIndex..<valueEnd.lowerBound])
-        XCTAssertFalse(promptValue.contains("\n"), "prompt 值内部不应残留裸 \\n（否则会注入伪造的 header/boundary 行）")
-        XCTAssertFalse(promptValue.contains("\r"), "prompt 值内部不应残留裸 \\r")
+        XCTAssertFalse(promptValue.contains("\n"), "the prompt value must not retain a bare \\n internally (otherwise it would inject forged header/boundary lines)")
+        XCTAssertFalse(promptValue.contains("\r"), "the prompt value must not retain a bare \\r internally")
         // The term text survives (only the embedded newline collapsed to a space).
-        XCTAssertTrue(promptValue.contains("foo bar"), "嵌入换行应折叠为空格，术语文本保留: \(promptValue)")
-        XCTAssertTrue(promptValue.contains("baz qux"), "嵌入 CRLF 应折叠为空格，术语文本保留: \(promptValue)")
+        XCTAssertTrue(promptValue.contains("foo bar"), "an embedded newline should collapse to a space, term text preserved: \(promptValue)")
+        XCTAssertTrue(promptValue.contains("baz qux"), "an embedded CRLF should collapse to a space, term text preserved: \(promptValue)")
     }
 
     /// The verbatim cloud `prompt` is capped to a generous char budget for symmetry with the local token cap, keeping the
@@ -258,8 +258,8 @@ final class CloudTranscriberTests: XCTestCase {
             return XCTFail("prompt field value terminator not found")
         }
         let promptValue = String(afterHeader[afterHeader.startIndex..<valueEnd.lowerBound])
-        XCTAssertLessThanOrEqual(promptValue.count, 896, "prompt 应被裁剪到字符预算内")
-        XCTAssertTrue(promptValue.hasSuffix("MOSTRELEVANTTAIL"), "应保留后缀（最相关的尾部术语），与本地 token 上限语义一致")
+        XCTAssertLessThanOrEqual(promptValue.count, 896, "prompt should be truncated to within the char budget")
+        XCTAssertTrue(promptValue.hasSuffix("MOSTRELEVANTTAIL"), "should keep the suffix (the most-relevant tail terms), consistent with the local token-cap semantics")
     }
 
     // MARK: - WAV header correctness

@@ -118,11 +118,11 @@ final class AudioRecorderStateTests: XCTestCase {
         let recorder = AudioRecorder()
         do {
             _ = try await recorder.stop()
-            XCTFail("应抛出 notRecording")
+            XCTFail("should throw notRecording")
         } catch let error as AudioRecordingError {
             XCTAssertEqual(error.description, AudioRecordingError.notRecording.description)
         } catch {
-            XCTFail("意外错误类型: \(error)")
+            XCTFail("unexpected error type: \(error)")
         }
     }
 
@@ -191,7 +191,7 @@ final class AudioLevelStreamReconsumableTests: XCTestCase {
         }
         let got1 = await consumeNonZero(session1, upTo: 3, timeout: 2.0)
         tap1.cancel()
-        XCTAssertGreaterThanOrEqual(got1, 3, "会话1 应能拿到电平（首测有绿条）")
+        XCTAssertGreaterThanOrEqual(got1, 3, "session 1 should be able to get levels (green bars on the first test)")
         // Simulate stopTesting(): the consuming task has ended (the for-await above has broken), then endSession().
         recorder.endLevelSessionForTesting()          // equivalent to endSession() inside stop()
 
@@ -208,7 +208,7 @@ final class AudioLevelStreamReconsumableTests: XCTestCase {
         tap2.cancel()
         XCTAssertGreaterThanOrEqual(
             got2, 3,
-            "会话2 仍应能拿到电平（复测必须有绿条）——旧实现此处为 0，即本 bug"
+            "session 2 should still be able to get levels (the retest must have green bars) -- the old implementation returned 0 here, which is this bug"
         )
     }
 
@@ -252,7 +252,7 @@ final class AudioLevelStreamReconsumableTests: XCTestCase {
         tap2.cancel()
         XCTAssertGreaterThanOrEqual(
             got2, 3,
-            "上次消费任务被取消后，复测仍应能拿到电平——旧实现此处为 0"
+            "after the previous consuming task is cancelled, the retest should still be able to get levels -- the old implementation returned 0 here"
         )
     }
 }
@@ -276,6 +276,6 @@ final class AudioLevelTests: XCTestCase {
         let loud = AudioRecorder.normalizedLevel([Float](repeating: 0.5, count: 128))
         XCTAssertGreaterThanOrEqual(quiet, 0)
         XCTAssertLessThanOrEqual(loud, 1)
-        XCTAssertGreaterThan(loud, quiet, "更大幅度应得到更高电平")
+        XCTAssertGreaterThan(loud, quiet, "a larger amplitude should yield a higher level")
     }
 }

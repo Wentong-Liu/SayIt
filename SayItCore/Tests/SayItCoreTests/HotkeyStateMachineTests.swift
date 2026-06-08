@@ -86,17 +86,17 @@ final class HotkeyStateMachineTests: XCTestCase {
     func testIsolatedTapResetsBetweenTaps() {
         var detector = IsolatedTapDetector(window: 0.3)
         detector.modifierDown(at: 0.0)
-        XCTAssertTrue(detector.modifierUp(at: 0.1), "第一次轻点")
+        XCTAssertTrue(detector.modifierUp(at: 0.1), "first tap")
         // The state is reset: a second complete tap should still trigger.
         detector.modifierDown(at: 1.0)
-        XCTAssertTrue(detector.modifierUp(at: 1.1), "第二次轻点")
+        XCTAssertTrue(detector.modifierUp(at: 1.1), "second tap")
     }
 
     func testIsolatedTapContaminationClearsAfterUp() {
         var detector = IsolatedTapDetector(window: 0.3)
         detector.modifierDown(at: 0.0)
         detector.otherKeyDown()
-        XCTAssertFalse(detector.modifierUp(at: 0.1), "夹键的这次不触发")
+        XCTAssertFalse(detector.modifierUp(at: 0.1), "this chorded tap does not fire")
         // The taint resets on release: the next clean tap should trigger.
         detector.modifierDown(at: 1.0)
         XCTAssertTrue(detector.modifierUp(at: 1.05))
@@ -116,11 +116,11 @@ final class HotkeyStateMachineTests: XCTestCase {
     func testSingleTapToggleAlternatesStartStop() {
         var machine = SingleTapToggleStateMachine(window: 0.3)
         machine.modifierDown(at: 0.0)
-        XCTAssertEqual(machine.modifierUp(at: 0.1), .start, "首个孤立轻点开始")
+        XCTAssertEqual(machine.modifierUp(at: 0.1), .start, "the first isolated tap starts")
         machine.modifierDown(at: 1.0)
-        XCTAssertEqual(machine.modifierUp(at: 1.1), .stop, "再次轻点结束")
+        XCTAssertEqual(machine.modifierUp(at: 1.1), .stop, "another tap stops")
         machine.modifierDown(at: 2.0)
-        XCTAssertEqual(machine.modifierUp(at: 2.1), .start, "第三次轻点重新开始")
+        XCTAssertEqual(machine.modifierUp(at: 2.1), .start, "the third tap starts again")
     }
 
     func testSingleTapToggleChordDoesNotToggle() {
@@ -172,7 +172,7 @@ final class HotkeyStateMachineTests: XCTestCase {
         // 3) The NEXT clean tap must START a fresh session again (not be wasted as a phantom .stop).
         machine.modifierDown(at: 1.0)
         XCTAssertEqual(machine.modifierUp(at: 1.1), .start,
-                       "外部结束会话后下一次轻点应重新 .start（而非被吞成无效的 .stop）")
+                       "after the session ends externally, the next tap should .start again (instead of being swallowed as an invalid .stop)")
     }
 
     /// `deactivate()` on an already-inactive machine is a harmless no-op: the first tap still starts as normal.
@@ -180,7 +180,7 @@ final class HotkeyStateMachineTests: XCTestCase {
         var machine = SingleTapToggleStateMachine(window: 0.3)
         machine.deactivate()
         machine.modifierDown(at: 0.0)
-        XCTAssertEqual(machine.modifierUp(at: 0.1), .start, "未激活时 deactivate 应为无操作，首次轻点正常开始")
+        XCTAssertEqual(machine.modifierUp(at: 0.1), .start, "when inactive, deactivate should be a no-op and the first tap starts normally")
     }
 
     /// `deactivate()` also voids any in-progress candidate tap (consistent with `reset()`), so a half-completed tap
@@ -193,7 +193,7 @@ final class HotkeyStateMachineTests: XCTestCase {
         machine.modifierDown(at: 1.0)
         machine.deactivate()
         // The straddling release must NOT trigger (the candidate was voided).
-        XCTAssertNil(machine.modifierUp(at: 1.05), "deactivate 应作废在途候选轻点")
+        XCTAssertNil(machine.modifierUp(at: 1.05), "deactivate should void the in-progress candidate tap")
         // And the next clean tap starts a fresh session.
         machine.modifierDown(at: 2.0)
         XCTAssertEqual(machine.modifierUp(at: 2.1), .start)
