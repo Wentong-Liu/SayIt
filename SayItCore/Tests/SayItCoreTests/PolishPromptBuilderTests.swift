@@ -120,6 +120,20 @@ final class PolishPromptBuilderTests: XCTestCase {
                       "should name the trailing-pleasantry artifacts (thank you / 请点赞订阅)")
     }
 
+    func testSystemPromptPreservesMeaningfulAcknowledgments() {
+        let system = systemContent(
+            PolishPromptBuilder.build(rawText: "x", context: PolishContext(), style: .smart)
+        )
+        // The filler rule must preserve meaning-bearing acknowledgments / discourse connectives (承接 words),
+        // only stripping genuine disfluencies -- so leading "行/那就/好" responses are NOT deleted.
+        XCTAssertTrue(system.contains("承接"),
+                      "filler rule should instruct preserving 承接/discourse-connective words")
+        XCTAssertTrue(system.contains("那就"),
+                      "filler rule should name a meaningful leading acknowledgment (那就) that must be preserved")
+        XCTAssertTrue(system.contains("一律保留") || system.contains("宁可不删"),
+                      "filler rule should instruct keeping ambiguous acknowledgments rather than stripping them")
+    }
+
     // MARK: - Few-shot examples (borrowing opentypeless's input->output demonstration)
 
     func testSystemPromptContainsFewShotExamples() {
