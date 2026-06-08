@@ -1,3 +1,4 @@
+import Foundation
 import WhisperKit
 import XCTest
 @testable import SayItCore
@@ -162,13 +163,72 @@ final class WhisperKitTranscriberTests: XCTestCase {
         XCTAssertEqual(options.task, .transcribe, "biasing should not change the task; it must still be transcribe")
     }
 
+    func testCarrierOnlyPromptDisablesFirstTokenThreshold() {
+        // The carrier-only path (no dict terms) is now a real, non-empty prompt -> the #372 mitigation must extend to it:
+        // feeding the carrier-only tokens into makeDecodingOptions must nil firstTokenLogProbThreshold.
+        let tokenizer = StubTokenizer(specialTokenBegin: 1_000_000)
+        let carrierTokens = WhisperKitTranscriber.promptTokens(from: [], tokenizer: tokenizer)
+        XCTAssertFalse(carrierTokens.isEmpty, "the carrier-only prompt must be non-empty")
+        let prompted = WhisperKitTranscriber.makeDecodingOptions(language: nil, promptTokens: carrierTokens)
+        XCTAssertNil(prompted.firstTokenLogProbThreshold,
+                     "the always-on carrier prompt must nil firstTokenLogProbThreshold just like a dict-term prompt (#372)")
+        // And when there is TRULY no prompt (nil promptTokens, e.g. tokenizer unavailable), the default is preserved.
+        let unprompted = WhisperKitTranscriber.makeDecodingOptions(language: nil, promptTokens: nil)
+        XCTAssertEqual(unprompted.firstTokenLogProbThreshold, DecodingOptions().firstTokenLogProbThreshold,
+                       "with no prompt at all the WhisperKit -1.5 default must be preserved")
+    }
+
     // MARK: - Layer 1 biasing: promptTokens(from:tokenizer:)
 
-    func testPromptTokensEmptyTermsYieldsEmpty() {
-        let tokenizer = StubTokenizer(specialTokenBegin: 1000)
-        XCTAssertEqual(WhisperKitTranscriber.promptTokens(from: [], tokenizer: tokenizer), [])
-        XCTAssertEqual(WhisperKitTranscriber.promptTokens(from: ["   ", ""], tokenizer: tokenizer), [],
-                       "all-whitespace terms should be dropped, yielding an empty token list (no biasing triggered)")
+    // Contract INVERSION (punctuation feature): with no dictionary terms the prompt is no longer empty — the always-on
+    // punctuation carrier is built instead, so the free/local path is still prompted and gets the punctuation nudge.
+    // (This test replaces the former `testPromptTokensEmptyTermsYieldsEmpty`, whose empty-output contract this feature
+    // intentionally reverses.)
+    func testPromptTokensEmptyTermsYieldsCarrierTokens() {
+        let tokenizer = StubTokenizer(specialTokenBegin: 1_000_000)
+        // No terms: the carrier alone is tokenized -> a NON-empty token list (default unicode-scalar stub encoder).
+        XCTAssertFalse(WhisperKitTranscriber.promptTokens(from: [], tokenizer: tokenizer).isEmpty,
+                       "with no terms the always-on punctuation carrier should still produce a non-empty token list")
+        // All-whitespace terms collapse to no dictionary terms -> still just the carrier (non-empty), never [].
+        XCTAssertFalse(WhisperKitTranscriber.promptTokens(from: ["   ", ""], tokenizer: tokenizer).isEmpty,
+                       "all-blank terms drop to no glossary, but the carrier keeps the token list non-empty")
+    }
+
+    func testCarrierConstantHasNoHyphen() {
+        XCTAssertFalse(WhisperKitTranscriber.punctuationCarrier.contains("-"),
+                       "the carrier must contain no hyphen so it never nudges word-internal hyphenation (e.g. Typeless -> Type-less)")
+        // It should carry both Chinese and English sentence punctuation (it biases STYLE across both auto-detected languages).
+        for mark in ["。", "，", ".", ","] {
+            XCTAssertTrue(WhisperKitTranscriber.punctuationCarrier.contains(mark),
+                          "the carrier should contain the sentence punctuation mark \(mark)")
+        }
+    }
+
+    func testBuiltPromptKeepsTermVerbatimAndIncludesCarrier() {
+        // The composed prompt text must contain "Typeless" UNALTERED (no hyphen, no case change) and the carrier.
+        let prompt = WhisperKitTranscriber.promptText(forTerms: ["Typeless"])
+        XCTAssertTrue(prompt.contains("Typeless"), "the dictionary term must appear verbatim in the built prompt")
+        XCTAssertFalse(prompt.contains("Type-less"), "no hyphen may be inserted into the term")
+        XCTAssertTrue(prompt.contains(WhisperKitTranscriber.punctuationCarrier),
+                      "the punctuation carrier must be present as the prompt prefix")
+        XCTAssertTrue(prompt.hasSuffix("."), "the dictionary term list should be closed by a trailing period")
+        // No-terms case is just the carrier itself (self-punctuated).
+        XCTAssertEqual(WhisperKitTranscriber.promptText(forTerms: []), WhisperKitTranscriber.punctuationCarrier)
+    }
+
+    func testBuiltPromptCapturesExactTermTextViaEncoder() {
+        // Capture the exact string handed to encode(text:) to prove the term reaches the tokenizer character-for-character.
+        let captured = CapturedText()
+        let tokenizer = StubTokenizer(specialTokenBegin: 1_000_000, encoder: { text in
+            captured.value = text
+            return text.unicodeScalars.map { Int($0.value) }
+        })
+        _ = WhisperKitTranscriber.promptTokens(from: ["useEffect"], tokenizer: tokenizer)
+        XCTAssertTrue(captured.value.contains("useEffect"),
+                      "the tokenizer must receive the term verbatim — no hyphen, no case change")
+        XCTAssertFalse(captured.value.contains("use-Effect"))
+        XCTAssertTrue(captured.value.contains(WhisperKitTranscriber.punctuationCarrier),
+                      "the tokenizer input must include the punctuation carrier")
     }
 
     func testPromptTokensFiltersSpecialTokens() {
@@ -211,10 +271,34 @@ final class WhisperKitTranscriberTests: XCTestCase {
         XCTAssertEqual(tokens, Array(0..<111))
     }
 
+    func testCombinedCarrierPlusTermsPromptRespects111Cap() {
+        // The COMBINED prompt (carrier + dict terms) is tokenized as one string. With an encoder returning >111 ids,
+        // the suffix-keep semantics must hold: keep exactly the LAST 111 (the highest-priority tail = most-relevant terms).
+        let tokenizer = StubTokenizer(specialTokenBegin: 1_000_000, encoder: { _ in Array(0..<300) })
+        let tokens = WhisperKitTranscriber.promptTokens(from: ["Typeless", "useEffect"], tokenizer: tokenizer)
+        XCTAssertEqual(tokens.count, 111, "the combined carrier+terms prompt must still be capped at 111")
+        XCTAssertEqual(tokens.first, 189, "suffix-keep: the first surviving token is the 189th (300-111)")
+        XCTAssertEqual(tokens.last, 299, "the most-relevant tail (the suffix) must survive the cap")
+    }
+
     // MARK: - Protocol conformance
 
     func testUsableThroughTranscriberExistential() {
         let _: any Transcriber = WhisperKitTranscriber()
+    }
+}
+
+// MARK: - Test helpers
+
+/// A tiny lock-guarded box used to capture the exact text handed to a `@Sendable` stub encoder closure, so a test can
+/// assert on the precise string the tokenizer received (proving terms reach it verbatim). `@unchecked Sendable` is sound
+/// here because every access is serialized behind the lock.
+private final class CapturedText: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = ""
+    var value: String {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
     }
 }
 

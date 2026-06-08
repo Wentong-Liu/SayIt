@@ -35,6 +35,26 @@ public actor WhisperKitTranscriber: Transcriber {
     /// Whether to prewarm the model during loading (reduces first-frame latency, at the cost of higher peak memory and slower loading).
     private let prewarm: Bool
 
+    /// A short, clean PUNCTUATED carrier always prepended to the Whisper prompt context to bias decoding toward
+    /// sentence punctuation.
+    ///
+    /// Why this exists: local Whisper (large-v3-turbo) routinely emits little/no punctuation — a well-documented Whisper
+    /// limitation, worse on turbo and worst for Chinese. The community-standard fix is to seed the autoregressive decoder
+    /// with a PUNCTUATED initial context so it stays out of its "no-punctuation mode". Our prior prompt was only a bare,
+    /// unpunctuated dictionary term list, which if anything reinforced no-punctuation output.
+    ///
+    /// Design constraints baked into this string (it is the single, trivially-reversible control point — to disable or
+    /// tune the punctuation nudge, edit or empty THIS one constant and nothing else needs to change):
+    /// - It carries BOTH Chinese sentence punctuation (`。` `，`) and English sentence punctuation (`.` `,`), because
+    ///   dictation auto-detects the language from the AUDIO before this prompt-conditioned decode runs, so the carrier
+    ///   must cover whichever language was detected. It biases STYLE (punctuation), never LANGUAGE.
+    /// - It contains ZERO hyphens and NO word-internal punctuation, so it nudges only SENTENCE punctuation and can never
+    ///   push a dictionary term like "Typeless" toward "Type-less".
+    /// - It is intentionally tiny (a brief bilingual phrase, ~a dozen word-piece tokens) so it coexists with dictionary
+    ///   terms under WhisperKit's 111-token `promptTokens` cap; in the realistic case (terms + carrier <= 111) BOTH
+    ///   survive the cap together.
+    static let punctuationCarrier = "你好，这是一段示例。Hello, this is an example."
+
     /// The loaded WhisperKit engine; lazily built on the first ``preload()`` or ``transcribe(_:sampleRate:language:options:)``.
     private var engine: WhisperKit?
 
@@ -79,12 +99,13 @@ public actor WhisperKitTranscriber: Transcriber {
 
         let engine = try await loadedEngine()
 
-        // User-dictionary Layer 1 biasing: build promptTokens from the dictionary terms, but only when there ARE terms
-        // AND the tokenizer is available (it is nil until the model has loaded — `loadedEngine()` above loads it, but
-        // guard defensively so a missing tokenizer simply falls back to no prompt rather than crashing). An empty
-        // dictionary -> nil promptTokens -> byte-identical to before this feature existed.
+        // Prompt biasing: build promptTokens whenever the tokenizer is available (it is nil until the model has loaded —
+        // `loadedEngine()` above loads it, but guard defensively so a missing tokenizer simply falls back to no prompt
+        // rather than crashing). The prompt is now ALWAYS built (no early return on empty terms): even with zero
+        // dictionary terms the punctuation carrier alone is prompted, so the free/local path also gets the punctuation
+        // nudge. `promptTokens(from:)` composes the carrier + (verbatim) dictionary terms; see its doc comment.
         let promptTokens: [Int]? = {
-            guard !transcribeOptions.biasTerms.isEmpty, let tokenizer = engine.tokenizer else { return nil }
+            guard let tokenizer = engine.tokenizer else { return nil }
             let tokens = Self.promptTokens(from: transcribeOptions.biasTerms, tokenizer: tokenizer)
             return tokens.isEmpty ? nil : tokens
         }()
@@ -107,7 +128,10 @@ public actor WhisperKitTranscriber: Transcriber {
         // WhisperKit issue #372: on large-v3-turbo, a non-nil promptTokens can yield an EMPTY transcription. We already
         // mitigate by setting firstTokenLogProbThreshold to nil when prompting (so the decode loop does not break early),
         // but if the prompted result still comes back empty, re-transcribe ONCE without promptTokens so dictation never
-        // silently fails. Only triggers when we actually prompted -> zero behavior change for the un-biased path.
+        // silently fails. The prompt is now ALWAYS present (the punctuation carrier rides along even with zero dict
+        // terms), so this same #372 safety net uniformly protects the carrier-only path too — no new empty-output path
+        // is introduced by making the prompt always-on. It still only fires on an empty result, so non-empty decodes
+        // (the overwhelming majority) keep the prompted output unchanged.
         if promptTokens != nil, result.text.isEmpty {
             return try await runDecode(engine: engine, audio: audio, language: language, promptTokens: nil)
         }
@@ -174,12 +198,27 @@ public actor WhisperKitTranscriber: Transcriber {
         )
     }
 
-    /// Builds biasing `promptTokens` from the user's canonical dictionary terms (a best-effort recall boost).
+    /// Builds biasing `promptTokens` from the always-on punctuation carrier plus the user's canonical dictionary terms.
     ///
-    /// Encodes the shared compact glossary string (see ``GlossaryPrompt``, most-relevant term LAST) with the model's
-    /// tokenizer, drops any special tokens (`id >= specialTokenBegin`, so only real word-piece ids remain), then keeps
-    /// the LAST `maxTokens` (the suffix) so the highest-priority tail survives the cap. Empty terms / all-blank -> `[]`
-    /// (no prompt).
+    /// The prompt text it tokenizes is composed by ``promptText(forTerms:)`` and is one of:
+    /// - **no terms** -> just ``punctuationCarrier`` (already self-punctuated): the local path is still prompted, so the
+    ///   free/local user also gets the punctuation nudge;
+    /// - **terms present** -> `"<carrier> <comma-joined verbatim terms>."` — the carrier as a SHORT PREFIX, then the
+    ///   shared compact glossary (see ``GlossaryPrompt``, most-relevant term LAST), closed by a trailing period. The only
+    ///   characters inserted around the terms are the separator space, GlossaryPrompt's `", "` separators, and the final
+    ///   `"."`; NO hyphen and no character is ever inserted INSIDE a term, so each term stays exactly its canonical form.
+    ///
+    /// It then encodes that text with the model's tokenizer, drops any special tokens (`id >= specialTokenBegin`, so only
+    /// real word-piece ids remain), and if over `maxTokens` keeps the LAST `maxTokens` (the suffix).
+    ///
+    /// ORDERING — "carrier first, dict terms last" — is deliberate: WhisperKit keeps the SUFFIX after trimming, so the
+    /// dictionary terms (the harder recall problem, ordered most-used LAST) are the highest-priority survivors, and the
+    /// short carrier rides along in front. In the realistic case (carrier + terms <= 111) BOTH survive together; only in
+    /// the pathological over-cap case does the suffix-keep drop carrier tokens first — an accepted, documented trade
+    /// where the most-relevant terms win (punctuation is a soft nudge, term recall is not).
+    ///
+    /// Because the carrier is always present, the returned list is non-empty for any input (even empty terms), so a
+    /// prompt is ALWAYS set downstream. The only path back to `[]` is a tokenizer that encodes the carrier to nothing.
     ///
     /// The default cap is `111`, the real effective limit. WhisperKit internally trims `promptTokens` to
     /// `maxPromptLen = (maxTokenContext / 2) - 1 = (224 / 2) - 1 = 111` before decoding, and it keeps that trim's own
@@ -189,13 +228,29 @@ public actor WhisperKitTranscriber: Transcriber {
     ///
     /// Pure (given a tokenizer) -> unit-testable with a stub `WhisperTokenizer`. Triggers no model download/load itself.
     static func promptTokens(from terms: [String], tokenizer: WhisperTokenizer, maxTokens: Int = 111) -> [Int] {
-        let glossary = GlossaryPrompt.compactList(from: terms.map { GlossaryPrompt.Term(canonical: $0) })
-        guard !glossary.isEmpty else { return [] }
+        let prompt = promptText(forTerms: terms)
+        guard !prompt.isEmpty else { return [] }
         let begin = tokenizer.specialTokens.specialTokenBegin
-        let encoded = tokenizer.encode(text: glossary).filter { $0 < begin }
+        let encoded = tokenizer.encode(text: prompt).filter { $0 < begin }
         guard encoded.count > maxTokens else { return encoded }
-        // Keep the suffix: the most-relevant terms sit at the end of the glossary, so the tail is the highest priority.
+        // Keep the suffix: the most-relevant terms sit at the end of the prompt, so the tail is the highest priority.
         return Array(encoded.suffix(maxTokens))
+    }
+
+    /// Composes the bias prompt TEXT: the always-on punctuation carrier prefix plus the (verbatim) dictionary glossary.
+    ///
+    /// Factored out from ``promptTokens(from:tokenizer:maxTokens:)`` as the single, trivially-reversible seam for the
+    /// punctuation feature — it builds the exact string that gets tokenized, so it is directly unit-testable on the
+    /// string level (the terms stay verbatim, the carrier is present, no hyphen is ever introduced).
+    ///
+    /// - no terms -> ``punctuationCarrier`` alone (self-punctuated);
+    /// - terms present -> `"<carrier> <GlossaryPrompt.compactList(terms)>."`. The glossary is the shared, verbatim,
+    ///   comma-joined, most-relevant-LAST list; the inserted characters are ONLY the separator space and the final
+    ///   period — never a character inside any term.
+    static func promptText(forTerms terms: [String]) -> String {
+        let glossary = GlossaryPrompt.compactList(from: terms.map { GlossaryPrompt.Term(canonical: $0) })
+        guard !glossary.isEmpty else { return punctuationCarrier }
+        return "\(punctuationCarrier) \(glossary)."
     }
 
     /// Returns the loaded engine, lazily building it when necessary (including download+load).
