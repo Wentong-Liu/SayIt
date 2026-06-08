@@ -55,6 +55,42 @@
         }
       }
     },
+    "model.downloadFailed" : {
+      "comment" : "Local model download failed; shown verbatim in the STT settings pane (Text(reason))",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download failed, please try again"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载失败，请重试"
+          }
+        }
+      }
+    },
+    "model.downloadIncomplete" : {
+      "comment" : "Local model download finished but the weight files are incomplete; shown verbatim in the STT settings pane (Text(reason))",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download finished but the model files are incomplete"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下载完成但模型文件不完整"
+          }
+        }
+      }
+    },
     "hud.done" : {
       "comment" : "Recording HUD: neutral completion fallback",
       "extractionState" : "manual",

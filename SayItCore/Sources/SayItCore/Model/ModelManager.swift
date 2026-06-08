@@ -129,6 +129,18 @@ public final class ModelManager {
     /// recoverable via `log show` without surfacing garbage in the settings UI.
     nonisolated private static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "model")
 
+    /// Resolves a catalog key for the user-facing `.failed(reason:)` message in the app's currently
+    /// selected UI language (``AppConfig/uiLanguage``) rather than the system locale.
+    ///
+    /// `STTSettingsView` renders the failure reason verbatim via `Text(reason)`/`.help(reason)`, so the
+    /// reason must follow the chosen Display Language — otherwise on a Chinese-system Mac in English UI
+    /// mode it leaked Chinese (the leak this fix closes; same root cause / helper as the HUD pill in
+    /// ``RecordingState``). Reads from the in-bundle `Localizable.xcstrings` (`Bundle.module`) and falls
+    /// back safely to `fallback` — never blank, never the bare key.
+    nonisolated static func localizedFailureReason(_ key: String, fallback: String) -> String {
+        UILanguageLocalizer.string(key, defaultValue: fallback, bundle: .module)
+    }
+
     /// The local root directory of this repo in the cache: `downloadBase/models/argmaxinc/whisperkit-coreml`.
     /// Consistent with `HubApi.localRepoLocation`'s layout (`downloadBase/<repoType>/<repoId>`).
     nonisolated static var repoCacheDirectory: URL {
@@ -430,7 +442,11 @@ public final class ModelManager {
                 await MainActor.run { [weak self] in
                     guard let self, self.model == newModel else { return }
                     // Make the final decision based on the local weights' actual state, avoiding a "download returned success but files incomplete" false positive.
-                    self.state = Self.isDownloaded(model: newModel) ? .downloaded : .failed(reason: "下载完成但模型文件不完整")
+                    self.state = Self.isDownloaded(model: newModel)
+                        ? .downloaded
+                        : .failed(reason: Self.localizedFailureReason(
+                            "model.downloadIncomplete",
+                            fallback: "Download finished but the model files are incomplete"))
                 }
             } catch {
                 // Cancellation is NOT a failure. The authoritative signal is `Task.isCancelled`:
@@ -457,7 +473,9 @@ public final class ModelManager {
                         // partial cache lands on `.notDownloaded`, not a stuck `.downloading`.
                         self.resolveStateFromDisk()
                     } else {
-                        self.state = .failed(reason: "下载失败，请重试")
+                        self.state = .failed(reason: Self.localizedFailureReason(
+                            "model.downloadFailed",
+                            fallback: "Download failed, please try again"))
                     }
                 }
             }
