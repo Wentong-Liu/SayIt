@@ -408,7 +408,17 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertFalse(reason.contains("Error Domain"), "reason must not contain a raw NSError dump")
         XCTAssertFalse(reason.contains("Code=-999"), "reason must not contain raw NSError codes")
         XCTAssertFalse(reason.contains("Code="), "reason must not contain raw NSError codes")
-        XCTAssertEqual(reason, "下载失败，请重试", "a genuine failure shows the clean canned message")
+        // The clean canned message now resolves through the UI-language helper (i18n leak fix), so it
+        // must equal one of the catalog forms — never some other / raw string. Under SwiftPM the
+        // `.xcstrings` ships verbatim (no compiled `.lproj`), so the helper falls back to the English
+        // default; on a built app it resolves per the selected Display Language. Accept either catalog
+        // form so the test is stable across both environments.
+        let expected = Set([
+            "Download failed, please try again",
+            ModelManager.localizedFailureReason("model.downloadFailed", fallback: "Download failed, please try again"),
+        ])
+        XCTAssertTrue(expected.contains(reason),
+                      "a genuine failure shows the clean canned message resolved via the UI-language helper, got: \(reason)")
     }
 
     /// Regression for BUG A: a REAL, mid-flight cancel must NEVER become `.failed`, and must never
@@ -467,6 +477,71 @@ final class ModelManagerTests: XCTestCase {
             XCTFail("state stuck at .downloading(progress: \(progress)) after a real cancel")
         case .failed(let reason):
             XCTFail("a real mid-flight user cancel must NOT become a failure (got .failed(\(reason)))")
+        }
+    }
+
+    // MARK: - Failure reason follows the UI language (i18n leak regression)
+
+    /// Regression for the i18n leak: the local-model download `.failed(reason:)` strings are rendered
+    /// verbatim in the STT settings pane (`Text(reason)`), so they MUST resolve in the app's selected UI
+    /// language via ``UILanguageLocalizer`` — not as a hardcoded literal. Before the fix the reasons were
+    /// the bare Chinese literals "下载失败，请重试" / "下载完成但模型文件不完整", which stayed Chinese in English
+    /// UI mode on a Chinese-system Mac.
+    ///
+    /// We can't compile `.lproj`s under SwiftPM (the catalog ships verbatim), so this stands up a real
+    /// `en.lproj`/`zh-Hans.lproj` fixture bundle carrying the two `model.*` keys and drives the helper
+    /// `ModelManager.localizedFailureReason` uses through it — proving the reason routes through the
+    /// resolver and genuinely diverges per language.
+    func testFailureReasonResolvesPerUILanguageNotHardcoded() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ModelManagerFailureReason-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let table: [(code: String, failed: String, incomplete: String)] = [
+            ("en", "Download failed, please try again", "Download finished but the model files are incomplete"),
+            ("zh-Hans", "下载失败，请重试", "下载完成但模型文件不完整"),
+        ]
+        for entry in table {
+            let lproj = root.appendingPathComponent("\(entry.code).lproj", isDirectory: true)
+            try FileManager.default.createDirectory(at: lproj, withIntermediateDirectories: true)
+            let strings = """
+            "model.downloadFailed" = "\(entry.failed)";
+            "model.downloadIncomplete" = "\(entry.incomplete)";
+
+            """
+            try strings.write(to: lproj.appendingPathComponent("Localizable.strings"),
+                              atomically: true, encoding: .utf8)
+        }
+        let bundle = try XCTUnwrap(Bundle(url: root), "fixture bundle must load")
+
+        // English UI: both reasons resolve to English, never the Chinese literal.
+        let enFailed = UILanguageLocalizer.string("model.downloadFailed", defaultValue: "X",
+                                                  bundle: bundle, language: .english)
+        let enIncomplete = UILanguageLocalizer.string("model.downloadIncomplete", defaultValue: "X",
+                                                      bundle: bundle, language: .english)
+        XCTAssertEqual(enFailed, "Download failed, please try again")
+        XCTAssertEqual(enIncomplete, "Download finished but the model files are incomplete")
+        XCTAssertFalse(enFailed.contains("下载"), "English UI must NOT leak the Chinese failure reason")
+        XCTAssertFalse(enIncomplete.contains("下载"), "English UI must NOT leak the Chinese incomplete reason")
+
+        // Chinese UI: the same keys resolve to the Chinese forms — genuinely diverging.
+        let zhFailed = UILanguageLocalizer.string("model.downloadFailed", defaultValue: "X",
+                                                  bundle: bundle, language: .simplifiedChinese)
+        let zhIncomplete = UILanguageLocalizer.string("model.downloadIncomplete", defaultValue: "X",
+                                                      bundle: bundle, language: .simplifiedChinese)
+        XCTAssertEqual(zhFailed, "下载失败，请重试")
+        XCTAssertEqual(zhIncomplete, "下载完成但模型文件不完整")
+        XCTAssertNotEqual(enFailed, zhFailed)
+        XCTAssertNotEqual(enIncomplete, zhIncomplete)
+    }
+
+    /// The production helper `ModelManager.localizedFailureReason` never returns the bare key and never
+    /// blanks: under SwiftPM (no compiled `.lproj`) it must fall through to the English fallback.
+    func testLocalizedFailureReasonNeverReturnsBareKeyOrBlank() {
+        for (key, fallback) in [("model.downloadFailed", "Download failed, please try again"),
+                                ("model.downloadIncomplete", "Download finished but the model files are incomplete")] {
+            let resolved = ModelManager.localizedFailureReason(key, fallback: fallback)
+            XCTAssertFalse(resolved.isEmpty, "reason must never be blank")
+            XCTAssertNotEqual(resolved, key, "reason must never be the bare key")
         }
     }
 
