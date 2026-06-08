@@ -66,6 +66,11 @@ public struct CodexResponsesProvider: LLMProvider {
     /// The text field: {"verbosity":"low"}.
     private struct TextOption: Encodable { let verbosity: String }
 
+    /// The reasoning field: {"effort":"minimal"} -- minimal reasoning effort for the trivial text-cleanup/extraction task,
+    /// trading a little reasoning depth for latency (polish is the dominant ~1.9-4s round-trip on the Codex path).
+    /// Bump to "low" only if on-device quality (e.g. homophone correction) regresses.
+    private struct ReasoningOption: Encodable { let effort: String }
+
     /// The Responses API request body: instructions (system prompt) + input (message sequence) + streaming/tool toggles, with type-safe keys.
     private struct RequestBody: Encodable {
         let model: String
@@ -74,6 +79,7 @@ public struct CodexResponsesProvider: LLMProvider {
         let instructions: String
         let input: [InputMessage]
         let text: TextOption
+        let reasoning: ReasoningOption
         let include: [String]
         let tool_choice: String
         let parallel_tool_calls: Bool
@@ -97,6 +103,7 @@ public struct CodexResponsesProvider: LLMProvider {
             instructions: system,
             input: input,
             text: TextOption(verbosity: "low"),
+            reasoning: ReasoningOption(effort: "minimal"),
             include: ["reasoning.encrypted_content"],
             tool_choice: "auto",
             parallel_tool_calls: true)
