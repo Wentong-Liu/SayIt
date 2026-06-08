@@ -23,11 +23,13 @@ struct SettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             sidebar
-            Divider()
             content
         }
         .frame(width: 720, height: 520)
         .tint(Theme.accent)
+        // Hide the settings window's title bar so the custom sidebar + content fill the whole
+        // window and the traffic-light buttons float over the sidebar's top-left (Typeless-style).
+        .background(WindowConfigurator())
     }
 
     // MARK: - Sidebar
@@ -45,7 +47,9 @@ struct SettingsView: View {
                 Text(verbatim: "SayIt")
                     .font(.headline.weight(.semibold))
             }
-            .padding(.top, 16)
+            // Extra top inset (~28pt over the base 16) so the floating traffic-light buttons,
+            // now overlaying the title-bar-less window, clear the "SayIt" brand header.
+            .padding(.top, 44)
             .padding(.horizontal, 14)
             .padding(.bottom, 12)
 
@@ -164,6 +168,27 @@ private struct SidebarRow: View {
         if isSelected { return Theme.accent }
         if isHovering { return Theme.hoverFill }
         return .clear
+    }
+}
+
+// MARK: - Window chrome
+
+/// An invisible AppKit hook that strips the title bar from the hosting `Settings` window.
+///
+/// The `Settings` scene is not a `WindowGroup`/`Window`, so SwiftUI's `.windowStyle(.hiddenTitleBar)`
+/// does not apply to it. Placed in the settings view's background, this grabs `view.window` once it
+/// resolves and makes the chrome disappear (titleless, transparent, full-size content), leaving the
+/// custom sidebar + content to fill the window with the traffic lights floating top-left. Idempotent:
+/// the guard skips once the title bar is already hidden, so repeated layout passes don't thrash.
+private struct WindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let window = nsView.window, window.titleVisibility != .hidden else { return }
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.title = ""
     }
 }
 

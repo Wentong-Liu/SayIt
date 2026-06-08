@@ -12,9 +12,10 @@ enum Theme {
     /// Selection highlight + primary ("add new entry") buttons. Indigo/purple per the design.
     static let accent = Color.indigo
 
-    /// The sidebar's background: a distinct material so the column reads as separate from the
-    /// content pane without a hard color difference (light/dark adaptive).
-    static let sidebarBackground: Material = .bar
+    /// The sidebar's background: a darker neutral surface a clear step below the content pane,
+    /// so the column reads as separate without a divider (light/dark adaptive — `underPageBackgroundColor`
+    /// is reliably a notch darker than `windowBackgroundColor` in light mode and adapts in dark).
+    static let sidebarBackground = Color(nsColor: .underPageBackgroundColor)
 
     /// The content pane background: the standard window background, a light neutral.
     static let contentBackground = Color(nsColor: .windowBackgroundColor)
