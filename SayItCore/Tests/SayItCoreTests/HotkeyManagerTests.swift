@@ -8,7 +8,7 @@ final class HotkeyManagerTests: XCTestCase {
 
     func testDefaultConfiguration() {
         let manager = HotkeyManager()
-        XCTAssertEqual(manager.triggerKey, .rightCommand)
+        XCTAssertEqual(manager.triggerKey, .rightOption)
         XCTAssertEqual(manager.mode, .singleTapToggle, "the default should be single-tap toggle (isolated tap)")
         XCTAssertEqual(manager.singleTapWindow, 0.3, accuracy: 0.0001)
         XCTAssertFalse(manager.isRunning)

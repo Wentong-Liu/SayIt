@@ -20,8 +20,8 @@ public enum TriggerKey: String, CaseIterable, Identifiable, Sendable {
 
     public var id: String { rawValue }
 
-    /// Default trigger key: the right Command (matching the natural resting position of the right thumb, and not conflicting with common shortcuts).
-    public static let `default`: TriggerKey = .rightCommand
+    /// Default trigger key: the right Option (sits under the right thumb/hand and rarely conflicts with common shortcuts).
+    public static let `default`: TriggerKey = .rightOption
 
     /// The modifier key's hardware keyCode.
     ///

@@ -110,7 +110,7 @@ public final class HotkeyManager {
     // MARK: Initialization
 
     /// - Parameters:
-    ///   - triggerKey: the trigger key, defaults to the right Command.
+    ///   - triggerKey: the trigger key, defaults to the right Option.
     ///   - mode: the trigger mode, defaults to single-tap toggle.
     ///   - singleTapWindow: the single-tap isolated-tap down -> up window (seconds), defaults to 0.3.
     public init(
