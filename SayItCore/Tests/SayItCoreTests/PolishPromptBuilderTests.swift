@@ -110,6 +110,16 @@ final class PolishPromptBuilderTests: XCTestCase {
                       "should require each list item to be on its own line")
     }
 
+    func testSystemPromptStripsTrailingHallucinatedPleasantry() {
+        let system = systemContent(
+            PolishPromptBuilder.build(rawText: "x", context: PolishContext(), style: .smart)
+        )
+        XCTAssertTrue(system.contains("识别幻觉"),
+                      "system should instruct stripping a trailing STT-hallucinated pleasantry (识别幻觉)")
+        XCTAssertTrue(system.contains("thank you") || system.contains("请点赞订阅"),
+                      "should name the trailing-pleasantry artifacts (thank you / 请点赞订阅)")
+    }
+
     // MARK: - Few-shot examples (borrowing opentypeless's input->output demonstration)
 
     func testSystemPromptContainsFewShotExamples() {
