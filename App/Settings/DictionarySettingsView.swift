@@ -114,12 +114,19 @@ struct DictionarySettingsView: View {
         .padding(.vertical, 24)
     }
 
-    /// The list of entries: one rounded card row each, with an inline delete (✕) affordance and edit (tap / context
-    /// menu). The add affordance lives in the pane `header`, so the add flow stays reachable once the list is non-empty.
+    /// The list of entries: a responsive multi-column grid (Typeless-style) of compact rounded entry cards, so many
+    /// short single-word entries pack efficiently across the pane width instead of one wasteful full-width row each.
+    /// Each card carries an inline delete (✕) affordance and edit (tap / context menu). The grid uses an adaptive
+    /// column so it reflows to ~2-3 columns as the window resizes. The add affordance lives in the pane `header`, so
+    /// the add flow stays reachable once the list is non-empty.
     @ViewBuilder
     private var entriesSection: some View {
         ScrollView {
-            LazyVStack(spacing: 6) {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 200), spacing: 8)],
+                alignment: .leading,
+                spacing: 8
+            ) {
                 ForEach(dictionaryViewModel.entries) { entry in
                     EntryRow(
                         entry: entry,
@@ -128,6 +135,7 @@ struct DictionarySettingsView: View {
                     )
                 }
             }
+            .padding(.top, 2)
         }
         .scrollContentBackground(.hidden)
     }
@@ -136,12 +144,13 @@ struct DictionarySettingsView: View {
 
 // MARK: - Row
 
-/// A single dictionary entry row, rendered as a rounded card (Typeless-style): just the word on the left and an
-/// inline ✕ delete button on the trailing edge; Edit stays reachable by tapping the row or via the context menu.
-/// (The row now lives in a `ScrollView`/`LazyVStack`, so the old `.swipeActions` — a `List`-only affordance — is
-/// dropped; edit/delete remain reachable through the retained tap + context-menu paths.) Entries are simply present
-/// (kept) or deleted — there is no per-row enable/disable in the UI (the model's `enabled` flag is unchanged and
-/// still read by the rewriter).
+/// A single dictionary entry, rendered as a compact rounded card (Typeless-style) that fills one cell of the
+/// `entriesSection` grid: the word on the leading edge and an inline ✕ delete button pinned to the trailing edge;
+/// Edit stays reachable by tapping the card or via the context menu. (The card lives in a `ScrollView`/`LazyVGrid`,
+/// so the old `.swipeActions` — a `List`-only affordance — is dropped; edit/delete remain reachable through the
+/// retained tap + context-menu paths.) A long word truncates / wraps to at most two lines so it never widens the
+/// cell and breaks the grid. Entries are simply present (kept) or deleted — there is no per-row enable/disable in
+/// the UI (the model's `enabled` flag is unchanged and still read by the rewriter).
 private struct EntryRow: View {
     let entry: DictionaryEntry
     let onEdit: () -> Void
@@ -151,6 +160,10 @@ private struct EntryRow: View {
         HStack(spacing: 12) {
             Text(entry.canonical)
                 .fontWeight(.semibold)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer()
             // Inline, subtle ✕ delete on the trailing edge (Typeless-style): one click removes the entry via `onDelete`.
             Button(role: .destructive) { onDelete() } label: {
@@ -161,6 +174,7 @@ private struct EntryRow: View {
             .foregroundStyle(.secondary)
             .help("dictionary.delete")
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, Theme.rowPadH)
         .padding(.vertical, Theme.rowPadV + 2)
         .cardSurface()
