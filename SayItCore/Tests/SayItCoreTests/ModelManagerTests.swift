@@ -184,6 +184,76 @@ final class ModelManagerTests: XCTestCase {
         XCTAssertEqual(mgr.state, before)
     }
 
+    // MARK: - Download-task identity guard (cancel button stays live after cancel+restart)
+
+    /// Regression for the silent cancel-button no-op.
+    ///
+    /// A cancelled older task (taskA) can run its trailing `downloadTask = nil` cleanup
+    /// AFTER a newer task (taskB) has already been stored. Before the fix that cleanup ran
+    /// unconditionally and clobbered taskB's handle, so the next `cancelDownload()` saw
+    /// `nil` and silently did nothing — the cancel button became a no-op.
+    ///
+    /// This drives that exact interleaving through the `launchDownloadTask` seam, then
+    /// asserts taskB's handle survives taskA's late cleanup and `cancelDownload()` still
+    /// cancels it. With the unconditional `downloadTask = nil`, the survival assertion fails.
+    @MainActor
+    func testStaleTaskCleanupDoesNotClobberRestartedTaskHandle() async {
+        let mgr = ModelManager(model: "small")
+
+        // --- taskA: a stand-in for the first (soon-cancelled) download ---
+        // It blocks until released so we can control exactly when its cleanup runs.
+        let releaseA = AsyncGate()
+        let aStarted = AsyncGate()
+        let taskA = mgr.launchDownloadTask {
+            await aStarted.open()
+            await releaseA.wait()
+        }
+        await aStarted.wait()
+        // `Task` is a value type but conforms to Equatable/Hashable with identity semantics,
+        // so `==` here compares task identity (the same handle), not the produced value.
+        XCTAssertEqual(mgr.downloadTask, taskA, "taskA should be the current handle")
+
+        // --- Cancel taskA (button press #1), then start taskB (restart) ---
+        mgr.cancelDownload()
+        XCTAssertNil(mgr.downloadTask, "cancelDownload clears the handle for the cancelled task")
+
+        let releaseB = AsyncGate()
+        let bStarted = AsyncGate()
+        let taskB = mgr.launchDownloadTask {
+            await bStarted.open()
+            await releaseB.wait()
+        }
+        await bStarted.wait()
+        XCTAssertEqual(mgr.downloadTask, taskB, "taskB should now be the current handle")
+
+        // --- Let taskA finish: its trailing cleanup now runs AFTER taskB was stored ---
+        await releaseA.open()
+        await taskA.value  // wait for taskA (incl. its MainActor cleanup) to fully finish
+
+        // The fix: taskA's stale cleanup must NOT clobber taskB's handle.
+        XCTAssertEqual(
+            mgr.downloadTask, taskB,
+            "Stale taskA cleanup clobbered the restarted taskB handle (cancel button would become a no-op)"
+        )
+
+        // --- Cancel button press #2 must still cancel the live taskB ---
+        mgr.cancelDownload()
+        await releaseB.open()  // unblock taskB so it can observe the cancellation and exit
+        await taskB.value
+        XCTAssertTrue(taskB.isCancelled, "cancelDownload must still cancel the restarted taskB")
+    }
+
+    /// Normal (non-racing) path: a download task that finishes on its own clears its handle.
+    @MainActor
+    func testCompletedDownloadTaskClearsItsOwnHandle() async {
+        let mgr = ModelManager(model: "small")
+        let task = mgr.launchDownloadTask { /* completes immediately */ }
+        await task.value
+        // The trailing cleanup runs on the MainActor; yield so it can land.
+        await Task.yield()
+        XCTAssertNil(mgr.downloadTask, "a task that is still current should clear its own handle on completion")
+    }
+
     // MARK: - Download-speed estimation (pure logic, no network)
 
     func testEstimatedDownloadBytesPositiveForKnownModels() {
@@ -282,5 +352,28 @@ final class ModelManagerTests: XCTestCase {
             let mlmodelc = folder.appending(component: "\(name).mlmodelc")
             try fm.createDirectory(at: mlmodelc, withIntermediateDirectories: true)
         }
+    }
+}
+
+/// A one-shot async gate for deterministically ordering steps across concurrent tasks in
+/// tests: a task `wait()`s until another side calls `open()`. Re-`open()` is idempotent and
+/// a `wait()` after `open()` returns immediately, so the two sides can race in either order.
+private actor AsyncGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Suspends until the gate is opened (returns immediately if already open).
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// Opens the gate, resuming any current and future waiters.
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
     }
 }
