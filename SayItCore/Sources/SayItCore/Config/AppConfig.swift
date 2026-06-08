@@ -85,9 +85,17 @@ public final class AppConfig {
         set { setEnum(newValue, forKey: Key.sttMode) }
     }
 
-    /// The local STT model identifier (e.g. the WhisperKit model name). Defaults to "large-v3-turbo".
+    /// The local STT model identifier (the WhisperKit model name). **Effectively fixed** to
+    /// ``defaultLocalModel`` (`"large-v3-turbo"`) — the recommended sweet spot — and no longer
+    /// user-selectable (the model picker was removed). The getter always returns the constant,
+    /// **ignoring any previously-stored value**, so a user who selected `large-v3`/`base`/etc. in
+    /// an older build is transparently served turbo (the stale stored value simply becomes inert,
+    /// and a future stray write can never resurrect a non-turbo model). Every consumer —
+    /// `ModelManager`, `WhisperKitTranscriber`, the prewarm-readiness gate, the download UI — thus
+    /// uniformly targets turbo through this single point. The setter persists for backward
+    /// compatibility but no longer affects what is read back.
     public var localModel: String {
-        get { stringValue(Key.localModel, default: Self.defaultLocalModel) }
+        get { Self.defaultLocalModel }
         set { setString(newValue, forKey: Key.localModel) }
     }
 

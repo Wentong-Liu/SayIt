@@ -356,15 +356,21 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["复用", "复用", "复用"], "all three dictations should inject normally")
     }
 
-    /// After a relevant STT config change (such as switching the local model), the transcriber should be rebuilt so the new model takes effect.
-    func testTranscriberRebuiltWhenLocalModelChanges() async {
+    /// After a relevant STT config change, the transcriber should be rebuilt so the new setting takes effect.
+    /// The local model is fixed to large-v3-turbo (no longer part of the mutable signature), so this drives
+    /// the rebuild via the STT mode (local -> cloud), which is part of the transcriber signature. The
+    /// injected factory returns a FakeTranscriber regardless of mode, so the signature change alone is what
+    /// forces the rebuild — exactly the behavior under test.
+    func testTranscriberRebuiltWhenSTTConfigChanges() async {
         let config = makeConfig()
         config.sttMode = .local
-        config.localModel = "base"
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
         var factoryCallCount = 0
-        let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            cloudKeyReader: { "sk-test" }
+        ) {
             factoryCallCount += 1
             return FakeTranscriber(text: "model")
         }
@@ -373,11 +379,11 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
         XCTAssertEqual(factoryCallCount, 1)
 
-        // Switch the local model -> signature changes -> the next dictation should rebuild.
-        config.localModel = "small"
+        // Switch the STT mode -> signature changes -> the next dictation should rebuild.
+        config.sttMode = .cloud
         await coordinator._test_start()
         await coordinator._test_stop()
-        XCTAssertEqual(factoryCallCount, 2, "the transcriber should be rebuilt after the local model changes")
+        XCTAssertEqual(factoryCallCount, 2, "the transcriber should be rebuilt after a relevant STT config change")
     }
 
     // MARK: - item 2: writing back the same config value does not touch the state machine (not reset during a hold)

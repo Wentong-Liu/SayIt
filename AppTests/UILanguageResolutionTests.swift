@@ -76,54 +76,17 @@ final class UILanguageResolutionTests: XCTestCase {
         }
     }
 
-    /// The local-model picker labels (`SettingsViewModel.localModelOptions`) are built imperatively with
-    /// the resolver, so they must follow the chosen UI language. Before this fix they used a raw
-    /// `String(localized:)` and resolved against the system locale — so on a Chinese-system Mac in English
-    /// UI mode the dropdown showed "large-v3-turbo（推荐）", "large-v3（最高精度）", … . This asserts the
-    /// English value in English mode and the Chinese value in Chinese mode, per model key.
-    func testLocalModelLabelsFollowLanguage() {
-        let cases: [(key: String, en: String, zh: String)] = [
-            ("model.large-v3-turbo", "large-v3-turbo (recommended)", "large-v3-turbo（推荐）"),
-            ("model.large-v3", "large-v3 (highest accuracy)", "large-v3（最高精度）"),
-            ("model.medium", "medium (balanced)", "medium（均衡）"),
-            ("model.small", "small (lightweight)", "small（轻量）"),
-            ("model.base", "base (fastest)", "base（最快）"),
-        ]
-        for c in cases {
-            XCTAssertEqual(resolve(c.key, c.en, .english), c.en, "\(c.key) must be English in English mode")
-            XCTAssertEqual(resolve(c.key, c.en, .simplifiedChinese), c.zh, "\(c.key) must be Chinese in Chinese mode")
-            XCTAssertNotEqual(resolve(c.key, c.en, .english), resolve(c.key, c.en, .simplifiedChinese),
-                              "\(c.key) en and zh-Hans must diverge")
-        }
-    }
-
-    /// End-to-end guard through the live `SettingsViewModel.localModelOptions` computed property — the exact
-    /// call site the bug names — not just the resolver. `localModelOptions` resolves through the convenience
-    /// `uiLanguageLocalized`, which reads the persisted UI language from `UserDefaults.standard`; so this
-    /// drives that key directly (saving/restoring it) and asserts the built picker labels switch language.
-    func testLocalModelOptionsResolveInSelectedLanguage() {
-        let key = "ui.language"
-        let saved = UserDefaults.standard.string(forKey: key)
-        defer {
-            if let saved { UserDefaults.standard.set(saved, forKey: key) }
-            else { UserDefaults.standard.removeObject(forKey: key) }
-        }
-        let vm = SettingsViewModel(config: AppConfig())
-
-        UserDefaults.standard.set(UILanguage.english.rawValue, forKey: key)
-        let enLabels = vm.localModelOptions.map(\.label)
-        XCTAssertEqual(enLabels.first, "large-v3-turbo (recommended)")
-        XCTAssertTrue(enLabels.contains("base (fastest)"))
-        for label in enLabels {
-            XCTAssertFalse(label.contains("推荐") || label.contains("精度") || label.contains("均衡")
-                           || label.contains("轻量") || label.contains("最快"),
-                           "English-mode picker label leaked Chinese: \(label)")
-        }
-
-        UserDefaults.standard.set(UILanguage.simplifiedChinese.rawValue, forKey: key)
-        let zhLabels = vm.localModelOptions.map(\.label)
-        XCTAssertEqual(zhLabels.first, "large-v3-turbo（推荐）")
-        XCTAssertTrue(zhLabels.contains("base（最快）"))
+    /// The fixed local-model label (`model.large-v3-turbo`, shown as a static line now the picker is
+    /// gone) must still follow the chosen UI language: English value in English mode, Chinese value in
+    /// Chinese mode. The other model.* keys were removed with the picker, so only turbo is guarded.
+    func testLocalModelLabelFollowsLanguage() {
+        let key = "model.large-v3-turbo"
+        let en = "large-v3-turbo (recommended)"
+        let zh = "large-v3-turbo（推荐）"
+        XCTAssertEqual(resolve(key, en, .english), en, "\(key) must be English in English mode")
+        XCTAssertEqual(resolve(key, en, .simplifiedChinese), zh, "\(key) must be Chinese in Chinese mode")
+        XCTAssertNotEqual(resolve(key, en, .english), resolve(key, en, .simplifiedChinese),
+                          "\(key) en and zh-Hans must diverge")
     }
 
     /// The settings status/login copy swept alongside the model labels (key-save status, ChatGPT login

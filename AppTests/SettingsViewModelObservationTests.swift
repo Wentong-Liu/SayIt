@@ -113,17 +113,9 @@ final class SettingsViewModelObservationTests: XCTestCase {
         XCTAssertEqual(config.sttMode, next)
     }
 
-    func testLocalModelChangeFiresObservationAndPersists() {
-        let config = makeConfig()
-        let vm = SettingsViewModel(config: config)
-        // Pick a candidate id that differs from the current one.
-        let next = vm.localModelOptions.map(\.id).first { $0 != vm.localModel }!
-
-        assertObservationFires(read: { _ = vm.localModel }, mutate: { vm.localModel = next },
-                               "localModel change should invalidate the view")
-        XCTAssertEqual(vm.localModel, next)
-        XCTAssertEqual(config.localModel, next)
-    }
+    // The local model is fixed to large-v3-turbo (the picker and its observable mirror were removed),
+    // so there is no longer a local-model observation/persistence test here. Its "fixed model" behavior
+    // is covered by AppConfigTests.testLocalModelIsAlwaysTurbo.
 
     func testCloudSTTModelChangeFiresObservationAndPersists() {
         let config = makeConfig()
