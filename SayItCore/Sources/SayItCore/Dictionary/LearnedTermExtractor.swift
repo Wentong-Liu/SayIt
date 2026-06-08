@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The single misheard -> corrected term pair an extraction yields: `heard` is the form as it appeared in SayIt's
 /// transcribed/injected text, `corrected` is the user's fixed form. Both are short single terms (proper noun / brand /
@@ -47,6 +48,12 @@ public struct LearnedTermExtractor: LearnedTermExtracting {
     /// and yields `nil` (never permanently stuck). Injectable so tests pass a tiny value.
     private let timeout: Duration
 
+    /// Diagnostics-only logger (observability, no behavior). `.notice`/`.error` level so lines surface in
+    /// `log stream --predicate 'subsystem == "com.liuwentong.SayIt"'`; reuses the existing subsystem with the dedicated
+    /// `learn` category shared with the coordinator. `static` so it fits this `Sendable` value type and is reachable from
+    /// the non-mutating `extract`. Debug text is interpolated with `privacy: .public` (active on-device debugging).
+    private static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "learn")
+
     /// - Parameters:
     ///   - provider: the LLM provider to call (same construction as polish).
     ///   - timeout: the hard extraction timeout; defaults to 20s. Tests pass a tiny value.
@@ -58,15 +65,20 @@ public struct LearnedTermExtractor: LearnedTermExtracting {
     public func extract(injected: String, final: String) async -> LearnedTerm? {
         let messages = Self.buildMessages(injected: injected, final: final)
         let reply: String
+        Self.log.notice("extractor: calling provider")
         do {
             reply = try await Self.withTimeout(timeout) {
                 try await provider.complete(messages: messages)
             }
         } catch {
             // Any throw / timeout / cancellation -> drop silently.
+            Self.log.error("extractor: provider threw: \(error.localizedDescription, privacy: .public)")
             return nil
         }
-        return Self.parse(reply)
+        let result = Self.parse(reply)
+        Self.log.notice("extractor: raw=\(String(reply.prefix(500)), privacy: .public)")
+        Self.log.notice("extractor: parsed=\(result == nil ? "nil" : "term", privacy: .public)")
+        return result
     }
 
     // MARK: - Prompt

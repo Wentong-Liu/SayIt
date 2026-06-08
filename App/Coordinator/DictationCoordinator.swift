@@ -1,4 +1,5 @@
 import AppKit
+import os
 import SayItCore
 
 /// End-to-end dictation orchestrator: chains hotkey -> recording -> transcription -> polish -> injection into a complete loop.
@@ -150,6 +151,13 @@ final class DictationCoordinator {
     /// How long after the LAST keystroke (while armed) the idle compare fires. Reset on every keystroke. Injectable so
     /// tests pass a tiny value. Defaults to ~3s.
     private let learnIdleAfter: Duration
+
+    /// Diagnostics-only logger for the learn-from-edits v2 flow (observability, no behavior). `.notice`/`.error` level so
+    /// lines are visible in `log stream --predicate 'subsystem == "com.liuwentong.SayIt"'`; reuses the existing subsystem
+    /// with a dedicated `learn` category. `static` so it is reachable from the idle-timer / extract `Task` closures without
+    /// actor-isolation or capture friction. Text values are interpolated with `privacy: .public` (the user's own machine,
+    /// actively debugging) so they appear unredacted.
+    private nonisolated static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "learn")
 
     /// The injected override for building the term-extraction provider (learn-from-edits Part C). `nil` (production
     /// default) means reuse ``makePolishProvider()`` exactly (same provider/model/key path as polish) — see
@@ -991,6 +999,8 @@ final class DictationCoordinator {
             // to compare later — skip arming there. No-op internally when the field is unreadable (see armLearnFromEdits).
             if !drifted {
                 armLearnFromEdits(injected: text)
+            } else {
+                Self.log.notice("arm: skipped (drifted)")
             }
         case .failedTextLeftInPasteboard:
             // The text is left in the clipboard, hinting the user to paste manually.
@@ -1032,6 +1042,7 @@ final class DictationCoordinator {
         extractTask = nil
         // Read the focused field right after the paste landed. nil (secure/unreadable) -> do not arm (can't compare later).
         guard axReader.readFocusedText() != nil else {
+            Self.log.notice("arm: AX unreadable -> not armed")
             injectionRecord = nil
             return
         }
@@ -1042,6 +1053,7 @@ final class DictationCoordinator {
             targetPID: capturedTarget?.processIdentifier
         )
         startIdleTimer()
+        Self.log.notice("armed (injectedLen=\(injected.count, privacy: .public), freshness=\(self.learnFreshness.timeIntervalValue, privacy: .public)s)")
     }
 
     /// Starts/restarts the idle timer: after ``learnIdleAfter`` of no keystrokes (while armed) the compare fires. Reset on
@@ -1053,6 +1065,7 @@ final class DictationCoordinator {
             try? await Task.sleep(for: learnIdleAfter)
             if Task.isCancelled { return }
             guard let self else { return }
+            Self.log.notice("trigger=idle")
             self.fireCompare()
         }
     }
@@ -1061,11 +1074,13 @@ final class DictationCoordinator {
     /// when nothing is armed (the common case), so it never interferes with normal typing.
     private func handleUserKeystroke() {
         guard injectionRecord != nil else { return }
+        Self.log.notice("keystroke (armed=\(self.injectionRecord != nil, privacy: .public))")
         startIdleTimer()
     }
 
     /// COMMIT (Return / keypad-Enter): the edit is done — fire the compare immediately. A no-op when nothing is armed.
     private func handleCommitKey() {
+        Self.log.notice("trigger=commit (armed=\(self.injectionRecord != nil, privacy: .public))")
         guard injectionRecord != nil else { return }
         fireCompare()
     }
@@ -1073,6 +1088,7 @@ final class DictationCoordinator {
     /// FOCUS LOSS (the armed app deactivated): the user switched / clicked away — treat the edit as committed and fire the
     /// compare. A no-op when nothing is armed.
     private func handleFocusLoss() {
+        Self.log.notice("trigger=focusLoss (armed=\(self.injectionRecord != nil, privacy: .public))")
         guard injectionRecord != nil else { return }
         fireCompare()
     }
@@ -1082,7 +1098,10 @@ final class DictationCoordinator {
     /// when: the record is missing/expired, the AX read returns nil, the final text equals the injected text (no edit), no
     /// provider/key is configured, or the LLM errors/times out / returns no single-term result.
     private func fireCompare() {
-        guard let record = injectionRecord else { return }
+        guard let record = injectionRecord else {
+            Self.log.notice("compare: no record")
+            return
+        }
         // Consume the record up front so a racing trigger (Enter then idle, etc.) cannot run the compare twice. Cancel the
         // idle timer too (its scheduled fire is now moot).
         injectionRecord = nil
@@ -1090,12 +1109,22 @@ final class DictationCoordinator {
         idleTimerTask = nil
 
         // Expired -> the user moved on long ago; drop without reading.
-        guard record.expiresAt > Date() else { return }
+        guard record.expiresAt > Date() else {
+            Self.log.notice("compare: expired")
+            return
+        }
 
         // Read the FINAL focused text. nil -> no longer readable (moved away / secure) -> drop silently.
-        guard let final = axReader.readFocusedText() else { return }
+        guard let final = axReader.readFocusedText() else {
+            Self.log.notice("compare: AX final unreadable")
+            return
+        }
         // Identical to what we injected -> the user made no edit -> drop WITHOUT calling the LLM.
-        guard final.value != record.injectedText else { return }
+        guard final.value != record.injectedText else {
+            Self.log.notice("compare: no edit (final==injected)")
+            return
+        }
+        Self.log.notice("compare: proceeding injected=\(record.injectedText, privacy: .public) final=\(final.value, privacy: .public)")
 
         // Build the provider exactly like polish; no provider/key configured -> feature inactive -> drop silently.
         extractTask?.cancel()
@@ -1105,6 +1134,7 @@ final class DictationCoordinator {
             do {
                 provider = try await self.buildLearnProvider()
             } catch {
+                Self.log.error("compare: provider build FAILED: \(error.localizedDescription, privacy: .public)")
                 return    // no provider / key -> drop silently.
             }
             if Task.isCancelled { return }
@@ -1112,8 +1142,17 @@ final class DictationCoordinator {
             let term = await extractor.extract(injected: record.injectedText, final: final.value)
             if Task.isCancelled { return }
             guard let term, Self.passesSingleTermGuard(term, finalText: final.value) else {
+                // Diagnostics only: choose the message by the already-evaluated `term == nil` (a string choice, not control
+                // flow — both branches just log then hit the same `return`). Two `notice` calls because `os.Logger`
+                // requires a literal string-interpolation argument and cannot take a ternary across interpolation types.
+                if let rejected = term {
+                    Self.log.notice("compare: guard REJECTED (heard=\(rejected.heard, privacy: .public), corrected=\(rejected.corrected, privacy: .public))")
+                } else {
+                    Self.log.notice("compare: extractor returned nil")
+                }
                 return    // not a single-term correction, or the guard rejected it -> drop silently.
             }
+            Self.log.notice("compare: SUGGESTING (heard=\(term.heard, privacy: .public), corrected=\(term.corrected, privacy: .public))")
             self.presentSuggestion(heard: term.heard, corrected: term.corrected)
         }
     }
