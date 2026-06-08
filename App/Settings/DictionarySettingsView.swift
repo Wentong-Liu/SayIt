@@ -91,7 +91,7 @@ struct DictionarySettingsView: View {
         }
     }
 
-    /// The list of entries: one row each, with an enabled toggle and edit / delete affordances. The section header
+    /// The list of entries: one row each, with an inline delete (✕) affordance and edit (tap / context menu). The section header
     /// carries the in-content "add entry" button (an `+` affordance that lives in the pane body, not the window
     /// toolbar) so the add flow stays reachable once the list is non-empty without leaking into the Settings tab bar.
     @ViewBuilder
@@ -100,9 +100,6 @@ struct DictionarySettingsView: View {
             ForEach(dictionaryViewModel.entries) { entry in
                 EntryRow(
                     entry: entry,
-                    onToggle: { enabled in
-                        Task { await dictionaryViewModel.setEnabled(enabled, for: entry) }
-                    },
                     onEdit: { editorContext = .edit(entry) },
                     onDelete: { Task { await dictionaryViewModel.remove(id: entry.id) } }
                 )
@@ -127,11 +124,12 @@ struct DictionarySettingsView: View {
 
 // MARK: - Row
 
-/// A single dictionary entry row: just the word (Typeless-style flat list), an enabled toggle, and an explicit
-/// Edit / Delete in the context menu (macOS list swipe inside a `Form` is unreliable, so we expose explicit actions).
+/// A single dictionary entry row: just the word on the left (Typeless-style flat list) and an inline ✕ delete button
+/// on the trailing edge; Edit stays reachable by tapping the row or via the context menu (macOS list swipe inside a
+/// `Form` is unreliable, so we expose explicit actions). Entries are simply present (kept) or deleted — there is no
+/// per-row enable/disable in the UI (the model's `enabled` flag is unchanged and still read by the rewriter).
 private struct EntryRow: View {
     let entry: DictionaryEntry
-    let onToggle: (Bool) -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -140,12 +138,14 @@ private struct EntryRow: View {
             Text(entry.canonical)
                 .fontWeight(.semibold)
             Spacer()
-            // Per-row enabled toggle writes through immediately so the rewriter's `enabled` read stays in sync.
-            Toggle("dictionary.field.enabled", isOn: Binding(
-                get: { entry.enabled },
-                set: { onToggle($0) }
-            ))
-            .labelsHidden()
+            // Inline, subtle ✕ delete on the trailing edge (Typeless-style): one click removes the entry via `onDelete`.
+            Button(role: .destructive) { onDelete() } label: {
+                Label("dictionary.delete", systemImage: "xmark.circle.fill")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("dictionary.delete")
         }
         .contentShape(Rectangle())
         .onTapGesture { onEdit() }
