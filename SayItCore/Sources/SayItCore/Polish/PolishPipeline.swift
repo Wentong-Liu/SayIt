@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The "verdict" of one polish: distinguishes polish success, skip-per-config, and failure fallback (carrying an observable reason).
 ///
@@ -81,6 +82,13 @@ public struct PolishPipeline: Sendable {
     /// Defaults to nil (no logging); the App layer can inject printing/reporting for debugging. `@Sendable` to satisfy concurrency safety.
     private let logFailure: (@Sendable (String) -> Void)?
 
+    /// Diagnostics-only logger so the polish-failure fallback is traceable end-to-end even when no `logFailure`
+    /// callback is injected (observability, no behavior change). Reuses the existing `com.liuwentong.SayIt` subsystem
+    /// with the shared `polish` category at `.error` level; the reason is interpolated `privacy: .public`
+    /// (the underlying `ProviderError`/`localizedDescription` already carries no secret — it pairs with
+    /// ``CodexResponsesProvider``'s own status/body line). `static` so it fits this `Sendable` value type.
+    private static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "polish")
+
     /// - Parameter logFailure: the log callback on failure fallback (optional).
     public init(logFailure: (@Sendable (String) -> Void)? = nil) {
         self.logFailure = logFailure
@@ -134,6 +142,9 @@ public struct PolishPipeline: Sendable {
 
     /// Failure fallback: log the reason (if a logger was injected) and return the `.failedFallback` result carrying the original.
     private func fallback(_ rawText: String, reason: String) -> PolishOutcome {
+        // Diagnostics (no behavior change): always trace the fallback to the app's os.Logger so the cause is visible
+        // even with no injected `logFailure` callback; the callback below is preserved unchanged.
+        Self.log.error("polish failed, falling back to original: \(reason, privacy: .public)")
         logFailure?(reason)
         return PolishOutcome(text: rawText, resolution: .failedFallback(reason: reason))
     }

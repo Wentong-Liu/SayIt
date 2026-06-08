@@ -82,4 +82,50 @@ final class CodexResponsesProviderTests: XCTestCase {
         XCTAssertEqual(input.count, 1)
         XCTAssertEqual(input.first?["role"] as? String, "user")
     }
+
+    // MARK: - Failure paths (behavior preserved alongside the new diagnostic logging)
+
+    /// A non-2xx status still maps to `ProviderError.httpError` carrying the status + body, unchanged by the added
+    /// `.error` logging. (The diagnostic log line itself is a side effect and is read out-of-band via `log stream`.)
+    func testNon2xxStatusStillThrowsHTTPErrorWithStatusAndBody() async {
+        StubURLProtocol.responder = { _ in
+            let resp = HTTPURLResponse(url: URL(string: ChatGPTOAuth.responsesEndpoint)!,
+                                       statusCode: 400, httpVersion: nil,
+                                       headerFields: ["Content-Type": "application/json"])!
+            let body = Data(#"{"error":{"message":"Unsupported value: 'reasoning.effort'"}}"#.utf8)
+            return (resp, body)
+        }
+        let provider = CodexResponsesProvider(accessToken: "tok", accountId: "acct",
+                                              model: "gpt-5.5", session: stubbedSession())
+        do {
+            _ = try await provider.complete(messages: [.init(role: .user, content: "hi")])
+            XCTFail("a non-2xx status should throw ProviderError.httpError")
+        } catch let ProviderError.httpError(status, body) {
+            XCTAssertEqual(status, 400)
+            XCTAssertTrue(body.contains("reasoning.effort"), "the error body should be preserved, actual: \(body)")
+        } catch {
+            XCTFail("expected ProviderError.httpError, actual: \(error)")
+        }
+    }
+
+    /// An SSE `error` event still maps to `ProviderError.streamFailed` carrying the payload, unchanged by the added logging.
+    func testStreamErrorEventStillThrowsStreamFailed() async {
+        StubURLProtocol.responder = { _ in
+            let resp = HTTPURLResponse(url: URL(string: ChatGPTOAuth.responsesEndpoint)!,
+                                       statusCode: 200, httpVersion: nil,
+                                       headerFields: ["Content-Type": "text/event-stream"])!
+            let body = Data("data: {\"type\":\"error\",\"message\":\"upstream boom\"}\n\n".utf8)
+            return (resp, body)
+        }
+        let provider = CodexResponsesProvider(accessToken: "tok", accountId: "acct",
+                                              model: "gpt-5.5", session: stubbedSession())
+        do {
+            _ = try await provider.complete(messages: [.init(role: .user, content: "hi")])
+            XCTFail("an SSE error event should throw ProviderError.streamFailed")
+        } catch let ProviderError.streamFailed(body) {
+            XCTAssertTrue(body.contains("upstream boom"), "the error payload should be preserved, actual: \(body)")
+        } catch {
+            XCTFail("expected ProviderError.streamFailed, actual: \(error)")
+        }
+    }
 }

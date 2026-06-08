@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Uses the ChatGPT(Codex) OAuth token to call codex/responses (Responses API + SSE).
 /// Maps [LLMMessage] to instructions (system) + input (the rest), streamingly accumulating output_text.delta.
@@ -8,6 +9,17 @@ public struct CodexResponsesProvider: LLMProvider {
     private let model: String
     private let userAgent: String
     private let session: URLSession
+
+    /// Diagnostics-only logger for the polish-failure path (observability, no behavior change). Reuses the existing
+    /// `com.liuwentong.SayIt` subsystem with the shared `polish` category, so failure causes surface in
+    /// `log stream --predicate 'subsystem == "com.liuwentong.SayIt"'` at `.error` level. `static` so it fits this
+    /// `Sendable` value type. CRITICAL: only the HTTP status + a TRUNCATED body are logged — NEVER the bearer access
+    /// token or the full Authorization header. The body is interpolated `privacy: .public` (active on-device debugging).
+    private static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "polish")
+
+    /// The number of leading characters of a response/error body to log: enough to read the upstream reason
+    /// (e.g. an unsupported `reasoning.effort`, an auth message, a rate-limit notice) while keeping log lines bounded.
+    private static let maxLoggedBodyChars = 500
 
     /// The connection/response timeout (seconds) for a single request.
     private static let requestTimeout = LLMDefaults.requestTimeout
@@ -136,7 +148,12 @@ public struct CodexResponsesProvider: LLMProvider {
             // Read all the remaining body for error reporting (joined by newline, preserving each line's boundary).
             var errLines: [String] = []
             for try await line in bytes.lines { errLines.append(line) }
-            try HTTPResponseValidator.throwIfHTTPError(http, body: errLines.joined(separator: "\n"))
+            let errBody = errLines.joined(separator: "\n")
+            // Diagnostics (no behavior change): log the HTTP status + a TRUNCATED body so the dev can tell a 400
+            // (e.g. an unsupported/invalid `reasoning.effort`), 401/403 (auth), 429, or 5xx apart. The body only —
+            // never the bearer access token / Authorization header.
+            Self.log.error("codex polish HTTP \(http.statusCode, privacy: .public): \(String(errBody.prefix(Self.maxLoggedBodyChars)), privacy: .public)")
+            try HTTPResponseValidator.throwIfHTTPError(http, body: errBody)
         }
 
         // Stream-level timeout: the old implementation used "compare systemUptime each time a line enters the loop" for the timeout; when upstream half-opens and hangs,
@@ -150,6 +167,8 @@ public struct CodexResponsesProvider: LLMProvider {
             }
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(Self.maxStreamSeconds * 1_000_000_000))
+                // Diagnostics (no behavior change): record the stall so a timeout is distinguishable from an HTTP/SSE error.
+                Self.log.error("codex polish stream timed out after \(Int(Self.maxStreamSeconds), privacy: .public)s")
                 throw ProviderError.streamFailed(body: "stream timed out after \(Int(Self.maxStreamSeconds))s")
             }
             // Whichever finishes first wins: the read stream returns text successfully -> cancel the timer; the timer fires first -> its throw propagates up and cancels the read stream.
@@ -176,6 +195,9 @@ public struct CodexResponsesProvider: LLMProvider {
             case "response.completed", "response.done", "response.incomplete":
                 return text
             case "error", "response.failed":
+                // Diagnostics (no behavior change): log the TRUNCATED error event payload so an upstream stream
+                // failure (a rejected parameter, a mid-stream model error) is traceable. Payload only — no token.
+                Self.log.error("codex polish stream error event: \(String(payload.prefix(Self.maxLoggedBodyChars)), privacy: .public)")
                 throw ProviderError.streamFailed(body: payload)
             default:
                 continue
