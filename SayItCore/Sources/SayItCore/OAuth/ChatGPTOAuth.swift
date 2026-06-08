@@ -37,6 +37,8 @@ public enum ChatGPTOAuth {
             .init(name: "codex_cli_simplified_flow", value: "true"),
             .init(name: "state", value: state),
             .init(name: "originator", value: originator),
+            // OIDC ui_locales hint: render the IdP login page in the app's UI language (best-effort).
+            .init(name: "ui_locales", value: AppConfig.persistedUILanguage().lprojName),
         ]
         return c.url!
     }
