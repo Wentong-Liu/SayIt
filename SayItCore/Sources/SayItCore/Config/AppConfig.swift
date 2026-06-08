@@ -235,4 +235,10 @@ public final class AppConfig {
     private func postChange() {
         notificationCenter.post(name: Self.didChangeNotification, object: self)
     }
+
+    /// Posts a change notification for an external mutation that AppConfig itself does not persist
+    /// (e.g. an API key saved to the Keychain by SettingsViewModel). Mirrors the internal postChange()
+    /// so listeners (DictationCoordinator) re-read and pick up the new credential without an unrelated
+    /// config change / prewarm / app restart.
+    public func notifyExternalChange() { postChange() }
 }

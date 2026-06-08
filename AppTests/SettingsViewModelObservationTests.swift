@@ -22,10 +22,12 @@ import XCTest
 final class SettingsViewModelObservationTests: XCTestCase {
 
     /// An isolated `AppConfig` on a throwaway `UserDefaults` suite (never touches `.standard`).
-    private func makeConfig() -> AppConfig {
+    /// Optionally injects a private `NotificationCenter` so a test can assert/deny a posted change
+    /// without being fooled by unrelated `.default` traffic.
+    private func makeConfig(notificationCenter: NotificationCenter = .default) -> AppConfig {
         let suite = "test.settingsvm.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
-        return AppConfig(defaults: defaults)
+        return AppConfig(defaults: defaults, notificationCenter: notificationCenter)
     }
 
     /// Reads `read()` once under observation tracking, then runs `mutate()` and asserts the
@@ -144,6 +146,45 @@ final class SettingsViewModelObservationTests: XCTestCase {
                                "cloudSTTModel change should invalidate the view")
         XCTAssertEqual(vm.cloudSTTModel, next)
         XCTAssertEqual(config.cloudSTTModel, next)
+    }
+
+    /// A successful cloud-key save must post `AppConfig.didChangeNotification` so the coordinator refreshes its
+    /// cached cloud key and a same-model key-only re-save takes effect on the next dictation.
+    /// `KeychainStore` is a static enum with no injection point, so this writes the real login Keychain; the
+    /// original value is saved/restored and the assertion is skipped if the sandboxed Keychain write fails.
+    func testSaveCloudSTTAPIKeySuccessPostsChange() throws {
+        let center = NotificationCenter()
+        let config = makeConfig(notificationCenter: center)
+        let vm = SettingsViewModel(config: config)
+
+        // Restore whatever was there before (empty string when nothing existed; the cloud-key reader trims and
+        // treats an empty string as "no key", so this never clobbers a real developer key).
+        let original = KeychainStore.get(account: KeychainStore.Account.openAIAPIKey)
+        defer { _ = KeychainStore.set(original ?? "", account: KeychainStore.Account.openAIAPIKey) }
+
+        let testKey = "sk-test-\(UUID().uuidString)"
+        try XCTSkipUnless(KeychainStore.set(testKey, account: KeychainStore.Account.openAIAPIKey),
+                          "Sandboxed Keychain write unavailable; cannot exercise the success path.")
+
+        vm.cloudSTTAPIKey = testKey
+        let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config,
+                              notificationCenter: center)
+        vm.saveCloudSTTAPIKey()
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    /// An empty/whitespace cloud-key save is a no-op (early return, no Keychain write) and must NOT post.
+    func testSaveCloudSTTAPIKeyEmptyDoesNotPost() {
+        let center = NotificationCenter()
+        let config = makeConfig(notificationCenter: center)
+        let vm = SettingsViewModel(config: config)
+
+        vm.cloudSTTAPIKey = "   "
+        let exp = expectation(forNotification: AppConfig.didChangeNotification, object: config,
+                              notificationCenter: center)
+        exp.isInverted = true
+        vm.saveCloudSTTAPIKey()
+        wait(for: [exp], timeout: 0.3)
     }
 
     // MARK: - Polish

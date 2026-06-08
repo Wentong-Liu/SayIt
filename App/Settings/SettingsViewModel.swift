@@ -292,9 +292,13 @@ final class SettingsViewModel {
         let trimmed = cloudSTTAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let ok = KeychainStore.set(trimmed, account: KeychainStore.Account.openAIAPIKey)
-        sttStatusMessage = ok
-            ? String(localized: "stt.keySaved", defaultValue: "Cloud transcription key saved")
-            : String(localized: "stt.keySaveFailed", defaultValue: "Failed to save cloud transcription key")
+        if ok {
+            sttStatusMessage = String(localized: "stt.keySaved", defaultValue: "Cloud transcription key saved")
+            // Posting lets the coordinator refresh its cached cloud key, so a same-model key-only re-save takes effect next dictation.
+            config.notifyExternalChange()
+        } else {
+            sttStatusMessage = String(localized: "stt.keySaveFailed", defaultValue: "Failed to save cloud transcription key")
+        }
     }
 
     /// Saves the current polish Provider's API Key. ChatGPT (OAuth) has no API Key, ignored directly.

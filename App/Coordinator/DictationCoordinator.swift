@@ -806,9 +806,10 @@ final class DictationCoordinator {
     /// change — i.e. exactly when a transcriber rebuild is already required, so a Keychain switch is rare. The prewarm
     /// path refreshes the cached key OFF the main actor (see ``refreshCloudKeyInBackground()``) so the warm path stays current.
     ///
-    /// Residual nuance (documented, behavior-preserving): `SettingsViewModel.saveCloudSTTAPIKey()` does NOT post
-    /// `AppConfig.didChangeNotification`, so a key-only re-save with the SAME model is not observed until the next config
-    /// change / prewarm / app cycle. The clean long-term fix is to post a change on key save (out of this PR's scope).
+    /// Key-only re-save: `SettingsViewModel.saveCloudSTTAPIKey()` now posts `AppConfig.didChangeNotification`
+    /// (via `AppConfig.notifyExternalChange()`) on a successful Keychain write, so the observer above runs
+    /// ``refreshCloudKeyInBackground()`` to re-read the new key. A key-only re-save with the SAME model is therefore
+    /// observed on the next dictation, without an unrelated config change / prewarm / app cycle.
     private func currentSignature() -> TranscriberSignature {
         let cheap = CheapSignature(
             mode: config.sttMode,
