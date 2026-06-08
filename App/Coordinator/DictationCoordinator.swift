@@ -537,13 +537,15 @@ final class DictationCoordinator {
         // Record the injection target (for injection back-fill + focus-drift verification).
         capturedTarget = currentFrontmostTarget()
 
-        // STT pre-flight gate: in local mode, if the model cannot possibly transcribe yet (not cached/loaded), do NOT
-        // record — recording a full utterance only to discard it at the post-record :730 gate wastes the user's words and
-        // their breath. Use the SAME cheap, network-free readiness signal as that gate (modelReadiness), but surface the
-        // state-aware not-ready message immediately. Returns BEFORE panel.show(.listening) and BEFORE the start chime, so
-        // the HUD goes straight to the error toast (no listening→error flicker, no misleading "started" chime). The :730
-        // gate stays as a belt-and-suspenders backstop. Cloud mode is never gated here (CloudTranscriber needs no local model).
-        if config.sttMode == .local, !modelReadiness(config.localModel) {
+        // STT pre-flight gate: in local mode, if the model cannot possibly transcribe yet (not cached/loaded, OR still
+        // downloading), do NOT record — recording a full utterance only to discard it at the post-record :730 gate wastes
+        // the user's words and their breath. Use the SAME cheap, network-free readiness signal as that gate
+        // (isLocalModelReadyForUse, which treats an in-progress download as not-ready so a mid-download dictation can never
+        // enter the stuck "preparing model" HUD), but surface the state-aware not-ready message immediately. Returns BEFORE
+        // panel.show(.listening) and BEFORE the start chime, so the HUD goes straight to the error toast (no listening→error
+        // flicker, no misleading "started" chime). The :730 gate stays as a belt-and-suspenders backstop. Cloud mode is never
+        // gated here (CloudTranscriber needs no local model).
+        if config.sttMode == .local, !isLocalModelReadyForUse(config.localModel) {
             // Resync the single-tap-toggle state machine BEFORE returning. single-tap-toggle is the DEFAULT InteractionMode,
             // so in the headline scenario (first launch, model still downloading) the first tap already flipped `isActive`
             // true and emitted this `.start`; returning here leaves the toggle active, and the user's retry tap is then
@@ -762,11 +764,13 @@ final class DictationCoordinator {
         // Metrics context (observability only): the clip length the rest of the pipeline operates on.
         metrics.clipSeconds = Double(samples.count) / AudioFormat.sampleRate
 
-        // 1.5) Local model readiness gate: local transcription depends on the WhisperKit engine, and the engine downloads first when the model is not cached
-        // (possibly taking several minutes), during which the HUD stays stuck at "transcribing", appearing permanently frozen. Here, before calling transcribe,
-        // **read-only** check whether the model is downloaded (no network, no triggering a download), and if not ready, give a clear hint and converge to idle,
-        // never entering the local transcription path that would trigger a download. Cloud mode is not affected by this gate.
-        if config.sttMode == .local, !modelReadiness(config.localModel) {
+        // 1.5) Local model readiness gate: local transcription depends on the WhisperKit engine, which can only LOAD an
+        // already-downloaded model. Here, before calling transcribe, **read-only** check whether the model is ready for use
+        // (no network, no triggering a download). This uses ``isLocalModelReadyForUse``, which treats an in-progress download
+        // as not-ready: even if the load-critical weights already exist on disk, a still-running ``ModelManager`` download
+        // means the cold-start `.preparingModel` load below would race that download → converge to idle with a clear hint
+        // instead, never entering the local transcription/preparing path. Cloud mode is not affected by this gate.
+        if config.sttMode == .local, !isLocalModelReadyForUse(config.localModel) {
             modelNotReadyToIdle()
             return
         }
@@ -1624,6 +1628,23 @@ final class DictationCoordinator {
     /// Empty audio / empty transcription: the HUD briefly hints then returns to idle.
     private func emptyToIdle() {
         showTransientError(uiLanguageLocalized("hud.didNotCatchThat", defaultValue: "Didn’t catch that, please try again"))
+    }
+
+    /// Whether the local model can be LOADED and used for transcription right now — the readiness signal both the
+    /// ``handleStart()`` pre-flight gate and the ``runPipeline(...)`` backstop must consult before entering the local
+    /// transcription path (incl. the cold-start ``RecordingState/preparingModel`` load).
+    ///
+    /// An IN-PROGRESS download counts as NOT ready, even when ``modelReadiness`` (the disk-only ``ModelManager/isDownloaded``
+    /// check) already returns true. On a fresh first launch the load-critical CoreML weights land on disk — so
+    /// `isDownloaded` flips true — BEFORE ``ModelManager/download``'s task fully resolves to `.downloaded`. Treating that
+    /// window as "ready" let the old gate pass, start recording, and enter `.preparingModel`, where the engine kicked off a
+    /// SECOND Hub snapshot that stalled behind the first → the HUD froze on "preparing model" forever. Blocking on
+    /// `.downloading` here routes the user to the existing "downloading… NN%" message instead, and guarantees `.preparingModel`
+    /// is only ever reached for a genuine cold LOAD of an already-fully-downloaded model. Reuses BOTH existing injectable
+    /// seams (``modelState`` for the live state, ``modelReadiness`` for the disk check) — no new singleton read, no network.
+    private func isLocalModelReadyForUse(_ model: String) -> Bool {
+        if case .downloading = modelState() { return false }
+        return modelReadiness(model)
     }
 
     /// Local model not ready: the HUD shows a state-aware, actionable not-ready hint then returns to idle, and does not enter transcription.

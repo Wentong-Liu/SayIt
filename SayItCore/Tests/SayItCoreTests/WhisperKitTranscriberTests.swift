@@ -54,6 +54,37 @@ final class WhisperKitTranscriberTests: XCTestCase {
         }
     }
 
+    // MARK: - Sole-downloader contract: load (never download) a present model; fail cleanly when absent
+
+    /// ``ModelManager/download(model:)`` is the sole downloader; this engine only LOADS an already-present local model and
+    /// must NEVER start a competing download (the second-downloader race that froze the "preparing model" HUD). When the
+    /// model is genuinely absent from the local cache, ``preload()`` (→ `loadedEngine()`) must fail CLEANLY with
+    /// ``STTError/notReady`` WITHOUT touching the network. A model name that maps to a variant folder that cannot exist in
+    /// the cache (a per-run UUID) guarantees "absent" regardless of which real models happen to be cached on the test
+    /// machine, and the network-free ``ModelManager/cachedModelFolder(for:)`` short-circuits before any WhisperKit/Hub call.
+    func testPreloadThrowsNotReadyWhenModelAbsentAndNeverDownloads() async {
+        let absentModel = "sayit-absent-\(UUID().uuidString)"
+        // Precondition: this model truly is not cached locally (so the test exercises the absent path deterministically).
+        XCTAssertNil(ModelManager.cachedModelFolder(for: absentModel),
+                     "the per-run UUID model must not be present in the local cache")
+        XCTAssertFalse(ModelManager.isDownloaded(model: absentModel),
+                       "an absent model must not be reported as downloaded")
+
+        let stt = WhisperKitTranscriber(model: absentModel)
+        do {
+            try await stt.preload()
+            XCTFail("expected STTError.notReady for an absent model (must not download)")
+        } catch let error as STTError {
+            XCTAssertEqual(error, STTError.notReady,
+                           "an absent model must fail cleanly with .notReady, never silently downloading")
+        } catch {
+            XCTFail("unexpected error type (a network/download error would mean the engine wrongly tried to download): \(error)")
+        }
+        // The clean failure must not have constructed/loaded an engine.
+        let ready = await stt.isReady
+        XCTAssertFalse(ready, "a failed load must leave the engine unloaded")
+    }
+
     // MARK: - Pure mapping logic mapResult
 
     func testMapResultTrimsAndJoins() {

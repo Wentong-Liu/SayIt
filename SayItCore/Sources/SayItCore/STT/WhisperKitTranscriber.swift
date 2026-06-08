@@ -68,13 +68,14 @@ public actor WhisperKitTranscriber: Transcriber {
         self.prewarm = prewarm
     }
 
-    /// Ensures the model is downloaded and loaded ready.
+    /// Ensures the already-downloaded local model is loaded into memory and ready.
     ///
-    /// The first call triggers a model download from HuggingFace (if not cached locally), then loads it into memory;
-    /// repeated calls are idempotent. Recommended to call during idle time before the user's first recording to reduce first-frame latency.
+    /// This LOADS an already-present local model (the one ``ModelManager/download(model:)`` wrote) into memory; it NEVER
+    /// downloads — ``ModelManager`` is the sole downloader. The first call loads, repeated calls are idempotent. Recommended
+    /// to call during idle time before the user's first recording to reduce first-frame latency.
     ///
-    /// - Throws: ``STTError/transcriptionFailed(reason:)`` on model download/load failure
-    ///   (``loadedEngine()`` uniformly maps the underlying failure to that case, never throwing `notReady`).
+    /// - Throws: ``STTError/notReady`` when the model is not present on disk (``loadedEngine()`` fails cleanly without
+    ///   touching the network rather than silently downloading); ``STTError/transcriptionFailed(reason:)`` on a load failure.
     public func preload() async throws {
         _ = try await loadedEngine()
     }
@@ -253,10 +254,26 @@ public actor WhisperKitTranscriber: Transcriber {
         return "\(punctuationCarrier) \(glossary)."
     }
 
-    /// Returns the loaded engine, lazily building it when necessary (including download+load).
+    /// Returns the loaded engine, lazily LOADING an already-present local model when necessary (never downloading —
+    /// ``ModelManager`` is the sole downloader; an absent model throws ``STTError/notReady`` without any network access).
     private func loadedEngine() async throws -> WhisperKit {
         if let engine {
             return engine
+        }
+        // ``ModelManager/download(model:)`` is the SOLE downloader (first-launch auto-download + Settings Download button).
+        // This engine only ever LOADS an already-present local model — it must NEVER start a competing download. If it did,
+        // a dictation during/just-after the first-launch download would spawn a SECOND Hub snapshot that stalls behind
+        // ModelManager's still-running one, freezing the HUD on "preparing model" forever. So:
+        //   - Resolve the already-cached, weight-complete folder via ``ModelManager/cachedModelFolder(for:)`` (the same
+        //     read-only, network-free disk check ``ModelManager/isDownloaded(model:)`` uses) and pass it explicitly as
+        //     `modelFolder` so WhisperKit loads from exactly where ModelManager wrote it. With `download: false` and NO
+        //     `modelFolder`, WhisperKit's `setupModels` leaves `modelFolder` nil and `loadModels()` throws "Model folder is
+        //     not set." — so the explicit `modelFolder` is required for the load to succeed (verified against the WhisperKit
+        //     dependency source). `downloadBase` is still passed unchanged so the tokenizer resolves co-located as before.
+        //   - If the model is genuinely absent (cachedModelFolder == nil), fail cleanly with ``STTError/notReady`` WITHOUT
+        //     touching the network — never silently download.
+        guard let modelFolder = ModelManager.cachedModelFolder(for: model) else {
+            throw STTError.notReady
         }
         // downloadBase is taken explicitly from the single source of truth ``ModelManager/downloadBase``:
         // completely consistent with the root directory ``ModelManager/download(model:)`` writes to, ensuring "downloaded means usable".
@@ -264,10 +281,11 @@ public actor WhisperKitTranscriber: Transcriber {
             model: ModelManager.variant(for: model),
             downloadBase: ModelManager.downloadBase,
             modelRepo: ModelManager.modelRepo,
+            modelFolder: modelFolder.path,
             verbose: false,
             prewarm: prewarm,
             load: true,
-            download: true
+            download: false
         )
         do {
             let created = try await WhisperKit(config)
