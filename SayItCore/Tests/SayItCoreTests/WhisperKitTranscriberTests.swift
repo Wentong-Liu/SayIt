@@ -78,7 +78,7 @@ final class WhisperKitTranscriberTests: XCTestCase {
         XCTAssertEqual(result.segments[0].start, 0)
         XCTAssertEqual(result.segments[0].end, 1.2)
         XCTAssertEqual(result.segments[1].text, "world")
-        XCTAssertEqual(result.duration, 2.4, "duration 应取最后一个分段的 end")
+        XCTAssertEqual(result.duration, 2.4, "duration should take the end of the last segment")
     }
 
     func testMapResultEmptyEverything() {
@@ -119,22 +119,22 @@ final class WhisperKitTranscriberTests: XCTestCase {
         let options = WhisperKitTranscriber.makeDecodingOptions(language: nil)
         XCTAssertTrue(
             options.detectLanguage,
-            "language==nil 时必须开启自动检测，否则 WhisperKit 默认按英文解码（中文会被转成英文）"
+            "when language==nil auto-detection must be enabled, otherwise WhisperKit decodes as English by default (Chinese would be turned into English)"
         )
-        XCTAssertNil(options.language, "未指定语言时不应硬塞一个语言码")
+        XCTAssertNil(options.language, "no language code should be forced when none is specified")
     }
 
     func testDecodingOptionsTaskIsTranscribeNeverTranslate() {
         let detectOptions = WhisperKitTranscriber.makeDecodingOptions(language: nil)
         let explicitOptions = WhisperKitTranscriber.makeDecodingOptions(language: "zh")
-        XCTAssertEqual(detectOptions.task, .transcribe, "必须转写为原语言，绝不能翻译")
-        XCTAssertEqual(explicitOptions.task, .transcribe, "必须转写为原语言，绝不能翻译")
+        XCTAssertEqual(detectOptions.task, .transcribe, "must transcribe in the original language, never translate")
+        XCTAssertEqual(explicitOptions.task, .transcribe, "must transcribe in the original language, never translate")
     }
 
     func testDecodingOptionsPassesThroughExplicitLanguage() {
         let options = WhisperKitTranscriber.makeDecodingOptions(language: "zh")
-        XCTAssertEqual(options.language, "zh", "显式指定的语言码应原样透传")
-        XCTAssertFalse(options.detectLanguage, "已显式指定语言时无需再自动检测")
+        XCTAssertEqual(options.language, "zh", "an explicitly specified language code should be passed through as-is")
+        XCTAssertFalse(options.detectLanguage, "auto-detection is unnecessary once the language is explicitly specified")
     }
 
     // MARK: - Layer 1 biasing: makeDecodingOptions(promptTokens:)
@@ -142,24 +142,24 @@ final class WhisperKitTranscriberTests: XCTestCase {
     func testDecodingOptionsNoPromptKeepsDefaultThreshold() {
         // No prompt tokens: promptTokens stays nil and firstTokenLogProbThreshold keeps WhisperKit's -1.5 default (byte-identical to today).
         let none = WhisperKitTranscriber.makeDecodingOptions(language: nil)
-        XCTAssertNil(none.promptTokens, "无偏置词时不应设置 promptTokens")
+        XCTAssertNil(none.promptTokens, "promptTokens should not be set when there are no biasing terms")
         XCTAssertEqual(none.firstTokenLogProbThreshold, DecodingOptions().firstTokenLogProbThreshold,
-                       "无偏置词时 firstTokenLogProbThreshold 应保持 WhisperKit 默认值")
+                       "firstTokenLogProbThreshold should keep WhisperKit's default when there are no biasing terms")
 
         let emptyPrompt = WhisperKitTranscriber.makeDecodingOptions(language: "en", promptTokens: [])
-        XCTAssertNil(emptyPrompt.promptTokens, "空 promptTokens 等同无偏置")
+        XCTAssertNil(emptyPrompt.promptTokens, "empty promptTokens is equivalent to no biasing")
         XCTAssertEqual(emptyPrompt.firstTokenLogProbThreshold, DecodingOptions().firstTokenLogProbThreshold,
-                       "空 promptTokens 时 firstTokenLogProbThreshold 应保持默认值")
+                       "firstTokenLogProbThreshold should keep the default when promptTokens is empty")
     }
 
     func testDecodingOptionsWithPromptDisablesFirstTokenThreshold() {
         // Issue #372 mitigation: a non-empty promptTokens sets the tokens AND nils firstTokenLogProbThreshold
         // (otherwise on turbo the first-token logprob can break the decode loop early -> empty transcription).
         let options = WhisperKitTranscriber.makeDecodingOptions(language: "en", promptTokens: [10, 20, 30])
-        XCTAssertEqual(options.promptTokens, [10, 20, 30], "非空偏置词应原样写入 promptTokens")
+        XCTAssertEqual(options.promptTokens, [10, 20, 30], "non-empty biasing terms should be written into promptTokens as-is")
         XCTAssertNil(options.firstTokenLogProbThreshold,
-                     "设置 promptTokens 时必须把 firstTokenLogProbThreshold 设为 nil，规避 WhisperKit #372 空转写")
-        XCTAssertEqual(options.task, .transcribe, "偏置不应改变 task，仍必须是 transcribe")
+                     "when promptTokens is set, firstTokenLogProbThreshold must be set to nil to avoid WhisperKit #372 empty transcription")
+        XCTAssertEqual(options.task, .transcribe, "biasing should not change the task; it must still be transcribe")
     }
 
     // MARK: - Layer 1 biasing: promptTokens(from:tokenizer:)
@@ -168,7 +168,7 @@ final class WhisperKitTranscriberTests: XCTestCase {
         let tokenizer = StubTokenizer(specialTokenBegin: 1000)
         XCTAssertEqual(WhisperKitTranscriber.promptTokens(from: [], tokenizer: tokenizer), [])
         XCTAssertEqual(WhisperKitTranscriber.promptTokens(from: ["   ", ""], tokenizer: tokenizer), [],
-                       "全空白词应被丢弃，得到空 token 列表（不会触发偏置）")
+                       "all-whitespace terms should be dropped, yielding an empty token list (no biasing triggered)")
     }
 
     func testPromptTokensFiltersSpecialTokens() {
@@ -176,7 +176,7 @@ final class WhisperKitTranscriberTests: XCTestCase {
         // Special tokens (id >= specialTokenBegin) must be filtered out so only real word-piece ids remain.
         let tokenizer = StubTokenizer(specialTokenBegin: 100, encoder: { _ in [5, 100, 42, 250, 7] })
         let tokens = WhisperKitTranscriber.promptTokens(from: ["foo"], tokenizer: tokenizer)
-        XCTAssertEqual(tokens, [5, 42, 7], "id >= specialTokenBegin 的特殊 token 必须被过滤")
+        XCTAssertEqual(tokens, [5, 42, 7], "special tokens with id >= specialTokenBegin must be filtered out")
     }
 
     func testPromptTokensCapsToLastMaxTokens() {
@@ -184,14 +184,14 @@ final class WhisperKitTranscriberTests: XCTestCase {
         let tokenizer = StubTokenizer(specialTokenBegin: 100_000, encoder: { _ in Array(0..<300) })
         let tokens = WhisperKitTranscriber.promptTokens(from: ["anything"], tokenizer: tokenizer, maxTokens: 200)
         XCTAssertEqual(tokens.count, 200)
-        XCTAssertEqual(tokens.first, 100, "超过上限时应保留后缀（最相关在尾部），首元素应是被裁掉前缀后的第 100 个")
+        XCTAssertEqual(tokens.first, 100, "when over the cap keep the suffix (the most relevant is at the tail); the first element should be the 100th after trimming the prefix")
         XCTAssertEqual(tokens.last, 299)
     }
 
     func testPromptTokensUnderCapKeepsAll() {
         let tokenizer = StubTokenizer(specialTokenBegin: 100_000, encoder: { _ in [1, 2, 3] })
         let tokens = WhisperKitTranscriber.promptTokens(from: ["term"], tokenizer: tokenizer, maxTokens: 200)
-        XCTAssertEqual(tokens, [1, 2, 3], "未超过上限时应保留全部 token")
+        XCTAssertEqual(tokens, [1, 2, 3], "all tokens should be kept when under the cap")
     }
 
     func testPromptTokensDefaultCapIs111() {
@@ -199,15 +199,15 @@ final class WhisperKitTranscriberTests: XCTestCase {
         // Calling WITHOUT maxTokens and feeding >111 tokens must keep the LAST 111 (the highest-usage suffix).
         let tokenizer = StubTokenizer(specialTokenBegin: 100_000, encoder: { _ in Array(0..<300) })
         let tokens = WhisperKitTranscriber.promptTokens(from: ["anything"], tokenizer: tokenizer)
-        XCTAssertEqual(tokens.count, 111, "默认上限应为 111（WhisperKit 真实有效上限）")
-        XCTAssertEqual(tokens.first, 189, "超过上限时应保留后缀，首元素应是被裁掉前 189 个后的第 189 个 (300-111)")
-        XCTAssertEqual(tokens.last, 299, "最后一个 token（最相关的尾部）应被保留")
+        XCTAssertEqual(tokens.count, 111, "the default cap should be 111 (WhisperKit's real effective limit)")
+        XCTAssertEqual(tokens.first, 189, "when over the cap keep the suffix; the first element should be the 189th after trimming the first 189 (300-111)")
+        XCTAssertEqual(tokens.last, 299, "the last token (the most relevant tail) should be kept")
     }
 
     func testPromptTokensDefaultCapKeepsAllUnder111() {
         let tokenizer = StubTokenizer(specialTokenBegin: 100_000, encoder: { _ in Array(0..<111) })
         let tokens = WhisperKitTranscriber.promptTokens(from: ["term"], tokenizer: tokenizer)
-        XCTAssertEqual(tokens.count, 111, "恰好 111 个 token 时全部保留（未超上限）")
+        XCTAssertEqual(tokens.count, 111, "exactly 111 tokens are all kept (not over the cap)")
         XCTAssertEqual(tokens, Array(0..<111))
     }
 

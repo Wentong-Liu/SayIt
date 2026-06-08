@@ -88,7 +88,7 @@ final class GlossaryPromptTests: XCTestCase {
             DictionaryEntry(canonical: "  ", usageCount: 50),
         ]
         XCTAssertEqual(GlossaryPrompt.orderedCanonicals(from: entries), ["SwiftUI", "WhisperKit"],
-                       "启用条目按 usageCount 升序（最常用在尾部），禁用条目排除，空白丢弃")
+                       "enabled entries ordered by ascending usageCount (most-used at the tail), disabled entries excluded, blanks dropped")
     }
 
     func testOrderedCanonicalsAllDisabledYieldsEmptyArray() {
@@ -97,6 +97,6 @@ final class GlossaryPromptTests: XCTestCase {
             DictionaryEntry(canonical: "b", enabled: false),
         ]
         XCTAssertEqual(GlossaryPrompt.orderedCanonicals(from: entries), [],
-                       "全部禁用 -> 空数组 -> 不构造任何 prompt（零行为变化）")
+                       "all disabled -> empty array -> no prompt is built (zero behavior change)")
     }
 }
