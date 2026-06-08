@@ -344,6 +344,19 @@ public final class ModelManager {
     /// Called on entering the settings page or after a download finishes. If a download is in progress it stays unchanged (avoiding overwriting progress).
     public func refreshState() {
         if case .downloading = state { return }
+        resolveStateFromDisk()
+    }
+
+    /// Forcibly re-aligns ``state`` to the actual local cache, **including** when the current
+    /// state is `.downloading`.
+    ///
+    /// This is the cancellation-resolution path. ``refreshState()`` deliberately early-returns
+    /// while `.downloading` so a stray refresh can't clobber live progress — but that same guard
+    /// would otherwise leave a just-cancelled download stuck at `.downloading` forever (the state
+    /// is still `.downloading` at the moment we cancel). Cancellation must instead land on the
+    /// real local state: `.notDownloaded` when only a partial cache exists, `.downloaded` only if
+    /// the weights happen to be complete. So the cancel paths call this, not ``refreshState()``.
+    private func resolveStateFromDisk() {
         state = Self.isDownloaded(model: model) ? .downloaded : .notDownloaded
     }
 
@@ -420,19 +433,29 @@ public final class ModelManager {
                     self.state = Self.isDownloaded(model: newModel) ? .downloaded : .failed(reason: "下载完成但模型文件不完整")
                 }
             } catch {
-                // Cancellation is NOT a failure: URLSession surfaces a cancelled download as an
-                // NSError(NSURLErrorDomain, NSURLErrorCancelled) — not a Swift CancellationError —
-                // so both shapes are folded into `isCancellation`. On cancel, fall back to the local
-                // actual state (`.notDownloaded` when partial); on a genuine failure, show a clean
+                // Cancellation is NOT a failure. The authoritative signal is `Task.isCancelled`:
+                // `cancelDownload()` calls `downloadTask?.cancel()`, which sets the cancellation flag
+                // on THIS very task (the one running this closure), so the flag is observable here no
+                // matter which layer threw. That matters because the thrown error's shape is NOT
+                // reliable: WhisperKit's Hub layer (`HubApi.httpGet`) catches the underlying
+                // `URLError(.cancelled)` in a generic `catch` and re-throws it type-erased as
+                // `Hub.HubClientError.downloadError("已取消")` (an internal enum we can't name), while the
+                // file-transfer layer instead surfaces a real `URLError(.cancelled)`. We therefore key
+                // off the task flag first, and fall back to `isCancellation(error)` to also catch a
+                // cancellation that arrived without our task being flagged. On cancel, fall back to the
+                // local actual state (`.notDownloaded` when partial); on a genuine failure, show a clean
                 // short message and log the raw cause for diagnostics (never store the NSError dump).
-                let cancelled = Self.isCancellation(error)
+                let cancelled = Task.isCancelled || Self.isCancellation(error)
                 if !cancelled {
                     Self.log.error("Model download failed for \(newModel, privacy: .public): \(error, privacy: .public)")
                 }
                 await MainActor.run { [weak self] in
                     guard let self, self.model == newModel else { return }
                     if cancelled {
-                        self.refreshState()
+                        // Resolve to the REAL local state. Must bypass `refreshState()`'s
+                        // `.downloading` guard, since the state is still `.downloading` here; a
+                        // partial cache lands on `.notDownloaded`, not a stuck `.downloading`.
+                        self.resolveStateFromDisk()
                     } else {
                         self.state = .failed(reason: "下载失败，请重试")
                     }
@@ -444,15 +467,40 @@ public final class ModelManager {
 
     /// Whether `error` represents a cancelled download rather than a genuine failure.
     ///
-    /// Two distinct shapes mean "cancelled": a Swift `CancellationError` (cooperative task
-    /// cancellation), or — the case the old code missed — an `NSError` with domain
-    /// `NSURLErrorDomain` and code `NSURLErrorCancelled` (-999), which is what `URLSession`
-    /// throws when its in-flight download task is cancelled. Treating either as a cancellation
-    /// keeps the UI out of the `.failed` state (and off the raw NSError dump) when the user cancels.
+    /// This is the **secondary** classifier; the primary signal at the call site is
+    /// `Task.isCancelled` (see the download `catch`). It exists to also catch a cancellation that
+    /// surfaced without our task being flagged. A cancel can arrive in several shapes depending on
+    /// which WhisperKit layer threw:
+    /// - a Swift `CancellationError` (cooperative task cancellation);
+    /// - an `NSError`/`URLError` with domain `NSURLErrorDomain` and code `NSURLErrorCancelled`
+    ///   (-999), which `URLSession` raises when its in-flight download task is cancelled (this is
+    ///   what the file-transfer layer's `Downloader.cancel()` broadcasts);
+    /// - a **type-erased** `Hub.HubClientError.downloadError(message)` — WhisperKit's `HubApi.httpGet`
+    ///   catches the underlying `URLError(.cancelled)` in a generic `catch` and re-throws it as this
+    ///   internal enum, so the original cancellation type is lost. We can't name that internal type,
+    ///   so we match the residual cancellation **message** the URLError carries (e.g. localized
+    ///   "cancelled" / "已取消").
+    /// Treating any of these as a cancellation keeps the UI out of `.failed` (and off the raw NSError
+    /// dump) when the user cancels.
     nonisolated static func isCancellation(_ error: Error) -> Bool {
         if error is CancellationError { return true }
         let nsError = error as NSError
-        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled { return true }
+        // Defense in depth for the type-erased Hub wrapper: the original cancellation type is gone,
+        // but the message is the localized description of `URLError(.cancelled)`. Match on that.
+        return messageLooksLikeCancellation(nsError.localizedDescription)
+            || messageLooksLikeCancellation((error as? LocalizedError)?.errorDescription ?? "")
+    }
+
+    /// Whether a human-readable error message looks like a cancellation rather than a real failure.
+    /// Matches the localized description of `URLError(.cancelled)` across locales we ship to
+    /// (English "cancelled"/"canceled", Simplified Chinese "已取消"). Kept narrow on purpose so an
+    /// unrelated message can't be misread as a cancel.
+    nonisolated static func messageLooksLikeCancellation(_ message: String) -> Bool {
+        let lowered = message.lowercased()
+        return lowered.contains("cancelled")
+            || lowered.contains("canceled")
+            || message.contains("已取消")
     }
 
     /// Wraps `operation` in a `Task`, stores it as the current ``downloadTask``, and on
@@ -497,7 +545,10 @@ public final class ModelManager {
         downloadTask?.cancel()
         downloadTask = nil
         if case .downloading = state {
-            refreshState()
+            // The state is `.downloading` right now, so `refreshState()` would early-return and
+            // leave it stuck there. Resolve straight from the local cache instead: a partial
+            // download becomes `.notDownloaded`, never a phantom `.downloading`/`.failed`.
+            resolveStateFromDisk()
         }
     }
 
