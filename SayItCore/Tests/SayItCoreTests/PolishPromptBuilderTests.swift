@@ -134,6 +134,21 @@ final class PolishPromptBuilderTests: XCTestCase {
                       "filler rule should instruct keeping ambiguous acknowledgments rather than stripping them")
     }
 
+    func testSystemPromptContainsHomophoneCorrectionGuidance() {
+        let system = systemContent(
+            PolishPromptBuilder.build(rawText: "x", context: PolishContext(), style: .smart)
+        )
+        // STT output frequently substitutes same-/similar-sounding wrong characters (同音/近音错别字);
+        // the polish step must correct them by pronunciation + context, conservatively.
+        XCTAssertTrue(system.contains("同音"),
+                      "system should instruct correcting same-sound homophone errors (同音)")
+        XCTAssertTrue(system.contains("按读音") || system.contains("近音"),
+                      "system should instruct correcting by pronunciation (按读音/近音)")
+        // The conservative guard: only fix when context is clear, otherwise leave unchanged.
+        XCTAssertTrue(system.contains("错别字"),
+                      "system should name the misspelled-character problem (错别字)")
+    }
+
     // MARK: - Few-shot examples (borrowing opentypeless's input->output demonstration)
 
     func testSystemPromptContainsFewShotExamples() {
