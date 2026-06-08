@@ -240,6 +240,25 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已注入（润色失败，使用原文）" } }
       }
     },
+    "hud.insertedNoPolishAddKey" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Inserted without polish — add an API key under Settings ▸ Polish." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已插入（未润色）——请在 设置 ▸ 润色 中添加 API Key。" } }
+      }
+    },
+    "hud.insertedNoPolishSignIn" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Inserted without polish — sign in to ChatGPT under Settings ▸ Polish." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "已插入（未润色）——请在 设置 ▸ 润色 中登录 ChatGPT。" } }
+      }
+    },
+    "hud.modelDownloadingPct %d" : {
+      "comment" : "HUD not-ready hint when the local model is actively downloading; %d is the percent complete.",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Local model downloading… %d%% — please wait" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "本地模型下载中…… %d%%，请稍候" } }
+      }
+    },
     "hud.needAccessibility" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Accessibility permission required — enable it in System Settings" } },
@@ -250,6 +269,12 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Microphone permission required" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需要麦克风权限" } }
+      }
+    },
+    "hud.noLocalModel" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No local model yet — open Settings ▸ Speech to download (or switch to Cloud)." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "尚无本地模型——在 设置 ▸ 语音 中下载（或切换到云端）。" } }
       }
     },
     "hud.pastedToCurrentWindow" : {

@@ -247,6 +247,13 @@ final class DictationCoordinator {
     /// the "model not ready" branch. **Read-only** -- never triggers a download here.
     private let modelReadiness: (String) -> Bool
 
+    /// Reads the current ``ModelManager/State`` to produce truthful not-ready copy: distinguishes "downloading NN%" from
+    /// "no model yet" (which the boolean ``modelReadiness`` alone cannot express). By default read-only reuses the
+    /// process-shared ``ModelManager/shared``'s published `state` (no network, no download — main-actor read, same as the
+    /// menu-bar status line); tests inject a constant `.downloading(...)`/`.notDownloaded`/`.failed` to drive the
+    /// state-aware message without the singleton/network. **Read-only** — never mutates ModelManager.
+    private let modelState: () -> ModelManager.State
+
     /// Transcription hard timeout: `transcribe(...)` must return within this limit, otherwise it is treated as stalled and converged to an error hint.
     /// Defaults to 90s -- enough for local inference to complete on a loaded model, but guaranteeing "never permanently stuck transcribing". Tests can inject an extremely short value.
     private let transcribeTimeout: Duration
@@ -273,6 +280,7 @@ final class DictationCoordinator {
     ///   - transcriberFactory: the transcriber factory; defaults to choosing local/cloud per the config (see ``makeConfiguredTranscriber(_:)``).
     ///   - accessibilityGate: the accessibility gate; defaults to guiding authorization on demand (see ``ensureAccessibilityOrGuide()``).
     ///   - modelReadiness: local model readiness detection; defaults to read-only reuse of ``ModelManager/isDownloaded(model:)``.
+    ///   - modelState: reads the current ``ModelManager/State`` for truthful not-ready copy (downloading NN% vs no model yet); defaults to read-only reuse of ``ModelManager/shared``'s `state`.
     ///   - transcribeTimeout: the transcription hard timeout; defaults to 90s.
     ///   - soundCues: the start/stop chime player; defaults to the real ``SoundCuePlayer``. Tests can inject a no-op double.
     ///   - cloudKeyReader: reads the trimmed cloud STT API key; defaults to the ``KeychainStore`` `openAIAPIKey` account. Tests can inject it to drive the cloud-key signature and assert it is not read per dictation.
@@ -293,6 +301,7 @@ final class DictationCoordinator {
          transcriberFactory: (() throws -> any Transcriber)? = nil,
          accessibilityGate: (() -> Bool)? = nil,
          modelReadiness: ((String) -> Bool)? = nil,
+         modelState: (() -> ModelManager.State)? = nil,
          transcribeTimeout: Duration = .seconds(90),
          soundCues: SoundCuePlaying = SoundCuePlayer(),
          cloudKeyReader: (@Sendable () -> String)? = nil,
@@ -323,6 +332,8 @@ final class DictationCoordinator {
         self.accessibilityGateOverride = accessibilityGate
         // The default readiness detection read-only reuses ModelManager.isDownloaded (no network, no download, no modification of ModelManager).
         self.modelReadiness = modelReadiness ?? { ModelManager.isDownloaded(model: $0) }
+        // The default state reader read-only reuses the process-shared ModelManager.shared.state (main-actor, no network, no download).
+        self.modelState = modelState ?? { ModelManager.shared.state }
         self.transcribeTimeout = transcribeTimeout
         // The default reader trims the openAIAPIKey from the Keychain (matching makeConfiguredTranscriber / the old currentSignature).
         self.cloudKeyReader = cloudKeyReader ?? {
@@ -515,6 +526,24 @@ final class DictationCoordinator {
 
         // Record the injection target (for injection back-fill + focus-drift verification).
         capturedTarget = currentFrontmostTarget()
+
+        // STT pre-flight gate: in local mode, if the model cannot possibly transcribe yet (not cached/loaded), do NOT
+        // record — recording a full utterance only to discard it at the post-record :730 gate wastes the user's words and
+        // their breath. Use the SAME cheap, network-free readiness signal as that gate (modelReadiness), but surface the
+        // state-aware not-ready message immediately. Returns BEFORE panel.show(.listening) and BEFORE the start chime, so
+        // the HUD goes straight to the error toast (no listening→error flicker, no misleading "started" chime). The :730
+        // gate stays as a belt-and-suspenders backstop. Cloud mode is never gated here (CloudTranscriber needs no local model).
+        if config.sttMode == .local, !modelReadiness(config.localModel) {
+            // Resync the single-tap-toggle state machine BEFORE returning. single-tap-toggle is the DEFAULT InteractionMode,
+            // so in the headline scenario (first launch, model still downloading) the first tap already flipped `isActive`
+            // true and emitted this `.start`; returning here leaves the toggle active, and the user's retry tap is then
+            // consumed as a phantom `.stop` (an empty handleStop, flashing a working HUD over the error toast) — forcing a
+            // wasted THIRD tap to resume. Recording never began, so force the toggle back to inactive, exactly as
+            // failToIdle/cancel do for the structurally identical "recording never began" paths. Hold mode is unaffected.
+            hotkeyManager.sessionDidEndExternally()
+            showSetupBlockingError(modelNotReadyMessage())
+            return
+        }
 
         panel.show(state: .listening)
         phase = .listening
@@ -847,30 +876,54 @@ final class DictationCoordinator {
         // 4) Inject at the target App's cursor (with a light hint on polish failure, but never losing characters).
         //    Threads the accumulated metrics so the one-line summary is emitted from inside the `.success` branch — the sole
         //    place injection actually completed (every early exit above already returned, so no misleading success line).
-        injectFinalText(finalText, polishFailed: polished.failed, metrics: metrics)
+        injectFinalText(finalText, polishCategory: polished.category, metrics: metrics)
     }
 
     // MARK: Polish
 
-    /// The result of one polish step: the final text + whether it was a "failure fallback" (for an optional hint after injection).
+    /// Why polish did NOT produce a polished result, carried out of ``polishIfEnabled(_:entries:)`` so ``injectFinalText`` can
+    /// choose truthful, actionable copy instead of collapsing "not configured" and "runtime failure" into one boolean.
+    /// Internal (not `private`) only so `@testable` tests can construct it to drive ``injectFinalText`` directly; it is not part of any public surface.
+    enum PolishFailureCategory: Equatable {
+        /// Polish ran (or was off) and there is nothing to hint — insert silently. Covers polish-off and `.polished`.
+        case none
+        /// Polish is enabled but has NO usable credentials (the caught ``ProviderError/missingAPIKey``): the call never ran.
+        /// Drives a provider-aware "sign in / add an API key under Settings ▸ Polish" hint (actionable, not a scary failure).
+        case notConfigured
+        /// Polish is configured (credentials present) but the call genuinely failed at runtime and fell back to the original.
+        /// Drives the generic "polish failed, used original text" hint.
+        case failed
+    }
+
+    /// The result of one polish step: the final text + WHY polish did not polish (for an optional, category-aware hint after injection).
     private struct PolishStep {
         let text: String
-        /// true only means "the model was called but failed / Provider construction failed"; skip/off does not count as failure.
-        let failed: Bool
+        /// The reason polish did not produce a polished result; `.none` means insert silently (polish off or succeeded).
+        let category: PolishFailureCategory
+    }
+
+    /// Classifies a polish-provider CONSTRUCTION error into a failure category: ``ProviderError/missingAPIKey`` (an empty BYO
+    /// key or a missing ChatGPT OAuth token) is a fixable setup gap → `.notConfigured`; any other error is a genuine runtime
+    /// failure → `.failed`. Pure + `static` so the missingAPIKey-vs-other mapping is unit-testable without the Keychain.
+    static func constructionFailureCategory(_ error: Error) -> PolishFailureCategory {
+        if case ProviderError.missingAPIKey = error { return .notConfigured }
+        return .failed
     }
 
     /// Polishes per the config; both Provider construction failure / polish failure fall back to the original (never losing characters).
     /// - Parameter entries: the per-utterance dictionary snapshot (shared with Layer 1/3), used to build the Layer 2 glossary.
     private func polishIfEnabled(_ transcript: String, entries: [DictionaryEntry]) async -> PolishStep {
-        guard config.polishEnabled else { return PolishStep(text: transcript, failed: false) }
+        guard config.polishEnabled else { return PolishStep(text: transcript, category: .none) }
 
         let provider: any LLMProvider
         do {
             provider = try await makePolishProvider()
         } catch {
-            // No credentials / construction failure: use the original directly (not blocking injection), counted as failure for the optional hint.
+            // Provider construction failed: use the original directly (not blocking injection), but distinguish WHY for the
+            // hint via the pure classifier below — a missing API key / missing OAuth token (ProviderError.missingAPIKey) is
+            // "not configured" (a setup gap the user can fix in Settings ▸ Polish); any other construction error is a runtime failure.
             NSLog("[SayIt] 润色 Provider 构造失败，回退原文: %@", String(describing: error))
-            return PolishStep(text: transcript, failed: true)
+            return PolishStep(text: transcript, category: Self.constructionFailureCategory(error))
         }
 
         // User-dictionary Layer 2: feed a relevant subset of dictionary terms into the polish system prompt so the
@@ -887,10 +940,10 @@ final class DictationCoordinator {
             polishEnabled: true,
             glossary: glossary
         )
-        // Only .failedFallback counts as failure; .polished / .skipped do not hint.
-        let failed: Bool
-        if case .failedFallback = outcome.resolution { failed = true } else { failed = false }
-        return PolishStep(text: outcome.text, failed: failed)
+        // Only .failedFallback is a genuine runtime failure (credentials present, the call failed); .polished / .skipped do not hint.
+        let category: PolishFailureCategory
+        if case .failedFallback = outcome.resolution { category = .failed } else { category = .none }
+        return PolishStep(text: outcome.text, category: category)
     }
 
     /// Builds the polish context with the current (or injection target) frontmost App info, to help the model judge register.
@@ -1080,11 +1133,12 @@ final class DictationCoordinator {
     /// Injects the final text: on focus drift still injects into the current frontmost (the clipboard fallback guarantees no lost characters), the result drives the HUD.
     /// - Parameters:
     ///   - text: the text to inject.
-    ///   - polishFailed: whether polish failed and fell back (only used for a light hint after successful injection, not affecting the injection itself).
+    ///   - polishCategory: WHY polish did not polish (only used for a category-aware hint after successful injection, not affecting the injection itself):
+    ///     `.none` inserts silently; `.notConfigured` shows a provider-aware "sign in / add an API key under Settings ▸ Polish" hint; `.failed` shows the generic "polish failed" hint.
     ///   - metrics: the accumulated per-stage pipeline metrics (observability only). When non-nil AND injection succeeds,
     ///     ONE `.notice` summary line is emitted (the inject stage timed here, total measured to now). `nil` (e.g. older
     ///     test callsites) emits nothing. Never affects injection behavior — purely read at emit time.
-    private func injectFinalText(_ text: String, polishFailed: Bool, metrics: PipelineMetrics? = nil) {
+    private func injectFinalText(_ text: String, polishCategory: PolishFailureCategory, metrics: PipelineMetrics? = nil) {
         let drifted = focusDrifted()
         // Metrics (observability only): bracket the injection (pasteboard + paste / AX). Read regardless of outcome; only
         // emitted below on `.success` (the sole place injection completed — `.failedTextLeftInPasteboard` did NOT inject).
@@ -1102,16 +1156,25 @@ final class DictationCoordinator {
                 emitPipelineMetrics(metrics, injectMs: injectMs, totalMs: totalMs, chars: text.count)
             }
             if drifted {
-                // Focus drifted but the paste still succeeded: give a brief neutral hint, informing it was pasted into the current window.
+                // Focus drifted but the paste still succeeded: give a brief neutral (genuine-success) hint, informing it was pasted into the current window.
                 showTransientInfo(uiLanguageLocalized("hud.pastedToCurrentWindow",
                                                       defaultValue: "Pasted to the current window"))
-            } else if polishFailed {
-                // Injection succeeded but polish failed and fell back to the original: a light hint (never losing characters, only informing).
-                showTransientInfo(uiLanguageLocalized("hud.injectedPolishFailed",
-                                                      defaultValue: "Inserted (polish failed, used original text)"))
             } else {
-                panel.hide()
-                phase = .idle
+                switch polishCategory {
+                case .notConfigured:
+                    // Injection succeeded but polish is enabled with no usable credentials: a provider-aware, actionable hint
+                    // routed through the non-success setup-blocking presentation (red, persistent) — NOT a green checkmark.
+                    showSetupBlockingError(insertedNoPolishMessage())
+                case .failed:
+                    // Injection succeeded but polish was configured and genuinely failed at runtime, falling back to the
+                    // original: the generic hint, routed through the non-success presentation (a failure is not a success).
+                    showSetupBlockingError(uiLanguageLocalized("hud.injectedPolishFailed",
+                                                               defaultValue: "Inserted (polish failed, used original text)"))
+                case .none:
+                    // Polish off or succeeded: silent insertion (unchanged).
+                    panel.hide()
+                    phase = .idle
+                }
             }
             // Learn-from-edits ARM: only on a clean, non-drifted success (the focus target did not move, so the just-injected
             // text is what the focused field now holds). Drift means the paste landed elsewhere, so there is nothing reliable
@@ -1129,6 +1192,21 @@ final class DictationCoordinator {
                 : uiLanguageLocalized("hud.copiedPasteManually",
                                       defaultValue: "Copied to clipboard, please paste manually")
             showTransientError(hint)
+        }
+    }
+
+    /// Provider-aware, actionable copy for "inserted without polish because polish has no usable credentials", chosen by
+    /// ``AppConfig/providerKind``: the ChatGPT (Codex OAuth) provider authenticates by signing in, the BYO providers
+    /// (OpenAI / DeepSeek / Anthropic) authenticate with an API key, so each names the exact fix in Settings ▸ Polish.
+    /// Both en + zh-Hans live in the App catalog via ``uiLanguageLocalized``.
+    private func insertedNoPolishMessage() -> String {
+        switch config.providerKind {
+        case .chatGPT:
+            return uiLanguageLocalized("hud.insertedNoPolishSignIn",
+                                       defaultValue: "Inserted without polish — sign in to ChatGPT under Settings ▸ Polish.")
+        case .openAI, .deepSeek, .anthropic:
+            return uiLanguageLocalized("hud.insertedNoPolishAddKey",
+                                       defaultValue: "Inserted without polish — add an API key under Settings ▸ Polish.")
         }
     }
 
@@ -1390,11 +1468,35 @@ final class DictationCoordinator {
         showTransientError(uiLanguageLocalized("hud.didNotCatchThat", defaultValue: "Didn’t catch that, please try again"))
     }
 
-    /// Local model not ready: the HUD briefly shows a "model still downloading / please switch to cloud" error hint then returns to idle, and does not enter transcription.
-    /// The copy is the in-bundle localization of ``RecordingState/modelNotReadyMessage`` (en + zh-Hans).
+    /// Local model not ready: the HUD shows a state-aware, actionable not-ready hint then returns to idle, and does not enter transcription.
+    /// Routed through ``showSetupBlockingError(_:)`` so it is a non-success (`.error`, NOT green `.info`) toast that stays on screen
+    /// long enough to read and act on. This is the post-record :730 backstop; the primary block is the ``handleStart()`` pre-flight gate,
+    /// which uses the SAME ``modelNotReadyMessage()`` copy so both paths tell the user the same truthful story.
     private func modelNotReadyToIdle() {
-        // Use the .error state to carry the localized copy (no new enum case, avoiding disturbing RecordingPanelView's exhaustive switch).
-        showTransientError(RecordingState.modelNotReadyMessage)
+        showSetupBlockingError(modelNotReadyMessage())
+    }
+
+    /// Truthful, actionable copy for "the local model is not ready to transcribe", chosen by reading ``ModelManager``'s
+    /// published state (via the injectable ``modelState`` seam) instead of always claiming "still downloading":
+    /// - `.downloading(progress:)`: "Local model downloading… NN% — please wait" (truthful, since first launch auto-downloads).
+    /// - `.notDownloaded` / `.failed`: "No local model yet — open Settings ▸ Speech to download (or switch to Cloud)." (actionable).
+    /// The `.downloaded` arm is logically unreachable when not-ready (the gate only fires when ``modelReadiness`` is false),
+    /// so it falls back to the safe in-bundle ``RecordingState/modelNotReadyMessage`` rather than asserting.
+    /// Both en + zh-Hans live in the App catalog (read via ``uiLanguageLocalized`` / its format variant), mirroring the
+    /// menu-bar `menu.modelDownloading %d` line; SayItCore's `hud.modelNotReady` stays untouched as the fallback.
+    private func modelNotReadyMessage() -> String {
+        switch modelState() {
+        case .downloading(let progress, _):
+            let pct = Int((progress * 100).rounded())
+            return uiLanguageLocalized(format: "hud.modelDownloadingPct %d",
+                                       defaultValue: "Local model downloading… %d%% — please wait",
+                                       pct)
+        case .notDownloaded, .failed:
+            return uiLanguageLocalized("hud.noLocalModel",
+                                       defaultValue: "No local model yet — open Settings ▸ Speech to download (or switch to Cloud).")
+        case .downloaded:
+            return RecordingState.modelNotReadyMessage
+        }
     }
 
     /// Failure convergence: the HUD briefly reports an error then returns to idle, and best-effort stops any still-running recording.
@@ -1429,14 +1531,26 @@ final class DictationCoordinator {
         showTransient(.info(message))
     }
 
+    /// Shows a SETUP-BLOCKING error on the HUD (model-not-ready, polish-not-configured): a non-success `.error` toast
+    /// (red exclamation, NOT the green `.info` checkmark — a failure must never look like success) held NOTICEABLY LONGER
+    /// (~6s vs the 1.6s used for ordinary transient hints like "didn't catch that") so the user can read it AND act on the
+    /// named Settings location before it auto-hides. Reuses the same ``showTransient(_:duration:)`` mechanism — no parallel
+    /// state store, no panel rewrite.
+    private func showSetupBlockingError(_ message: String) {
+        showTransient(.error(message), duration: .seconds(6))
+    }
+
     /// Briefly shows a transient state (error / info) on the HUD, then automatically hides and returns to idle.
-    private func showTransient(_ state: RecordingState) {
+    /// - Parameter duration: how long the message stays before the delayed-hide fires. Defaults to 1.6s for ordinary
+    ///   transient hints (didn't-catch-that, drift, paste-manually); setup-blocking messages pass a longer value via
+    ///   ``showSetupBlockingError(_:)`` so they persist long enough to read and act on.
+    private func showTransient(_ state: RecordingState, duration: Duration = .seconds(1.6)) {
         phase = .idle
         panel.update(state: state)
         // Cancel+replace any prior in-flight delayed-hide so only the LATEST transient owns panel.hide().
         transientTask?.cancel()
         transientTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1.6))
+            try? await Task.sleep(for: duration)
             // Cancelled (superseded by a newer transient, or torn down by cancel()/stop()): do not touch the HUD.
             if Task.isCancelled { return }
             guard let self else { return }
@@ -1531,6 +1645,17 @@ final class DictationCoordinator {
 
     /// Directly shows a transient error HUD message (starts the delayed-hide ``transientTask``). For tests asserting transient-task cancellation.
     func _test_showTransientError(_ message: String) { showTransientError(message) }
+
+    /// Directly drives ``injectFinalText(_:polishCategory:metrics:)`` with a chosen category, so a test can assert the
+    /// category-aware, provider-aware copy + the non-success (`.error`) routing on the visible `panel.currentState`,
+    /// without standing up the full transcribe/polish pipeline. Metrics omitted (nil) so nothing is emitted.
+    func _test_injectFinalText(_ text: String, polishCategory: PolishFailureCategory) {
+        injectFinalText(text, polishCategory: polishCategory)
+    }
+
+    /// Computes the state-aware model-not-ready copy (downloading NN% vs no-model) via the injected ``modelState`` seam.
+    /// Lets a test assert the truthful message selection without driving the recorder/pipeline.
+    func _test_modelNotReadyMessage() -> String { modelNotReadyMessage() }
 
     /// Whether a transient delayed-hide task currently exists and is cancelled. Lets a test assert that ``cancel()`` /
     /// ``stop()`` cancelled the in-flight ~1.6s sleeper (so a stale transient can never hide a fresh session / run after teardown).

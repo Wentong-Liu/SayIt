@@ -31,6 +31,7 @@ final class DictationCoordinatorTests: XCTestCase {
         panel: RecordingPanelController = RecordingPanelController(headless: true),
         dictionaryStore: DictionaryStore? = nil,
         modelReadiness: @escaping (String) -> Bool = { _ in true },
+        modelState: @escaping () -> ModelManager.State = { .downloaded },
         transcribeTimeout: Duration = .seconds(5),
         cloudKeyReader: (@Sendable () -> String)? = nil,
         axReader: FocusedTextReading? = nil,
@@ -59,6 +60,7 @@ final class DictationCoordinatorTests: XCTestCase {
             transcriberFactory: transcriber,
             accessibilityGate: { true },
             modelReadiness: modelReadiness,
+            modelState: modelState,
             transcribeTimeout: transcribeTimeout,
             soundCues: SilentSoundCues(),
             cloudKeyReader: cloudKeyReader,
@@ -487,8 +489,8 @@ final class DictationCoordinatorTests: XCTestCase {
 
     // MARK: - Local model not ready: no transcription, no injection, and not stuck "transcribing"
 
-    /// Regression guard: in local mode with the model not downloaded, never call transcription (otherwise the underlying layer triggers a download, and the HUD stays permanently stuck
-    /// "transcribing"). It should converge directly, not construct a transcriber, not inject, and no longer mark itself recording.
+    /// Regression guard: in local mode with the model not ready, never call transcription (otherwise the underlying layer triggers a download, and the HUD stays permanently stuck
+    /// "transcribing"). With the new pre-flight gate the block happens at handleStart (recording never starts), so the transcriber is not constructed, nothing is injected, and it does not mark itself recording.
     func testLocalModelNotReadyDoesNotTranscribeOrHang() async {
         let config = makeConfig()
         config.sttMode = .local
@@ -499,7 +501,7 @@ final class DictationCoordinatorTests: XCTestCase {
             config: config,
             recorder: recorder,
             injector: injector,
-            modelReadiness: { _ in false }  // model not downloaded
+            modelReadiness: { _ in false }  // model not ready
         ) {
             transcriberMade = true
             return FakeTranscriber(text: "不应被转写")
@@ -511,9 +513,44 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertFalse(transcriberMade, "when the model is not ready the transcriber should not be constructed/called (avoiding triggering a download and a hang)")
         XCTAssertTrue(injector.injectedTexts.isEmpty, "when the model is not ready nothing should be injected")
         XCTAssertFalse(coordinator._test_isRecording, "should converge to not-recording")
-        // Recording is stopped to release the device.
+        // The pre-flight gate blocks at handleStart, so recording never starts and is never stopped (the device is never opened — no utterance wasted).
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 0, "the pre-flight gate must block recording entirely")
+    }
+
+    /// Belt-and-suspenders: the post-record :730 backstop still converges if the model becomes not-ready AFTER recording
+    /// already started (a corner the pre-flight gate cannot catch, since it reads readiness once at start). A stateful
+    /// readiness closure (ready at start, not-ready by the time runPipeline checks) drives exactly that path: recording
+    /// starts (startCount 1) and is stopped (stopCount 1), but transcription is never entered and nothing is injected.
+    func testPostRecordBackstopConvergesWhenModelBecomesNotReadyAfterStart() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        var transcriberMade = false
+        // The readiness flips: true on the first read (handleStart pre-flight gate passes → recording starts), false on the
+        // second read (runPipeline :730 backstop → converge). A captured call counter implements that deterministically.
+        let readinessCalls = ReadinessCallCounter()
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            modelReadiness: { _ in readinessCalls.firstCallOnly() }  // true only on the first read, false thereafter
+        ) {
+            transcriberMade = true
+            return FakeTranscriber(text: "不应被转写")
+        }
+
+        await coordinator._test_start()
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 1, "the pre-flight gate passes (ready at start), so recording starts")
+        await coordinator._test_stop()
+
+        XCTAssertFalse(transcriberMade, "the post-record backstop must converge before constructing/calling the transcriber")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "the backstop should inject nothing")
+        XCTAssertFalse(coordinator._test_isRecording, "should converge to not-recording")
         let stopCount = await recorder.stopCount
-        XCTAssertEqual(stopCount, 1)
+        XCTAssertEqual(stopCount, 1, "recording is stopped to release the device")
     }
 
     /// Cloud mode is not affected by the local model readiness gate: even with modelReadiness always false (the local model not downloaded),
@@ -536,6 +573,220 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
 
         XCTAssertEqual(injector.injectedTexts, ["云端转写结果"], "cloud mode should transcribe and inject normally")
+    }
+
+    // MARK: - STT pre-flight gate: do not even RECORD when local && model not ready (never waste an utterance)
+
+    /// The primary not-ready block lives at `handleStart`: in local mode, when the model cannot transcribe yet, the
+    /// coordinator must NOT start the recorder at all (so the user never speaks a full utterance only to have it discarded).
+    /// Distinct from `testLocalModelNotReadyDoesNotTranscribeOrHang`, which only proved the post-record :730 backstop.
+    func testHandleStartGateBlocksRecordingWhenLocalAndModelNotReady() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        let panel = RecordingPanelController(headless: true)
+        var transcriberMade = false
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in false }  // model not ready: the pre-flight gate must block before recording
+        ) {
+            transcriberMade = true
+            return FakeTranscriber(text: "不该被录到")
+        }
+
+        await coordinator._test_start()
+
+        // Immediately after start, the pre-flight gate has surfaced a non-success (.error) toast — never flipped to .listening.
+        if case .error = panel.currentState {} else {
+            XCTFail("the pre-flight gate should surface an .error toast, got \(panel.currentState)")
+        }
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 0, "the pre-flight gate must block recording entirely — recorder.start must never be called")
+        XCTAssertFalse(coordinator._test_isRecording, "must not be marked recording")
+
+        // A subsequent stop (e.g. the second tap of single-tap-toggle) injects nothing and never constructs the transcriber.
+        await coordinator._test_stop()
+        XCTAssertFalse(transcriberMade, "must never construct/call the transcriber")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "nothing should be injected")
+    }
+
+    /// Cloud mode must NOT be gated by local-model readiness at `handleStart`: even with `modelReadiness` false, recording
+    /// starts normally (the cloud transcriber needs no local model).
+    func testHandleStartGateDoesNotBlockCloudMode() async {
+        let config = makeConfig()
+        config.sttMode = .cloud
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            modelReadiness: { _ in false }  // local model not ready, but cloud must record regardless
+        ) {
+            FakeTranscriber(text: "云端不被门禁拦")
+        }
+
+        await coordinator._test_start()
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 1, "cloud mode must record normally — the local-model pre-flight gate must not block it")
+        await coordinator._test_stop()
+        XCTAssertEqual(injector.injectedTexts, ["云端不被门禁拦"], "cloud mode should transcribe and inject normally")
+    }
+
+    // MARK: - Truthful model-not-ready copy: downloading NN% vs no-model-yet, chosen by ModelManager state
+
+    /// When the model IS downloading, the not-ready copy must be the truthful "downloading… NN%" message (with the integer
+    /// percent), driven by the injected `modelState` seam — not the old always-"still downloading" string.
+    func testModelNotReadyMessagePicksDownloadingWithPercent() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        let panel = RecordingPanelController(headless: true)
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in false },
+            modelState: { .downloading(progress: 0.42, speedBytesPerSec: nil) }
+        ) {
+            FakeTranscriber(text: "x")
+        }
+
+        await coordinator._test_start()
+        // The pre-flight gate fired and surfaced the downloading message: it must contain the integer percent.
+        XCTAssertTrue(panel.currentState.displayText.contains("42%"),
+                      "downloading copy must include the integer percent; got: \(panel.currentState.displayText)")
+        // And it must be the downloading message, not the no-model message (assert against the resolver for the percent format).
+        let expected = uiLanguageLocalized(format: "hud.modelDownloadingPct %d",
+                                           defaultValue: "Local model downloading… %d%% — please wait", 42)
+        XCTAssertEqual(coordinator._test_modelNotReadyMessage(), expected,
+                       "should select the downloading-with-percent message")
+    }
+
+    /// When NO model is present (notDownloaded / failed), the copy must be the actionable "no local model — open Settings ▸
+    /// Speech" message, not the downloading one.
+    func testModelNotReadyMessagePicksNoModelWhenNotDownloaded() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            modelReadiness: { _ in false },
+            modelState: { .notDownloaded }
+        ) {
+            FakeTranscriber(text: "x")
+        }
+        let expected = uiLanguageLocalized("hud.noLocalModel",
+                                           defaultValue: "No local model yet — open Settings ▸ Speech to download (or switch to Cloud).")
+        XCTAssertEqual(coordinator._test_modelNotReadyMessage(), expected,
+                       "notDownloaded should select the actionable no-model message")
+        let failedCoordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            modelReadiness: { _ in false },
+            modelState: { .failed(reason: "boom") }
+        ) {
+            FakeTranscriber(text: "x")
+        }
+        XCTAssertEqual(failedCoordinator._test_modelNotReadyMessage(), expected,
+                       "failed should also select the actionable no-model message")
+    }
+
+    // MARK: - Polish failure CATEGORY: notConfigured (missingAPIKey) vs failed (other error)
+
+    /// The construction-error classifier must map `ProviderError.missingAPIKey` (an empty BYO key or a missing ChatGPT OAuth
+    /// token) to `.notConfigured` — a fixable setup gap — and any OTHER error to `.failed` (a genuine runtime failure).
+    /// Pure/static so it is deterministic regardless of the dev machine's Keychain contents.
+    func testConstructionFailureCategoryDistinguishesMissingKeyFromOtherErrors() {
+        XCTAssertEqual(DictationCoordinator.constructionFailureCategory(ProviderError.missingAPIKey), .notConfigured,
+                       "a missing API key / OAuth token must map to .notConfigured")
+        struct OtherError: Error {}
+        XCTAssertEqual(DictationCoordinator.constructionFailureCategory(OtherError()), .failed,
+                       "any non-missingAPIKey construction error must map to .failed")
+        // A different ProviderError case is still a runtime failure, not "not configured".
+        XCTAssertEqual(DictationCoordinator.constructionFailureCategory(ProviderError.invalidResponse), .failed,
+                       "a non-missingAPIKey ProviderError must map to .failed")
+    }
+
+    // MARK: - injectFinalText: provider-aware, non-success copy for notConfigured / failed
+
+    /// When polish was skipped because it is NOT configured, the post-injection hint must be provider-aware and routed
+    /// through the non-success (.error) presentation — never the green .info checkmark. ChatGPT names sign-in; BYO names an API key.
+    func testInjectFinalTextProviderAwareNotConfiguredCopy() {
+        // ChatGPT provider -> "sign in" copy.
+        let chatConfig = makeConfig(polishEnabled: true)
+        chatConfig.providerKind = .chatGPT
+        let panelChat = RecordingPanelController(headless: true)
+        let chatCoordinator = makeCoordinator(
+            config: chatConfig,
+            recorder: FakeAudioRecorder(),
+            injector: FakeTextInjector(result: .success(method: .pasteboard)),
+            panel: panelChat
+        ) { FakeTranscriber(text: "x") }
+        chatCoordinator._test_injectFinalText("文本", polishCategory: .notConfigured)
+        let signIn = uiLanguageLocalized("hud.insertedNoPolishSignIn",
+                                         defaultValue: "Inserted without polish — sign in to ChatGPT under Settings ▸ Polish.")
+        XCTAssertEqual(panelChat.currentState, .error(signIn), "ChatGPT notConfigured should show the sign-in copy via .error")
+
+        // BYO provider (OpenAI) -> "add an API key" copy.
+        let byoConfig = makeConfig(polishEnabled: true)
+        byoConfig.providerKind = .openAI
+        let panelByo = RecordingPanelController(headless: true)
+        let byoCoordinator = makeCoordinator(
+            config: byoConfig,
+            recorder: FakeAudioRecorder(),
+            injector: FakeTextInjector(result: .success(method: .pasteboard)),
+            panel: panelByo
+        ) { FakeTranscriber(text: "x") }
+        byoCoordinator._test_injectFinalText("文本", polishCategory: .notConfigured)
+        let addKey = uiLanguageLocalized("hud.insertedNoPolishAddKey",
+                                         defaultValue: "Inserted without polish — add an API key under Settings ▸ Polish.")
+        XCTAssertEqual(panelByo.currentState, .error(addKey), "BYO notConfigured should show the add-key copy via .error")
+        XCTAssertNotEqual(signIn, addKey, "the two provider-aware messages must genuinely differ")
+    }
+
+    /// A genuine runtime polish failure (.failed) keeps the generic "polish failed, used original text" copy, but routed
+    /// through the non-success (.error) presentation — a failure must never render as a green success checkmark.
+    func testInjectFinalTextFailedShowsGenericCopyViaError() {
+        let config = makeConfig(polishEnabled: true)
+        let panel = RecordingPanelController(headless: true)
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: FakeAudioRecorder(),
+            injector: FakeTextInjector(result: .success(method: .pasteboard)),
+            panel: panel
+        ) { FakeTranscriber(text: "x") }
+        coordinator._test_injectFinalText("文本", polishCategory: .failed)
+        let generic = uiLanguageLocalized("hud.injectedPolishFailed",
+                                          defaultValue: "Inserted (polish failed, used original text)")
+        XCTAssertEqual(panel.currentState, .error(generic),
+                       "a genuine polish failure should show the generic copy via the non-success .error presentation")
+    }
+
+    /// When polish is intentionally OFF / succeeded (.none), insertion stays SILENT — no toast (success path untouched).
+    func testInjectFinalTextNoneInsertsSilently() {
+        let config = makeConfig()
+        let panel = RecordingPanelController(headless: true)
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: FakeAudioRecorder(),
+            injector: FakeTextInjector(result: .success(method: .pasteboard)),
+            panel: panel
+        ) { FakeTranscriber(text: "x") }
+        coordinator._test_injectFinalText("文本", polishCategory: .none)
+        // .none hides the panel (no transient toast started).
+        XCTAssertFalse(coordinator._test_hasTransientTask, "the .none category must not start a transient toast (silent insertion)")
+        XCTAssertEqual(panel.currentState, .idle, "after a silent insertion the panel converges to idle (hidden)")
     }
 
     // MARK: - Cold-start "Preparing model…" HUD state while the local model loads into memory
@@ -1694,6 +1945,17 @@ private final class Counter: @unchecked Sendable {
     private var _value = 0
     func increment() { lock.lock(); _value += 1; lock.unlock() }
     var value: Int { lock.lock(); defer { lock.unlock() }; return _value }
+}
+
+/// A tiny call counter for the model-readiness backstop test: returns true on the FIRST call and false on every call after,
+/// so a single injected closure can model "ready at handleStart, not-ready by the time runPipeline rechecks".
+@MainActor
+private final class ReadinessCallCounter {
+    private var calls = 0
+    func firstCallOnly() -> Bool {
+        defer { calls += 1 }
+        return calls == 0
+    }
 }
 
 /// A never-returning transcriber: used to verify the hard timeout protection (its transcribe sleeps until cancelled).
