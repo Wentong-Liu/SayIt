@@ -233,6 +233,178 @@ final class DictionaryStoreTests: XCTestCase {
         XCTAssertEqual(try decodeOnDisk().entries, [entry])
     }
 
+    // MARK: - Tolerant decode (one bad entry must not wipe the whole dictionary)
+
+    /// Writes a `dictionary.json` whose `entries` array contains the given raw JSON objects (already-serialized
+    /// strings), so individual entries can be deliberately malformed without going through the typed encoder.
+    private func writeRawEntriesFile(_ rawEntryObjects: [String]) throws {
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let fileURL = tempDir.appending(component: "dictionary.json")
+        let joined = rawEntryObjects.joined(separator: ",\n")
+        let json = "{\n  \"entries\": [\n\(joined)\n  ]\n}"
+        try Data(json.utf8).write(to: fileURL, options: [.atomic])
+    }
+
+    /// A complete, valid raw entry JSON object string (every field present), for use in mixed-validity files.
+    private func validRawEntry(id: String, canonical: String) -> String {
+        """
+        {
+          "id": "\(id)",
+          "canonical": "\(canonical)",
+          "variants": ["v1"],
+          "caseSensitive": false,
+          "enabled": true,
+          "scope": {"global": {}},
+          "source": "manual",
+          "createdAt": 0,
+          "usageCount": 0
+        }
+        """
+    }
+
+    /// (a) A file with one malformed entry (missing `usageCount`) plus several good ones must load the good ones,
+    /// not lose everything. This is the core data-loss regression: synthesized Codable fails the whole array on
+    /// one bad element, then the next save overwrites the file -> all entries gone.
+    func testOneMalformedEntryKeepsTheGoodOnes() async throws {
+        let good1 = validRawEntry(id: "11111111-1111-1111-1111-111111111111", canonical: "Alpha")
+        // Malformed: `usageCount` omitted -> keyNotFound under synthesized Codable.
+        let bad = """
+        {
+          "id": "22222222-2222-2222-2222-222222222222",
+          "canonical": "Bravo",
+          "variants": [],
+          "caseSensitive": false,
+          "enabled": true,
+          "scope": {"global": {}},
+          "source": "manual",
+          "createdAt": 0
+        }
+        """
+        let good2 = validRawEntry(id: "33333333-3333-3333-3333-333333333333", canonical: "Charlie")
+        try writeRawEntriesFile([good1, bad, good2])
+
+        let store = makeStore()
+        let loaded = await store.all()
+        let canonicals = loaded.map(\.canonical).sorted()
+        // The malformed entry (Bravo) is recovered with usageCount defaulted to 0, and the good ones survive.
+        XCTAssertEqual(canonicals, ["Alpha", "Bravo", "Charlie"])
+    }
+
+    /// (b) An unknown `Source` rawValue must default to `.manual` instead of dropping the entry / failing the load.
+    func testUnknownSourceDefaultsToManual() async throws {
+        let bad = """
+        {
+          "id": "44444444-4444-4444-4444-444444444444",
+          "canonical": "Delta",
+          "variants": [],
+          "caseSensitive": false,
+          "enabled": true,
+          "scope": {"global": {}},
+          "source": "fromTheFuture",
+          "createdAt": 0,
+          "usageCount": 5
+        }
+        """
+        try writeRawEntriesFile([bad])
+
+        let store = makeStore()
+        let loaded = await store.all()
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded.first?.canonical, "Delta")
+        XCTAssertEqual(loaded.first?.source, .manual)
+        XCTAssertEqual(loaded.first?.usageCount, 5)
+    }
+
+    /// (c) A missing `usageCount` must default to `0` (and other optional fields to their safe defaults).
+    func testMissingUsageCountDefaultsToZero() async throws {
+        let entry = """
+        {
+          "id": "55555555-5555-5555-5555-555555555555",
+          "canonical": "Echo",
+          "variants": ["e"],
+          "scope": {"global": {}},
+          "createdAt": 0
+        }
+        """
+        try writeRawEntriesFile([entry])
+
+        let store = makeStore()
+        let loaded = await store.all()
+        XCTAssertEqual(loaded.count, 1)
+        let e = try XCTUnwrap(loaded.first)
+        XCTAssertEqual(e.canonical, "Echo")
+        XCTAssertEqual(e.usageCount, 0)
+        XCTAssertFalse(e.caseSensitive)
+        XCTAssertTrue(e.enabled)
+        XCTAssertEqual(e.source, .manual)
+    }
+
+    /// An entry with a missing/empty `canonical` is droppable (cannot match anything), but must not poison the load.
+    func testEntryWithEmptyCanonicalIsDroppedButOthersSurvive() async throws {
+        let empty = """
+        {
+          "id": "66666666-6666-6666-6666-666666666666",
+          "canonical": "",
+          "variants": [],
+          "scope": {"global": {}},
+          "createdAt": 0,
+          "usageCount": 0
+        }
+        """
+        let good = validRawEntry(id: "77777777-7777-7777-7777-777777777777", canonical: "Foxtrot")
+        try writeRawEntriesFile([empty, good])
+
+        let store = makeStore()
+        let loaded = await store.all()
+        XCTAssertEqual(loaded.map(\.canonical), ["Foxtrot"])
+    }
+
+    /// (d) A fully-corrupt file is backed up to `dictionary.json.corrupt` and the store starts empty without crashing,
+    /// so the next save does not overwrite the user's (recoverable) data.
+    func testFullyCorruptFileIsBackedUpAndStartsEmpty() async throws {
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let fileURL = tempDir.appending(component: "dictionary.json")
+        let corruptPayload = "{ not valid json at all"
+        try Data(corruptPayload.utf8).write(to: fileURL)
+
+        let store = makeStore()
+        let entries = await store.all()
+        XCTAssertTrue(entries.isEmpty, "完全损坏的文件应以空词典起步")
+
+        // The original (recoverable) bytes must have been preserved at the .corrupt sidecar.
+        let backupURL = tempDir.appending(component: "dictionary.json.corrupt")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: backupURL.path),
+            "完全损坏的文件应在起步前备份到 .corrupt")
+        let backupContents = try String(contentsOf: backupURL, encoding: .utf8)
+        XCTAssertEqual(backupContents, corruptPayload, "备份内容应与原始损坏字节一致")
+
+        // A subsequent save must not crash and produces legal JSON.
+        let entry = sampleEntry()
+        await store.add(entry)
+        XCTAssertEqual(try decodeOnDisk().entries, [entry])
+    }
+
+    /// (e) The normal round-trip still works after the tolerant-decode changes (no regression on healthy files).
+    func testTolerantDecodeNormalRoundTripStillWorks() async throws {
+        let entry = DictionaryEntry(
+            id: UUID(uuidString: "88888888-8888-8888-8888-888888888888")!,
+            canonical: "Golf",
+            variants: ["g", "golff"],
+            caseSensitive: true,
+            enabled: false,
+            scope: .app(bundleID: "com.example.app"),
+            source: .learnedFromEdit,
+            createdAt: fixedDate,
+            usageCount: 9
+        )
+        let store = makeStore()
+        await store.add(entry)
+
+        let reloaded = await makeStore().all()
+        XCTAssertEqual(reloaded, [entry])
+    }
+
     // MARK: - Change notification
 
     func testAddPostsChangeNotification() async {

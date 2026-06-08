@@ -82,6 +82,62 @@ public struct DictionaryEntry: Codable, Identifiable, Sendable, Equatable {
         self.createdAt = createdAt
         self.usageCount = usageCount
     }
+
+    // MARK: - Tolerant decoding (forward/backward compatible)
+
+    /// The coding keys, declared explicitly so the tolerant ``init(from:)`` and the (still synthesized) `encode(to:)`
+    /// agree on the on-disk shape. Names match the synthesized defaults, so existing `dictionary.json` files keep working.
+    private enum CodingKeys: String, CodingKey {
+        case id, canonical, variants, caseSensitive, enabled, scope, source, createdAt, usageCount
+    }
+
+    /// A **tolerant** decoder so one stale/forward-incompatible field never throws away the whole entry (and, in turn,
+    /// the whole user dictionary -- see ``DictionaryStore`` lossy load).
+    ///
+    /// Tolerance rules:
+    /// - `id` / `createdAt`: missing -> safe synthesized fallback (`UUID()` / `Date()`) instead of failing.
+    ///   These are not user-meaningful enough to justify dropping a recoverable entry.
+    /// - `canonical`: **required content** -- a missing or whitespace-only canonical makes the entry meaningless
+    ///   (it can never be the replacement target), so we throw `DecodingError.dataCorrupted` and let the lossy array
+    ///   load drop just this one entry.
+    /// - `variants`: missing -> `[]`.
+    /// - `caseSensitive`: missing -> `false`.
+    /// - `enabled`: missing -> `true`.
+    /// - `scope`: missing -> `.global`.
+    /// - `source`: missing **or an unknown rawValue** (e.g. a future source kind on an old build) -> `.manual`.
+    /// - `usageCount`: missing -> `0`.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+
+        let rawCanonical = try container.decodeIfPresent(String.self, forKey: .canonical) ?? ""
+        guard !rawCanonical.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            // No usable canonical -> this entry can never match; mark it droppable for the lossy array load.
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: container.codingPath + [CodingKeys.canonical],
+                    debugDescription: "DictionaryEntry has a missing or empty `canonical`; dropping the entry."
+                )
+            )
+        }
+        self.canonical = rawCanonical
+
+        self.variants = try container.decodeIfPresent([String].self, forKey: .variants) ?? []
+        self.caseSensitive = try container.decodeIfPresent(Bool.self, forKey: .caseSensitive) ?? false
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        self.scope = try container.decodeIfPresent(Scope.self, forKey: .scope) ?? .global
+
+        // Unknown / future `source` rawValue -> fall back to `.manual` rather than failing the entry.
+        if let rawSource = try container.decodeIfPresent(String.self, forKey: .source) {
+            self.source = Source(rawValue: rawSource) ?? .manual
+        } else {
+            self.source = .manual
+        }
+
+        self.createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.usageCount = try container.decodeIfPresent(Int.self, forKey: .usageCount) ?? 0
+    }
 }
 
 /// The root container of the user dictionary (the whole dictionary = a set of entries). Persisted directly as the top-level structure of the JSON file.
