@@ -181,6 +181,39 @@ private final class FakeLevelStreamHolder: @unchecked Sendable {
     }
 }
 
+/// A controllable fake focused-text reader for the learn-from-edits tests: returns a queued sequence of results
+/// (one per `readFocusedText()` call) so a test can drive the ARM read (baseline) and the read-back (edited value) with
+/// different values. When the queue runs dry it keeps returning the LAST queued result, so a single-value queue can serve
+/// both reads. Records the call count for assertions. `@MainActor` to satisfy ``FocusedTextReading``.
+@MainActor
+final class FakeFocusedTextReader: FocusedTextReading {
+    var trusted: Bool
+    private var results: [FocusedText?]
+    private(set) var readCount = 0
+
+    /// - Parameters:
+    ///   - trusted: the trust flag the protocol exposes; defaults to true.
+    ///   - results: the queued read results, consumed one per `readFocusedText()`; the last one repeats once exhausted.
+    init(trusted: Bool = true, results: [FocusedText?]) {
+        self.trusted = trusted
+        self.results = results
+    }
+
+    /// Convenience: a reader that always returns the same single value.
+    convenience init(trusted: Bool = true, single: FocusedText?) {
+        self.init(trusted: trusted, results: [single])
+    }
+
+    var isTrusted: Bool { trusted }
+
+    func readFocusedText() -> FocusedText? {
+        readCount += 1
+        guard !results.isEmpty else { return nil }
+        if results.count == 1 { return results[0] }
+        return results.removeFirst()
+    }
+}
+
 /// A controllable fake injector: records the injected text and returns success/failure per the preset.
 final class FakeTextInjector: TextInjecting, @unchecked Sendable {
     private let lock = NSLock()

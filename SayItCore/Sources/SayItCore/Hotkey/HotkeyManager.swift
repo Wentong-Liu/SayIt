@@ -44,6 +44,13 @@ public final class HotkeyManager {
     /// The macOS virtual keyCode for the ESC key (used to cancel an in-progress dictation; mirrors ``TriggerKey``'s named-keyCode style instead of a bare magic number).
     private let escapeKeyCode: UInt16 = 53
 
+    /// The macOS virtual keyCode for the Backspace (Delete-back) key. Used as a passive "the user is editing" signal for the
+    /// learn-from-edits feature; mirrors ``escapeKeyCode``'s named-keyCode style instead of a bare magic number.
+    private let backspaceKeyCode: UInt16 = 51
+
+    /// The macOS virtual keyCode for the Forward-Delete key. The other in-place edit signal alongside ``backspaceKeyCode``.
+    private let forwardDeleteKeyCode: UInt16 = 117
+
     // MARK: Event output
 
     /// Main-thread event callback (active simultaneously with ``events``).
@@ -56,6 +63,12 @@ public final class HotkeyManager {
     /// returns false / is nil, so we never swallow ESC globally — the foreground app keeps receiving it. The coordinator owns this state (its phase),
     /// keeping the "ignore ESC when idle" rule in one place rather than duplicating dictation state inside the manager.
     public var isSessionActive: (() -> Bool)?
+
+    /// Fired (main thread) on a Backspace / Forward-Delete keyDown — a passive "the user is editing text" signal for the
+    /// learn-from-edits feature. The monitor is observe-only: the key is NEVER consumed, so the foreground app still receives
+    /// it and normal typing is never blocked. The coordinator gates on this only while a fresh injection record exists
+    /// (otherwise it is a no-op), so this is harmless when learn-from-edits is off or no recent injection is pending.
+    public var onEditKey: (() -> Void)?
 
     /// Event async sequence, convenient for `for await event in manager.events { ... }`.
     public let events: AsyncStream<HotkeyEvent>
@@ -171,6 +184,29 @@ public final class HotkeyManager {
         return singleTapMachine.modifierUp(at: 0)
     }
 
+    /// Synthesizes one ordinary keyDown by virtual keyCode and runs it through the SAME private ``handleKeyDown(_:)``
+    /// path a real global monitor would (NSEvent global monitoring cannot be synthesized in unit tests). Used to assert
+    /// Backspace(51)/Forward-Delete(117) fire ``onEditKey`` and that edit keys do not disturb the single-tap candidate.
+    /// Returns the constructed event so callers can also reuse it; a `nil` return means the platform refused to build the
+    /// synthetic event (treated as a skipped assertion by the test).
+    @discardableResult
+    public func _test_emitKeyDown(keyCode: UInt16) -> NSEvent? {
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: keyCode
+        ) else { return nil }
+        handleKeyDown(event)
+        return event
+    }
+
     // MARK: Event handling (shell layer -> pure state machine)
 
     private func handleFlagsChanged(_ event: NSEvent) {
@@ -228,6 +264,14 @@ public final class HotkeyManager {
             // ESC cancels an in-progress dictation only. When idle (isSessionActive false/nil) we do nothing and leave ESC to the foreground app,
             // and return early so ESC never taints the single-tap candidate (otherwise a stray ESC during a hold could void the tap).
             if isSessionActive?() == true { onCancel?() }
+            return
+        }
+
+        if event.keyCode == backspaceKeyCode || event.keyCode == forwardDeleteKeyCode {
+            // Passive edit signal for learn-from-edits: notify (never consume) and return early so the edit key does not
+            // taint the single-tap candidate (same reasoning as ESC). The coordinator ignores this unless a fresh injection
+            // record exists, so normal typing/deleting is never affected.
+            onEditKey?()
             return
         }
 

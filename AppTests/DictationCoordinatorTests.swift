@@ -31,6 +31,10 @@ final class DictationCoordinatorTests: XCTestCase {
         modelReadiness: @escaping (String) -> Bool = { _ in true },
         transcribeTimeout: Duration = .seconds(5),
         cloudKeyReader: (@Sendable () -> String)? = nil,
+        axReader: FocusedTextReading? = nil,
+        suggestionPanel: SuggestionPanelController? = nil,
+        learnFreshness: Duration = .seconds(8),
+        learnDebounce: Duration = .milliseconds(1),
         transcriber: @escaping () throws -> any Transcriber
     ) -> DictationCoordinator {
         // By default inject an empty-dictionary store backed by a temp directory: an empty dictionary -> Layer 3 rewriting is identity (zero behavior change),
@@ -38,6 +42,8 @@ final class DictationCoordinatorTests: XCTestCase {
         let store = dictionaryStore ?? DictionaryStore(
             baseDirectory: FileManager.default.temporaryDirectory
                 .appending(component: "sayit-coord-dict-\(UUID().uuidString)"))
+        // Default learn-from-edits reader returns nil (never arms) so tests that don't exercise the feature are unaffected;
+        // a fresh suggestion panel avoids touching the shared singleton. The debounce defaults to ~1ms for fast tests.
         return DictationCoordinator(
             config: config,
             recorder: recorder,
@@ -48,7 +54,11 @@ final class DictationCoordinatorTests: XCTestCase {
             accessibilityGate: { true },
             modelReadiness: modelReadiness,
             transcribeTimeout: transcribeTimeout,
-            cloudKeyReader: cloudKeyReader
+            cloudKeyReader: cloudKeyReader,
+            axReader: axReader ?? FakeFocusedTextReader(single: nil),
+            suggestionPanel: suggestionPanel ?? SuggestionPanelController(autoDismissAfter: .seconds(60)),
+            learnFreshness: learnFreshness,
+            learnDebounce: learnDebounce
         )
     }
 
@@ -1021,6 +1031,237 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_start()
         await coordinator._test_stop()
         XCTAssertEqual(readCount.value, 2, "模型变更后应重新读取云端密钥（此时本就需要重建转写器）")
+    }
+
+    // MARK: - Learn from edits (Part B): arm + edit-key + diff + persist; OFF / AX-nil / expired / non-proper-noun
+
+    /// End-to-end happy path: toggle ON + a successful inject arms the record (reader returns the baseline), an edit-key
+    /// then a read-back returning a single proper-noun substitution presents a suggestion; Accept persists a
+    /// `.learnedFromEdit` entry (canonical=corrected, variants=[heard]) to the store.
+    func testLearnFromEditsArmEditAcceptPersistsEntry() async {
+        let config = makeConfig()
+        config.learnFromEditsEnabled = true
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let store = DictionaryStore(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appending(component: "sayit-coord-learn-\(UUID().uuidString)"))
+        // First read (ARM): the injected baseline. Second read (read-back): the user-corrected text (jon -> John).
+        let reader = FakeFocusedTextReader(results: [
+            FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),   // arm baseline
+            FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),  // edited
+        ])
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertEqual(injector.injectedTexts, ["I met jon today"], "应注入转写文本")
+        XCTAssertTrue(coordinator._test_injectionRecordArmed, "开启后成功注入应武装一条 injection record")
+
+        // Simulate the user editing in place (Backspace), then the debounced read-back + diff.
+        await coordinator._test_handleEditKey()
+        XCTAssertTrue(suggestionPanel._test_isShown, "单 token 专有名词替换应弹出建议")
+
+        // Accept -> persist + clear the record.
+        suggestionPanel._test_accept()
+        // The persist runs in a detached Task off the main actor; poll the store until it lands.
+        let added = await waitForEntry(in: store)
+        XCTAssertEqual(added?.canonical, "John", "Accept 应以 corrected 作为 canonical 持久化")
+        XCTAssertEqual(added?.variants, ["jon"], "Accept 应以 heard 作为 variant 持久化")
+        XCTAssertEqual(added?.source, .learnedFromEdit, "来源应为 learnedFromEdit")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "Accept 后应清除 record")
+    }
+
+    /// Dismiss path: the same arm + edit + suggestion, but Dismiss adds NOTHING and clears the record.
+    func testLearnFromEditsDismissPersistsNothing() async {
+        let config = makeConfig()
+        config.learnFromEditsEnabled = true
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let store = DictionaryStore(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appending(component: "sayit-coord-learn-dismiss-\(UUID().uuidString)"))
+        let reader = FakeFocusedTextReader(results: [
+            FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),
+            FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),
+        ])
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        await coordinator._test_handleEditKey()
+        XCTAssertTrue(suggestionPanel._test_isShown)
+
+        suggestionPanel._test_dismiss()
+        // Give any (erroneous) persist a chance to run, then assert the store stayed empty.
+        for _ in 0..<10 { await Task.yield() }
+        let entries = await store.all()
+        XCTAssertTrue(entries.isEmpty, "Dismiss 不应持久化任何条目")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "Dismiss 后应清除 record")
+    }
+
+    /// Toggle OFF: ZERO behavior change. injectFinalText arms NOTHING, an edit-key is a no-op, no suggestion, store empty,
+    /// and the injected text is byte-identical (reusing the empty-dictionary regression).
+    func testLearnFromEditsOffArmsNothingAndNoSuggestion() async {
+        let config = makeConfig()  // learnFromEditsEnabled defaults to false
+        XCTAssertFalse(config.learnFromEditsEnabled, "前置：默认应为关")
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let store = DictionaryStore(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appending(component: "sayit-coord-learn-off-\(UUID().uuidString)"))
+        // A reader that WOULD yield a learnable diff if it were ever consulted — proving OFF never reads/diffs.
+        let reader = FakeFocusedTextReader(results: [
+            FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),
+            FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),
+        ])
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertEqual(injector.injectedTexts, ["I met jon today"], "OFF 时注入文本应逐字节不变（零行为变化）")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "OFF 时不应武装任何 record")
+        XCTAssertEqual(reader.readCount, 0, "OFF 时绝不应进行任何 AX 读取")
+
+        await coordinator._test_handleEditKey()
+        XCTAssertFalse(suggestionPanel._test_isShown, "OFF 时编辑键应为 no-op，无建议")
+        let entries = await store.all()
+        XCTAssertTrue(entries.isEmpty, "OFF 时词典应保持为空")
+    }
+
+    /// AX read returns nil at ARM time (secure/unreadable field): the record is NOT armed, so a later edit-key is a no-op.
+    func testLearnFromEditsAXNilAtArmDoesNotArm() async {
+        let config = makeConfig()
+        config.learnFromEditsEnabled = true
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let reader = FakeFocusedTextReader(single: nil)  // unreadable everywhere
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "ARM 时 AX 返回 nil 不应武装 record")
+        await coordinator._test_handleEditKey()
+        XCTAssertFalse(suggestionPanel._test_isShown, "未武装时编辑键应无建议")
+    }
+
+    /// AX read returns nil at READ-BACK time (focus moved to a secure/unreadable field after arming): no suggestion.
+    func testLearnFromEditsAXNilAtReadBackNoSuggestion() async {
+        let config = makeConfig()
+        config.learnFromEditsEnabled = true
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        // Read 1 (ARM) succeeds (baseline), read 2 (read-back) returns nil.
+        let reader = FakeFocusedTextReader(results: [
+            FocusedText(value: "I met jon today", selectedLocation: 15, selectedLength: 0),
+            nil,
+        ])
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertTrue(coordinator._test_injectionRecordArmed, "ARM 读成功应武装")
+
+        await coordinator._test_handleEditKey()
+        XCTAssertFalse(suggestionPanel._test_isShown, "读回 AX nil 应静默丢弃，无建议")
+    }
+
+    /// An expired record: the edit-key is ignored entirely (never interferes with typing), no suggestion.
+    func testLearnFromEditsExpiredRecordIgnored() async {
+        let config = makeConfig()
+        config.learnFromEditsEnabled = true
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        // The read-back WOULD diff if consulted, but the expired record should short-circuit before any read.
+        let reader = FakeFocusedTextReader(results: [
+            FocusedText(value: "I met John today", selectedLocation: 16, selectedLength: 0),
+        ])
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        // Force-arm an already-EXPIRED record (bypasses the AX arm read).
+        coordinator._test_armInjectionRecord(injected: "I met jon today", expiresAt: Date(timeIntervalSinceNow: -1))
+        XCTAssertTrue(coordinator._test_injectionRecordArmed)
+
+        await coordinator._test_handleEditKey()
+        XCTAssertFalse(suggestionPanel._test_isShown, "过期 record 应被忽略，无建议")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "过期 record 应被清除")
+        XCTAssertEqual(reader.readCount, 0, "过期 record 应在任何读取前短路")
+    }
+
+    /// A non-proper-noun edit (cat -> dog, both common words): the detector returns nil, so no suggestion is shown.
+    func testLearnFromEditsNonProperNounEditNoSuggestion() async {
+        let config = makeConfig()
+        config.learnFromEditsEnabled = true
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let reader = FakeFocusedTextReader(results: [
+            FocusedText(value: "the cat sat", selectedLocation: 11, selectedLength: 0),  // arm baseline
+            FocusedText(value: "the dog sat", selectedLocation: 11, selectedLength: 0),  // edited (common->common)
+        ])
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60))
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel
+        ) {
+            FakeTranscriber(text: "the cat sat")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        await coordinator._test_handleEditKey()
+
+        XCTAssertFalse(suggestionPanel._test_isShown, "普通词->普通词（cat->dog）detector 返回 nil，不应有建议")
+    }
+
+    /// Polls the store until it has at least one entry (the Accept persist runs in a detached Task off the main actor),
+    /// returning the first entry. Returns nil if none appears within the poll window.
+    private func waitForEntry(in store: DictionaryStore) async -> DictionaryEntry? {
+        for _ in 0..<200 {
+            let entries = await store.all()
+            if let first = entries.first { return first }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return await store.all().first
     }
 }
 

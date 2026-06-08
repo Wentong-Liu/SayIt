@@ -1,6 +1,60 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "learn.suggestion.accept" : {
+      "comment" : "Learn-from-edits suggestion: accept button (add the word to the dictionary)",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "添加"
+          }
+        }
+      }
+    },
+    "learn.suggestion.dismiss" : {
+      "comment" : "Learn-from-edits suggestion: dismiss button (ignore the suggestion)",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dismiss"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "忽略"
+          }
+        }
+      }
+    },
+    "learn.suggestion.title" : {
+      "comment" : "Learn-from-edits suggestion prompt; %@ is the corrected word the user typed",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add \"%@\" to dictionary?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "把“%@”加入词典？"
+          }
+        }
+      }
+    },
     "hud.done" : {
       "comment" : "Recording HUD: neutral completion fallback",
       "extractionState" : "manual",
