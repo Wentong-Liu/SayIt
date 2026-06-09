@@ -238,17 +238,17 @@ final class DictationCoordinatorTests: XCTestCase {
         let config = makeConfig()
         let recorder = FakeAudioRecorder(samples: [])  // nothing said
         let injector = FakeTextInjector()
-        var transcriberMade = false
+        let transcriber = FakeTranscriber(text: "不应被调用")
         let coordinator = makeCoordinator(config: config, recorder: recorder, injector: injector) {
-            transcriberMade = true
-            return FakeTranscriber(text: "不应被调用")
+            transcriber
         }
 
         await coordinator._test_start()
         await coordinator._test_stop()
 
         XCTAssertTrue(injector.injectedTexts.isEmpty, "empty audio should not inject")
-        XCTAssertFalse(transcriberMade, "empty audio should not construct a transcriber")
+        let calls = await transcriber.calls
+        XCTAssertTrue(calls.isEmpty, "empty audio should not call the transcriber")
     }
 
     // MARK: - Empty transcription: no injection
@@ -550,7 +550,7 @@ final class DictationCoordinatorTests: XCTestCase {
         config.sttMode = .local
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector()
-        var transcriberMade = false
+        let transcriber = FakeTranscriber(text: "不应被转写")
         // The readiness flips: true on the first read (handleStart pre-flight gate passes → recording starts), false on the
         // second read (runPipeline :730 backstop → converge). A captured call counter implements that deterministically.
         let readinessCalls = ReadinessCallCounter()
@@ -560,8 +560,7 @@ final class DictationCoordinatorTests: XCTestCase {
             injector: injector,
             modelReadiness: { _ in readinessCalls.firstCallOnly() }  // true only on the first read, false thereafter
         ) {
-            transcriberMade = true
-            return FakeTranscriber(text: "不应被转写")
+            transcriber
         }
 
         await coordinator._test_start()
@@ -569,7 +568,8 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(startCount, 1, "the pre-flight gate passes (ready at start), so recording starts")
         await coordinator._test_stop()
 
-        XCTAssertFalse(transcriberMade, "the post-record backstop must converge before constructing/calling the transcriber")
+        let calls = await transcriber.calls
+        XCTAssertTrue(calls.isEmpty, "the post-record backstop must converge before calling the transcriber")
         XCTAssertTrue(injector.injectedTexts.isEmpty, "the backstop should inject nothing")
         XCTAssertFalse(coordinator._test_isRecording, "should converge to not-recording")
         let stopCount = await recorder.stopCount
@@ -705,6 +705,53 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_stop()
         XCTAssertFalse(transcriberMade, "must never construct/call the transcriber while the model is still downloading")
         XCTAssertTrue(injector.injectedTexts.isEmpty, "nothing should be injected while the model is still downloading")
+    }
+
+    /// When the local model is downloaded but not loaded into memory yet, the first hotkey press should prepare the
+    /// model immediately instead of starting a recording that will only block after the user finishes speaking.
+    func testHandleStartPreparesColdLocalModelBeforeRecording() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector()
+        let panel = RecordingPanelController(headless: true)
+        let transcriber = FakeTranscriber(text: "下一次才应该转写", ready: false)
+        await transcriber.gatePreload()
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in true },
+            modelState: { .downloaded }
+        ) {
+            transcriber
+        }
+
+        coordinator._test_handleStart()
+
+        var sawPreparing = false
+        for _ in 0..<200 {
+            if panel.currentState == .processing(progress: 0.0, phase: .preparingModel) {
+                sawPreparing = true
+                break
+            }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+
+        XCTAssertTrue(sawPreparing, "the first hotkey press should show 'preparing model' before any recording starts")
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 0, "a cold downloaded model should be prepared before opening the microphone")
+        XCTAssertFalse(coordinator._test_isRecording, "preparing the model should not mark the coordinator as recording")
+        let preloaded = await transcriber.preloadCalled
+        XCTAssertTrue(preloaded, "the hotkey press should kick the local model preload immediately")
+        let calls = await transcriber.calls
+        XCTAssertTrue(calls.isEmpty, "preparing the model should not transcribe any audio from the first press")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "preparing the model should not inject anything")
+
+        await transcriber.releasePreload()
+        await coordinator._test_awaitStart()
     }
 
     /// The post-record backstop (runPipeline) must ALSO treat an in-progress download as not-ready: if a download is still
@@ -898,14 +945,14 @@ final class DictationCoordinatorTests: XCTestCase {
     // MARK: - Cold-start "Preparing model…" HUD state while the local model loads into memory
 
     /// On a COLD local-model start (model downloaded — the download gate passes — but the CoreML engine not yet loaded into
-    /// memory), the pipeline must FIRST show the "preparing model" HUD phase and AWAIT the load, THEN transcribe. Without this,
-    /// transcribe blocks on the load for several seconds while the HUD shows "Transcribing…", looking frozen.
+    /// memory), the hotkey press must show "preparing model" and AWAIT the load BEFORE opening the microphone. The first press
+    /// prepares only; after the model is warm, the next press records and transcribes normally.
     ///
     /// Determinism (no scheduling luck): the fake transcriber reports `isReady=false` and its `preload()` is GATED — it
     /// suspends until the test releases it, pinning the "preparing model" window so the test can observe the HUD state before
     /// the load completes (mirrors the recorder stop/start gates). After release the load finishes, `isReady` flips true, and
-    /// the pipeline transcribes + injects.
-    func testColdLocalModelShowsPreparingThenTranscribes() async {
+    /// the following dictation transcribes + injects.
+    func testColdLocalModelPreparesOnFirstPressThenNextPressTranscribes() async {
         let config = makeConfig()
         config.sttMode = .local
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
@@ -924,11 +971,9 @@ final class DictationCoordinatorTests: XCTestCase {
             transcriber
         }
 
-        await coordinator._test_start()
-        // Drive stop WITHOUT awaiting the pipeline, so we can observe the preparing-model HUD state while preload() is gated.
-        coordinator._test_handleStop()
+        coordinator._test_handleStart()
 
-        // The pipeline reaches the cold-start gate and pushes the preparing-model state; poll until the panel shows it.
+        // The start path reaches the cold-start gate and pushes the preparing-model state; poll until the panel shows it.
         var sawPreparing = false
         for _ in 0..<200 {
             if panel.currentState == .processing(progress: 0.0, phase: .preparingModel) {
@@ -938,22 +983,29 @@ final class DictationCoordinatorTests: XCTestCase {
             await Task.yield()
             try? await Task.sleep(for: .milliseconds(5))
         }
-        XCTAssertTrue(sawPreparing, "a cold local-model start should show the 'preparing model' HUD phase before transcribing")
+        XCTAssertTrue(sawPreparing, "a cold local-model start should show the 'preparing model' HUD phase before recording")
         // The copy follows the UI language via the same localized helper as every other HUD state: compare against the
         // resolver's output for the current persisted language (rather than hardcoding a locale) so this holds in en or zh.
         let expectedCopy = UILanguageLocalizer.string("hud.preparingModel", defaultValue: "Preparing model…", bundle: .module)
         XCTAssertEqual(panel.currentState.displayText, expectedCopy,
                        "the preparing-model phase copy should be the UI-language-localized hud.preparingModel string")
         XCTAssertNotEqual(expectedCopy, "Transcribing…", "the preparing copy must be distinct from the transcribing copy")
+        let firstStartCount = await recorder.startCount
+        XCTAssertEqual(firstStartCount, 0, "a cold first press prepares the model before opening the microphone")
 
-        // Release the gated load: the model finishes loading, the pipeline flips to transcribing, transcribes, and injects.
+        // Release the gated load: the model finishes loading, and the first press returns to idle without recording.
         await transcriber.releasePreload()
-        await coordinator._test_awaitProcessing()
+        await coordinator._test_awaitStart()
 
         let preloaded = await transcriber.preloadCalled
-        XCTAssertTrue(preloaded, "the cold-start gate should have awaited preload() before transcribing")
+        XCTAssertTrue(preloaded, "the cold-start gate should have awaited preload() before recording")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "the preparing press should not inject anything")
+        XCTAssertEqual(coordinator.phase, .idle, "after preparing, the coordinator should return to idle for the next hotkey press")
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
         XCTAssertEqual(injector.injectedTexts, ["冷启动转写结果"],
-                       "after the model loads the pipeline should transcribe and inject normally")
+                       "after the model loads, the next dictation should transcribe and inject normally")
     }
 
     /// When the local model is already WARM (isReady=true — the common case after opportunistic prewarm), the cold-start gate
@@ -1006,14 +1058,13 @@ final class DictationCoordinatorTests: XCTestCase {
             injector: injector,
             panel: panel,
             modelReadiness: { _ in true },     // download gate passes; the cold in-memory load is what hangs
-            transcribeTimeout: .milliseconds(50)  // tiny bound so the wait elapses fast
+            modelLoadTimeout: .milliseconds(50)  // tiny bound so the wait elapses fast
         ) {
             transcriber
         }
 
         await coordinator._test_start()
-        // Awaiting the pipeline must NOT hang: the bounded wait elapses (~50ms) even though preload() never returns.
-        await coordinator._test_stop()
+        // Awaiting the first start must NOT hang: the bounded wait elapses (~50ms) even though preload() never returns.
 
         XCTAssertTrue(injector.injectedTexts.isEmpty, "a still-preparing convergence must inject nothing")
         XCTAssertEqual(coordinator.phase, .idle, "the bounded prepare wait must converge to idle (never stuck)")
@@ -1028,6 +1079,8 @@ final class DictationCoordinatorTests: XCTestCase {
         // The detached load was kicked and is NOT cancelled — it keeps running so a retry is warm.
         let preloaded = await transcriber.preloadCalled
         XCTAssertTrue(preloaded, "the cold-start load must have been kicked (and keeps running detached)")
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 0, "a still-preparing first press should not open the microphone")
         // Release the gate so the lingering detached load task can finish (test hygiene; no behavior assertion).
         await transcriber.releasePreload()
     }
@@ -1051,21 +1104,21 @@ final class DictationCoordinatorTests: XCTestCase {
             injector: injector,
             panel: panel,
             modelReadiness: { _ in true },
-            transcribeTimeout: .milliseconds(40)
+            modelLoadTimeout: .milliseconds(40)
         ) {
             transcriber
         }
 
-        await coordinator._test_start()
-        coordinator._test_handleStop()
-        // Wait until the pipeline is sitting in the gated preload (the preparing-model window).
+        coordinator._test_handleStart()
+        // Wait until the start task is sitting in the gated preload (the preparing-model window).
         await transcriber.waitUntilPreloadGated()
         XCTAssertEqual(panel.currentState, .processing(progress: 0.0, phase: .preparingModel),
                        "sanity: the HUD shows the preparing-model phase before cancel")
+        let captured = coordinator._test_startTask
 
         // ESC mid-prepare: must abort the wait promptly and hide the HUD.
         coordinator._test_cancel()
-        await coordinator._test_awaitProcessing()
+        await captured?.value
         XCTAssertEqual(coordinator.phase, .idle, "ESC during preparing must converge to idle")
         XCTAssertFalse(panel.currentState.isVisible, "ESC must hide the HUD (panel idle) during preparing")
 
@@ -1086,11 +1139,9 @@ final class DictationCoordinatorTests: XCTestCase {
     /// Regression guard (patient cold-load, fix 1): the FIRST-ever cold model load is a Core ML / ANE compile that can
     /// legitimately take >transcribeTimeout. The `.preparingModel` wait is bounded by the SEPARATE, generous
     /// ``modelLoadTimeout`` — NOT ``transcribeTimeout`` — so a preload that takes LONGER than `transcribeTimeout` but
-    /// finishes within `modelLoadTimeout` must STILL succeed: the held utterance transcribes and injects with NO forced
-    /// "Model is still preparing — try again" retry. The fake's `preload()` is gated and released only AFTER a wait that
-    /// exceeds `transcribeTimeout`; with the bug (preparing wait bounded by `transcribeTimeout`) this converged to the
-    /// still-preparing hint and injected nothing. Asserts the patient wait transcribes instead.
-    func testColdLoadLongerThanTranscribeTimeoutButWithinModelLoadTimeoutStillTranscribes() async {
+    /// finishes within `modelLoadTimeout` must STILL succeed with NO forced "Model is still preparing — try again" retry.
+    /// With the hotkey-time prepare flow, the first press prepares only; the next warm press records and transcribes.
+    func testColdLoadLongerThanTranscribeTimeoutButWithinModelLoadTimeoutPreparesForNextPress() async {
         let config = makeConfig()
         config.sttMode = .local
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
@@ -1110,25 +1161,28 @@ final class DictationCoordinatorTests: XCTestCase {
             transcriber
         }
 
-        await coordinator._test_start()
-        coordinator._test_handleStop()
+        coordinator._test_handleStart()
         // Sit in the gated preparing window past the (tiny) transcribeTimeout, proving the preparing wait is NOT bounded by it.
         await transcriber.waitUntilPreloadGated()
         XCTAssertEqual(panel.currentState, .processing(progress: 0.0, phase: .preparingModel),
                        "sanity: the HUD shows the preparing-model phase while the cold load is in flight")
         try? await Task.sleep(for: .milliseconds(120))   // > transcribeTimeout (40ms): under the bug the wait already elapsed
-        // The cold load finishes (well within modelLoadTimeout): the patient wait must transcribe the held utterance.
+        // The cold load finishes (well within modelLoadTimeout): the patient wait prepares the next dictation.
         await transcriber.releasePreload()
-        await coordinator._test_awaitProcessing()
+        await coordinator._test_awaitStart()
 
-        XCTAssertEqual(injector.injectedTexts, ["首次冷启动转写结果"],
-                       "a cold load longer than transcribeTimeout but within modelLoadTimeout must transcribe — no forced retry")
-        XCTAssertEqual(coordinator.phase, .idle, "the pipeline converges to idle after the patient cold load transcribes")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "the preparing press should not inject")
+        XCTAssertEqual(coordinator.phase, .idle, "the first press converges to idle after the patient cold load prepares")
         // It must NOT have shown the "still preparing — try again" forced-retry hint.
         let stillPreparing = uiLanguageLocalized("hud.modelStillPreparing",
                                                  defaultValue: "Model is still preparing — try again in a moment")
         XCTAssertNotEqual(panel.currentState, .error(stillPreparing),
                           "a patient cold load that completes must NOT surface the still-preparing forced-retry hint")
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertEqual(injector.injectedTexts, ["首次冷启动转写结果"],
+                       "after the patient prepare finishes, the next dictation should transcribe normally")
     }
 
     /// Regression guard (patient cold-load, fix 1 safety net): ``modelLoadTimeout`` is the bound that STILL applies to the
@@ -1158,7 +1212,6 @@ final class DictationCoordinatorTests: XCTestCase {
 
         await coordinator._test_start()
         // Must NOT hang despite the 30s transcribeTimeout: the preparing wait is bounded by the 50ms modelLoadTimeout.
-        await coordinator._test_stop()
 
         XCTAssertTrue(injector.injectedTexts.isEmpty, "a cold load exceeding modelLoadTimeout must inject nothing")
         XCTAssertEqual(coordinator.phase, .idle, "the modelLoadTimeout safety net must converge to idle (never stuck)")
@@ -1166,6 +1219,8 @@ final class DictationCoordinatorTests: XCTestCase {
                                                  defaultValue: "Model is still preparing — try again in a moment")
         XCTAssertEqual(panel.currentState, .error(stillPreparing),
                        "exceeding modelLoadTimeout must show the non-alarming still-preparing hint")
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 0, "a timed-out prepare should not open the microphone")
         await transcriber.releasePreload()  // test hygiene: let the lingering detached load finish
     }
 

@@ -538,7 +538,7 @@ final class DictationCoordinator {
 
     // MARK: Loop -- start
 
-    /// `.start`: (first time) verifies accessibility authorization -> records the target App -> starts recording -> HUD switches to listening.
+    /// `.start`: verifies accessibility authorization -> records the target App -> prepares a cold local model if needed -> starts recording.
     private func handleStart() {
         // When the previous round is still processing (transcribe/polish/inject), ignore the new start, to avoid overlap.
         guard processingTask == nil else { return }
@@ -557,7 +557,7 @@ final class DictationCoordinator {
         // Record the injection target (for injection back-fill + focus-drift verification).
         capturedTarget = currentFrontmostTarget()
 
-        // STT pre-flight gate: in local mode, if the model cannot possibly transcribe yet (not cached/loaded, OR still
+        // STT pre-flight gate: in local mode, if the model cannot possibly load yet (not cached on disk, OR still
         // downloading), do NOT record — recording a full utterance only to discard it at the post-record :730 gate wastes
         // the user's words and their breath. Use the SAME cheap, network-free readiness signal as that gate
         // (isLocalModelReadyForUse, which treats an in-progress download as not-ready so a mid-download dictation can never
@@ -579,13 +579,14 @@ final class DictationCoordinator {
 
         panel.show(state: .listening)
         phase = .listening
-        // Recording has begun (guards + accessibility gate passed): fire the ascending start chime for immediate feedback.
-        playCueIfEnabled(.start)
 
         startTask = Task { [weak self] in
             guard let self else { return }
             defer { self.startTask = nil }
             do {
+                if await self.prepareLocalModelBeforeRecordingIfNeeded() {
+                    return
+                }
                 // Wait out any in-flight recorder stop from a just-cancelled session (ESC) before starting a new one. Without this the
                 // new start races the cancel's not-yet-finished AVAudioEngine teardown: the recorder is still `recording` / the device
                 // still busy, so recorder.start() throws `.alreadyRecording` or stalls — the exact "can't restart right after ESC" bug.
@@ -608,6 +609,8 @@ final class DictationCoordinator {
                     self.beginPendingStop()
                     return
                 }
+                // Recording really started: fire the ascending start chime, then subscribe to this session's level stream.
+                self.playCueIfEnabled(.start)
                 self.isRecording = true
                 // Recording started: subscribe to this session's rebuilt level stream, driving the HUD dots to rise and fall with speech amplitude.
                 self.startLevelForwarding()
@@ -617,6 +620,46 @@ final class DictationCoordinator {
                 self.failToIdle(message: Self.recordingFailureMessage(error))
             }
         }
+    }
+
+    /// If the downloaded local model is still cold in memory, prepare it on the hotkey press and do not start recording yet.
+    private func prepareLocalModelBeforeRecordingIfNeeded() async -> Bool {
+        guard config.sttMode == .local else { return false }
+
+        let transcriber: any Transcriber
+        do {
+            transcriber = try currentTranscriber()
+        } catch let error as STTError {
+            failToIdle(message: Self.transcriptionFailureMessage(error))
+            return true
+        } catch {
+            failToIdle(message: uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed"))
+            return true
+        }
+
+        guard await transcriber.isReady == false else { return false }
+
+        hotkeyManager.sessionDidEndExternally()
+        phase = .working
+        updateProcessing(0.0, .preparingModel)
+
+        do {
+            try await awaitPreloadBounded {
+                try await transcriber.preload()
+            }
+            guard !Task.isCancelled else { return true }
+            panel.hide()
+            phase = .idle
+        } catch is CancellationError {
+            return true
+        } catch is PrepareStillLoading {
+            modelStillPreparingToIdle()
+        } catch let error as STTError {
+            failToIdle(message: Self.transcriptionFailureMessage(error))
+        } catch {
+            failToIdle(message: uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed"))
+        }
+        return true
     }
 
     /// Verifies accessibility authorization; if unauthorized, pops the system dialog to guide and gives the HUD a light hint, returning false (no recording this time).
