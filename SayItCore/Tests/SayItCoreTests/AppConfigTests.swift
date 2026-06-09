@@ -11,8 +11,14 @@ final class AppConfigTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        suiteName = "AppConfigTests.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: suiteName)
+        let suiteName = "AppConfigTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        self.suiteName = suiteName
+        self.defaults = defaults
+        // Pass the LOCAL `defaults` (not the `self.defaults` stored property) to the initializer: sending a
+        // main-actor-isolated stored property trips a #SendingRisksDataRace error under strict concurrency on the
+        // stable Swift toolchain (newer toolchains accept it), while a freshly-created local value is region-isolated
+        // and safe to send to a @MainActor initializer.
         config = AppConfig(defaults: defaults)
     }
 
