@@ -12,7 +12,7 @@
     <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%2014%2B-blue">
     <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-Neural%20Engine-black">
     <img alt="Price" src="https://img.shields.io/badge/price-free-brightgreen">
-    <img alt="License" src="https://img.shields.io/badge/license-see%20LICENSE-lightgrey">
+    <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
   </p>
 
   <p>
@@ -97,4 +97,6 @@ commit messages are in English.
 
 ## License
 
-Open source — see the LICENSE file.
+[MIT](LICENSE) © 2026 Wentong Liu
+
+Built with [Claude Code](https://claude.com/claude-code).

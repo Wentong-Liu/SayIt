@@ -12,7 +12,7 @@
     <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%2014%2B-blue">
     <img alt="Apple Silicon" src="https://img.shields.io/badge/Apple%20Silicon-Neural%20Engine-black">
     <img alt="Price" src="https://img.shields.io/badge/price-free-brightgreen">
-    <img alt="License" src="https://img.shields.io/badge/license-see%20LICENSE-lightgrey">
+    <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
   </p>
 
   <p>
@@ -77,4 +77,6 @@
 
 ## 许可
 
-开源——见 LICENSE 文件。
+[MIT](LICENSE) © 2026 Wentong Liu
+
+用 [Claude Code](https://claude.com/claude-code) 构建。
