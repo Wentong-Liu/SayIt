@@ -33,6 +33,7 @@ final class DictationCoordinatorTests: XCTestCase {
         modelReadiness: @escaping (String) -> Bool = { _ in true },
         modelState: @escaping () -> ModelManager.State = { .downloaded },
         transcribeTimeout: Duration = .seconds(5),
+        modelLoadTimeout: Duration = .seconds(5),
         cloudKeyReader: (@Sendable () -> String)? = nil,
         axReader: FocusedTextReading? = nil,
         suggestionPanel: SuggestionPanelController? = nil,
@@ -62,6 +63,7 @@ final class DictationCoordinatorTests: XCTestCase {
             modelReadiness: modelReadiness,
             modelState: modelState,
             transcribeTimeout: transcribeTimeout,
+            modelLoadTimeout: modelLoadTimeout,
             soundCues: SilentSoundCues(),
             cloudKeyReader: cloudKeyReader,
             axReader: axReader ?? FakeFocusedTextReader(single: nil),
@@ -1056,6 +1058,94 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.phase, .idle, "a late timeout/completion after cancel must keep phase idle")
         XCTAssertFalse(panel.currentState.isVisible,
                        "a late timeout/completion after cancel must NOT re-show any HUD or error")
+    }
+
+    // MARK: - Patient cold-load wait: first compile may exceed transcribeTimeout but completes within modelLoadTimeout
+
+    /// Regression guard (patient cold-load, fix 1): the FIRST-ever cold model load is a Core ML / ANE compile that can
+    /// legitimately take >transcribeTimeout. The `.preparingModel` wait is bounded by the SEPARATE, generous
+    /// ``modelLoadTimeout`` — NOT ``transcribeTimeout`` — so a preload that takes LONGER than `transcribeTimeout` but
+    /// finishes within `modelLoadTimeout` must STILL succeed: the held utterance transcribes and injects with NO forced
+    /// "Model is still preparing — try again" retry. The fake's `preload()` is gated and released only AFTER a wait that
+    /// exceeds `transcribeTimeout`; with the bug (preparing wait bounded by `transcribeTimeout`) this converged to the
+    /// still-preparing hint and injected nothing. Asserts the patient wait transcribes instead.
+    func testColdLoadLongerThanTranscribeTimeoutButWithinModelLoadTimeoutStillTranscribes() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let panel = RecordingPanelController(headless: true)
+        let transcriber = FakeTranscriber(text: "首次冷启动转写结果", ready: false)
+        await transcriber.gatePreload()
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in true },
+            transcribeTimeout: .milliseconds(40),   // SHORT transcribe bound: would have cut off the preparing wait under the bug
+            modelLoadTimeout: .seconds(30)           // generous cold-load bound: the patient wait the preload finishes within
+        ) {
+            transcriber
+        }
+
+        await coordinator._test_start()
+        coordinator._test_handleStop()
+        // Sit in the gated preparing window past the (tiny) transcribeTimeout, proving the preparing wait is NOT bounded by it.
+        await transcriber.waitUntilPreloadGated()
+        XCTAssertEqual(panel.currentState, .processing(progress: 0.0, phase: .preparingModel),
+                       "sanity: the HUD shows the preparing-model phase while the cold load is in flight")
+        try? await Task.sleep(for: .milliseconds(120))   // > transcribeTimeout (40ms): under the bug the wait already elapsed
+        // The cold load finishes (well within modelLoadTimeout): the patient wait must transcribe the held utterance.
+        await transcriber.releasePreload()
+        await coordinator._test_awaitProcessing()
+
+        XCTAssertEqual(injector.injectedTexts, ["首次冷启动转写结果"],
+                       "a cold load longer than transcribeTimeout but within modelLoadTimeout must transcribe — no forced retry")
+        XCTAssertEqual(coordinator.phase, .idle, "the pipeline converges to idle after the patient cold load transcribes")
+        // It must NOT have shown the "still preparing — try again" forced-retry hint.
+        let stillPreparing = uiLanguageLocalized("hud.modelStillPreparing",
+                                                 defaultValue: "Model is still preparing — try again in a moment")
+        XCTAssertNotEqual(panel.currentState, .error(stillPreparing),
+                          "a patient cold load that completes must NOT surface the still-preparing forced-retry hint")
+    }
+
+    /// Regression guard (patient cold-load, fix 1 safety net): ``modelLoadTimeout`` is the bound that STILL applies to the
+    /// preparing wait — a cold load that never returns within `modelLoadTimeout` must elapse and converge to the
+    /// non-alarming still-preparing hint (never hang). The fake's `preload()` is gated and NEVER released; with a tiny
+    /// `modelLoadTimeout` the patient wait elapses fast, injects nothing, and shows the still-preparing copy. This is the
+    /// "still a safety net against a true infinite hang" half of decoupling the two timeouts.
+    func testColdLoadExceedingModelLoadTimeoutConvergesToStillPreparing() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let panel = RecordingPanelController(headless: true)
+        let transcriber = FakeTranscriber(text: "不应被转写", ready: false)
+        await transcriber.gatePreload()   // gate and NEVER release: preload() never returns
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in true },
+            transcribeTimeout: .seconds(30),     // long transcribe bound: proves the preparing wait is bounded by modelLoadTimeout, NOT this
+            modelLoadTimeout: .milliseconds(50)   // tiny cold-load bound so the safety-net elapses fast
+        ) {
+            transcriber
+        }
+
+        await coordinator._test_start()
+        // Must NOT hang despite the 30s transcribeTimeout: the preparing wait is bounded by the 50ms modelLoadTimeout.
+        await coordinator._test_stop()
+
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "a cold load exceeding modelLoadTimeout must inject nothing")
+        XCTAssertEqual(coordinator.phase, .idle, "the modelLoadTimeout safety net must converge to idle (never stuck)")
+        let stillPreparing = uiLanguageLocalized("hud.modelStillPreparing",
+                                                 defaultValue: "Model is still preparing — try again in a moment")
+        XCTAssertEqual(panel.currentState, .error(stillPreparing),
+                       "exceeding modelLoadTimeout must show the non-alarming still-preparing hint")
+        await transcriber.releasePreload()  // test hygiene: let the lingering detached load finish
     }
 
     // MARK: - Prewarm on download completion: edge into .downloaded only

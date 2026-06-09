@@ -264,6 +264,15 @@ final class DictationCoordinator {
     /// Defaults to 90s -- enough for local inference to complete on a loaded model, but guaranteeing "never permanently stuck transcribing". Tests can inject an extremely short value.
     private let transcribeTimeout: Duration
 
+    /// Cold-start model-LOAD wait timeout: the SEPARATE, generous bound for the `.preparingModel` preload wait (see
+    /// ``awaitPreloadBounded(_:)``), decoupled from ``transcribeTimeout``. The FIRST-ever cold load is a Core ML / ANE
+    /// compile of the model that can legitimately take ~1-2 min (observed >90s on first run; cached afterwards so later
+    /// loads are fast). Bounding that wait by the 90s ``transcribeTimeout`` cut off a legitimate first compile -> a forced
+    /// "still preparing — try again" retry. This generous bound (default 240s) lets a real first compile finish and the
+    /// held utterance transcribe WITHOUT a retry, while still being a safety net against a true infinite hang. Tests can
+    /// inject an extremely short value to exercise the safety net, or a generous one to exercise the patient success path.
+    private let modelLoadTimeout: Duration
+
     /// Reads the trimmed cloud STT API key (the ``KeychainStore`` `openAIAPIKey` account by default). Injectable so tests
     /// can drive the cloud-key signature component without the real Keychain AND assert the read is not done on the
     /// per-dictation hot path (see ``cachedCloudKey``). `@Sendable` so it can be called from the off-main-actor prewarm path.
@@ -288,6 +297,7 @@ final class DictationCoordinator {
     ///   - modelReadiness: local model readiness detection; defaults to read-only reuse of ``ModelManager/isDownloaded(model:)``.
     ///   - modelState: reads the current ``ModelManager/State`` for truthful not-ready copy (downloading NN% vs no model yet); defaults to read-only reuse of ``ModelManager/shared``'s `state`.
     ///   - transcribeTimeout: the transcription hard timeout; defaults to 90s.
+    ///   - modelLoadTimeout: the cold-start model-LOAD wait timeout (the `.preparingModel` preload wait), decoupled from `transcribeTimeout`; defaults to 240s so a legitimate first-ever cold compile completes without a forced retry.
     ///   - soundCues: the start/stop chime player; defaults to the real ``SoundCuePlayer``. Tests can inject a no-op double.
     ///   - cloudKeyReader: reads the trimmed cloud STT API key; defaults to the ``KeychainStore`` `openAIAPIKey` account. Tests can inject it to drive the cloud-key signature and assert it is not read per dictation.
     ///   - axReader: the focused-element text reader for learn-from-edits; defaults to ``AXTextReader``. Tests inject a stub.
@@ -309,6 +319,7 @@ final class DictationCoordinator {
          modelReadiness: ((String) -> Bool)? = nil,
          modelState: (() -> ModelManager.State)? = nil,
          transcribeTimeout: Duration = .seconds(90),
+         modelLoadTimeout: Duration = .seconds(240),
          soundCues: SoundCuePlaying = SoundCuePlayer(),
          cloudKeyReader: (@Sendable () -> String)? = nil,
          axReader: FocusedTextReading = AXTextReader(),
@@ -341,6 +352,7 @@ final class DictationCoordinator {
         // The default state reader read-only reuses the process-shared ModelManager.shared.state (main-actor, no network, no download).
         self.modelState = modelState ?? { ModelManager.shared.state }
         self.transcribeTimeout = transcribeTimeout
+        self.modelLoadTimeout = modelLoadTimeout
         // The default reader trims the openAIAPIKey from the Keychain (matching makeConfiguredTranscriber / the old currentSignature).
         self.cloudKeyReader = cloudKeyReader ?? {
             (KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? "")
@@ -1095,9 +1107,15 @@ final class DictationCoordinator {
     ///
     /// This is the fix for the "hard timeout defeated by a non-cancellable load" hang: `withThrowingTaskGroup` awaits all
     /// children at scope exit, so wrapping the load there blocked on it for minutes; here nothing structured awaits the load.
+    ///
+    /// The bound here is the generous ``modelLoadTimeout`` (default 240s), DECOUPLED from ``transcribeTimeout`` (90s): the
+    /// FIRST-ever cold load is a Core ML / ANE compile that can legitimately take ~1-2 min, so bounding this wait by the
+    /// transcribe timeout cut off a real first compile -> a forced "still preparing — try again" retry. The generous bound
+    /// lets a real first compile finish (the held utterance then transcribes with NO retry) while still being a safety net
+    /// against a true infinite hang. The actual transcribe call keeps using ``transcribeTimeout`` (see ``withTranscribeTimeout``).
     /// - Parameter preload: the cold-start load closure (`WhisperKitTranscriber.preload()` -> `Void`, mapping failure to `STTError`).
     private func awaitPreloadBounded(_ preload: @escaping @Sendable () async throws -> Void) async throws {
-        let timeout = transcribeTimeout
+        let timeout = modelLoadTimeout
         // The load runs detached so it is NOT a structured child of this scope (never awaited at exit) and is NOT cancelled
         // when this wait is abandoned — it keeps loading + caching so the NEXT dictation is fast.
         let loadTask = Task.detached(priority: .userInitiated) {
