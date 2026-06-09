@@ -102,6 +102,7 @@ public final class HotkeyManager {
 
     private var flagsMonitor: Any?
     private var keyDownMonitor: Any?
+    private var localKeyDownMonitor: Any?
     private var keyUpMonitor: Any?
 
     /// Whether monitoring is active.
@@ -161,6 +162,12 @@ public final class HotkeyManager {
         keyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             MainActor.assumeIsolated { self?.handleKeyDown(event) }
         }
+        // Global monitors do not receive events delivered to this app. Keep a local ESC monitor too so cancel still works
+        // while SayIt itself is active (for example Settings is frontmost). Return the event unchanged: observe only.
+        localKeyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            MainActor.assumeIsolated { self?.handleLocalKeyDown(event) }
+            return event
+        }
         keyUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyUp) { [weak self] event in
             MainActor.assumeIsolated { self?.handleKeyUp(event) }
         }
@@ -170,11 +177,12 @@ public final class HotkeyManager {
     public func stop() {
         guard isRunning else { return }
         isRunning = false
-        for monitor in [flagsMonitor, keyDownMonitor, keyUpMonitor] {
+        for monitor in [flagsMonitor, keyDownMonitor, localKeyDownMonitor, keyUpMonitor] {
             if let monitor { NSEvent.removeMonitor(monitor) }
         }
         flagsMonitor = nil
         keyDownMonitor = nil
+        localKeyDownMonitor = nil
         keyUpMonitor = nil
         resetStateMachines()
     }
@@ -195,6 +203,7 @@ public final class HotkeyManager {
     /// Whether the single-tap-toggle state machine currently considers a session active (so its next isolated tap would
     /// emit `.stop`). Exposed for tests to assert ``sessionDidEndExternally()`` resynced the toggle after an external end.
     public var _test_singleTapSessionActive: Bool { singleTapMachine.isSessionActive }
+    public var _test_hasLocalKeyDownMonitor: Bool { localKeyDownMonitor != nil }
 
     /// Drives one isolated tap through the single-tap-toggle state machine, flipping its toggle (returns the emitted
     /// event). Tests use this to put the toggle in the "active" state a real first `.start` tap would produce, since
@@ -212,19 +221,15 @@ public final class HotkeyManager {
     /// return means the platform refused to build the synthetic event (treated as a skipped assertion by the test).
     @discardableResult
     public func _test_emitKeyDown(keyCode: UInt16) -> NSEvent? {
-        guard let event = NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            characters: "",
-            charactersIgnoringModifiers: "",
-            isARepeat: false,
-            keyCode: keyCode
-        ) else { return nil }
+        guard let event = makeKeyDownEvent(keyCode: keyCode) else { return nil }
         handleKeyDown(event)
+        return event
+    }
+
+    @discardableResult
+    public func _test_emitLocalKeyDown(keyCode: UInt16) -> NSEvent? {
+        guard let event = makeKeyDownEvent(keyCode: keyCode) else { return nil }
+        handleLocalKeyDown(event)
         return event
     }
 
@@ -319,6 +324,11 @@ public final class HotkeyManager {
         }
     }
 
+    private func handleLocalKeyDown(_ event: NSEvent) {
+        guard event.keyCode == escapeKeyCode else { return }
+        handleKeyDown(event)
+    }
+
     private func handleKeyUp(_ event: NSEvent) {
         // The current trigger keys are all modifiers, release goes through .flagsChanged; an ordinary key's keyUp needs no handling for now (reserved for extension).
     }
@@ -333,5 +343,20 @@ public final class HotkeyManager {
     private func resetStateMachines() {
         holdMachine.reset()
         singleTapMachine.reset()
+    }
+
+    private func makeKeyDownEvent(keyCode: UInt16) -> NSEvent? {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: keyCode
+        )
     }
 }

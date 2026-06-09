@@ -204,7 +204,9 @@ final class DictationCoordinator {
     private var cachedSignature: TranscriberSignature?
 
     /// The in-progress background prewarm task (avoiding prewarming the same instance repeatedly).
-    private var preloadTask: Task<Void, Never>?
+    private var preloadTask: Task<STTError?, Never>?
+    private var preloadGeneration = 0
+    private var preloadFailure: (signature: TranscriberSignature, error: STTError)?
 
     /// Cached cloud-key signature component, paired with the cheap (mode/model) components it was read for. Avoids a
     /// synchronous ``KeychainStore`` read on the @MainActor dictation hot path on EVERY dictation (a UI/HUD hitch under
@@ -262,19 +264,21 @@ final class DictationCoordinator {
     /// Defaults to 90s -- enough for local inference to complete on a loaded model, but guaranteeing "never permanently stuck transcribing". Tests can inject an extremely short value.
     private let transcribeTimeout: Duration
 
-    /// Cold-start model-LOAD wait timeout: the SEPARATE, generous bound for the `.preparingModel` preload wait (see
-    /// ``awaitPreloadBounded(_:)``), decoupled from ``transcribeTimeout``. The FIRST-ever cold load is a Core ML / ANE
-    /// compile of the model that can legitimately take ~1-2 min (observed >90s on first run; cached afterwards so later
-    /// loads are fast). Bounding that wait by the 90s ``transcribeTimeout`` cut off a legitimate first compile -> a forced
-    /// "still preparing — try again" retry. This generous bound (default 240s) lets a real first compile finish and the
-    /// held utterance transcribe WITHOUT a retry, while still being a safety net against a true infinite hang. Tests can
-    /// inject an extremely short value to exercise the safety net, or a generous one to exercise the patient success path.
+    /// Defensive cold-start model-LOAD wait timeout for the post-record `.preparingModel` backstop (see
+    /// ``awaitPreloadBounded(_:)``), decoupled from ``transcribeTimeout``. The normal hotkey path blocks before recording and
+    /// keeps prewarming in the background until the local model is ready. If a race still reaches the post-record pipeline
+    /// with a cold model, this generous bound (default 240s) avoids cutting off a legitimate first Core ML / ANE compile while
+    /// still providing a safety net against a true infinite hang. Tests can inject an extremely short value to exercise that
+    /// safety net.
     private let modelLoadTimeout: Duration
 
     /// Reads the trimmed cloud STT API key (the ``KeychainStore`` `openAIAPIKey` account by default). Injectable so tests
     /// can drive the cloud-key signature component without the real Keychain AND assert the read is not done on the
     /// per-dictation hot path (see ``cachedCloudKey``). `@Sendable` so it can be called from the off-main-actor prewarm path.
     private let cloudKeyReader: @Sendable () -> String
+
+    /// Optional polish-provider override for tests; production keeps using ``makePolishProvider()``'s ProviderFactory path.
+    private let polishProviderFactoryOverride: (() async throws -> any LLMProvider)?
 
     /// Optional test sink that ALSO receives the pipeline metrics summary line (observability only). `nil` (production)
     /// means only the ``metricsLog`` `.notice` call runs; when present, the SAME formatted string is additionally handed to
@@ -295,13 +299,14 @@ final class DictationCoordinator {
     ///   - modelReadiness: local model readiness detection; defaults to read-only reuse of ``ModelManager/isDownloaded(model:)``.
     ///   - modelState: reads the current ``ModelManager/State`` for truthful not-ready copy (downloading NN% vs no model yet); defaults to read-only reuse of ``ModelManager/shared``'s `state`.
     ///   - transcribeTimeout: the transcription hard timeout; defaults to 90s.
-    ///   - modelLoadTimeout: the cold-start model-LOAD wait timeout (the `.preparingModel` preload wait), decoupled from `transcribeTimeout`; defaults to 240s so a legitimate first-ever cold compile completes without a forced retry.
+    ///   - modelLoadTimeout: the defensive post-record cold-start model-LOAD wait timeout, decoupled from `transcribeTimeout`; defaults to 240s.
     ///   - soundCues: the start/stop chime player; defaults to the real ``SoundCuePlayer``. Tests can inject a no-op double.
     ///   - cloudKeyReader: reads the trimmed cloud STT API key; defaults to the ``KeychainStore`` `openAIAPIKey` account. Tests can inject it to drive the cloud-key signature and assert it is not read per dictation.
     ///   - axReader: the focused-element text reader for learn-from-edits; defaults to ``AXTextReader``. Tests inject a stub.
     ///   - suggestionPanel: the "add to dictionary?" prompt controller; defaults to the shared instance. Tests inject a fresh one.
     ///   - learnFreshness: how long an armed injection record stays fresh; defaults to ~120s. Tests pass a tiny/large value.
     ///   - learnIdleAfter: the no-keystroke idle window after which the compare fires; defaults to ~3s. Tests pass a tiny value.
+    ///   - polishProviderFactory: builds the polish provider; defaults to the real ProviderFactory path. Tests inject a fake without touching Keychain/network.
     ///   - learnProviderFactory: builds the term-extraction provider; defaults to reusing ``makePolishProvider()``. Tests
     ///     inject one that returns a dummy provider (or throws to exercise the no-provider drop) without the real Keychain.
     ///   - termExtractorFactory: builds the learn-from-edits term extractor from a provider; defaults to a real
@@ -324,6 +329,7 @@ final class DictationCoordinator {
          suggestionPanel: SuggestionPanelController = .shared,
          learnFreshness: Duration = .seconds(120),
          learnIdleAfter: Duration = .seconds(3),
+         polishProviderFactory: (() async throws -> any LLMProvider)? = nil,
          learnProviderFactory: (() async throws -> any LLMProvider)? = nil,
          termExtractorFactory: ((any LLMProvider) -> any LearnedTermExtracting)? = nil,
          metricsSink: ((String) -> Void)? = nil) {
@@ -356,6 +362,7 @@ final class DictationCoordinator {
             (KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        self.polishProviderFactoryOverride = polishProviderFactory
         // Store the override as-is; nil means buildLearnProvider() reuses makePolishProvider() (resolved at call time, so no
         // self-capturing closure is stored during init — which Swift forbids on a stored property).
         self.learnProviderFactoryOverride = learnProviderFactory
@@ -577,9 +584,7 @@ final class DictationCoordinator {
             return
         }
 
-        panel.show(state: .listening)
         phase = .listening
-
         startTask = Task { [weak self] in
             guard let self else { return }
             defer { self.startTask = nil }
@@ -587,6 +592,9 @@ final class DictationCoordinator {
                 if await self.prepareLocalModelBeforeRecordingIfNeeded() {
                     return
                 }
+                guard !Task.isCancelled else { return }
+                self.panel.show(state: .listening)
+                self.phase = .listening
                 // Wait out any in-flight recorder stop from a just-cancelled session (ESC) before starting a new one. Without this the
                 // new start races the cancel's not-yet-finished AVAudioEngine teardown: the recorder is still `recording` / the device
                 // still busy, so recorder.start() throws `.alreadyRecording` or stalls — the exact "can't restart right after ESC" bug.
@@ -626,39 +634,38 @@ final class DictationCoordinator {
     private func prepareLocalModelBeforeRecordingIfNeeded() async -> Bool {
         guard config.sttMode == .local else { return false }
 
+        let signature = currentSignature()
         let transcriber: any Transcriber
         do {
             transcriber = try currentTranscriber()
         } catch let error as STTError {
-            failToIdle(message: Self.transcriptionFailureMessage(error))
+            hotkeyManager.sessionDidEndExternally()
+            showSetupBlockingError(Self.transcriptionFailureMessage(error))
             return true
         } catch {
-            failToIdle(message: uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed"))
+            hotkeyManager.sessionDidEndExternally()
+            showSetupBlockingError(uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed"))
             return true
         }
 
-        guard await transcriber.isReady == false else { return false }
+        guard await transcriber.isReady == false else {
+            if preloadFailure?.signature == signature {
+                preloadFailure = nil
+            }
+            return false
+        }
+
+        if let failure = preloadFailure, failure.signature == signature {
+            hotkeyManager.sessionDidEndExternally()
+            showSetupBlockingError(Self.transcriptionFailureMessage(failure.error))
+            return true
+        }
 
         hotkeyManager.sessionDidEndExternally()
-        phase = .working
-        updateProcessing(0.0, .preparingModel)
-
-        do {
-            try await awaitPreloadBounded {
-                try await transcriber.preload()
-            }
-            guard !Task.isCancelled else { return true }
-            panel.hide()
-            phase = .idle
-        } catch is CancellationError {
-            return true
-        } catch is PrepareStillLoading {
-            modelStillPreparingToIdle()
-        } catch let error as STTError {
-            failToIdle(message: Self.transcriptionFailureMessage(error))
-        } catch {
-            failToIdle(message: uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed"))
-        }
+        preloadInBackground(transcriber, replacingCurrent: false, signature: signature)
+        showSetupBlockingError(uiLanguageLocalized(
+            "hud.modelStillPreparing",
+            defaultValue: "Model is still preparing — try again in a moment"))
         return true
     }
 
@@ -787,11 +794,13 @@ final class DictationCoordinator {
         // reordering / branching / returning differently. The summary line is emitted once, only on the success path.
         let clock = ContinuousClock()
         let pipelineStart = clock.now
+        let polishEnabled = config.polishEnabled
+        let polishStyle = config.polishStyle
         var metrics = PipelineMetrics(
             clock: clock,
             pipelineStart: pipelineStart,
             mode: config.sttMode,
-            polishOn: config.polishEnabled
+            polishOn: polishEnabled
         )
         // 0) Wait for the recording start to wrap up, to avoid stop triggering `.notRecording` before start.
         await pendingStart?.value
@@ -831,8 +840,8 @@ final class DictationCoordinator {
         // already-downloaded model. Here, before calling transcribe, **read-only** check whether the model is ready for use
         // (no network, no triggering a download). This uses ``isLocalModelReadyForUse``, which treats an in-progress download
         // as not-ready: even if the load-critical weights already exist on disk, a still-running ``ModelManager`` download
-        // means the cold-start `.preparingModel` load below would race that download → converge to idle with a clear hint
-        // instead, never entering the local transcription/preparing path. Cloud mode is not affected by this gate.
+        // must converge to idle with a clear hint instead of entering the local transcription/preparing path. Cloud mode is
+        // not affected by this gate.
         if config.sttMode == .local, !isLocalModelReadyForUse(config.localModel) {
             modelNotReadyToIdle()
             return
@@ -849,14 +858,13 @@ final class DictationCoordinator {
         let transcript: String
         do {
             let transcriber = try currentTranscriber()
-            // 1.75) Local model cold-start gate: the WhisperKit engine may be DOWNLOADED (passed the 1.5 gate above) yet not
-            // yet LOADED INTO MEMORY — right after launch (before opportunistic prewarm finishes) or right after a model
-            // switch (currentTranscriber() rebuilds + kicks a background preload, so isReady is briefly false). In that case a
-            // transcribe call blocks on the CoreML load for several seconds while the HUD shows "Transcribing…", looking
-            // frozen. So when the local model is NOT ready, first show a "Preparing model…" HUD state, then AWAIT the load
-            // (joining the in-flight background prewarm; idempotent) before switching to the normal transcribing phase. When
-            // the model is already warm (the common post-prewarm case) this is skipped entirely — zero "preparing" flash,
-            // byte-identical to before. Cloud mode never enters this branch (CloudTranscriber.isReady defaults to true).
+            // 1.75) Defensive local model cold-start backstop: the normal hotkey path blocks before opening the microphone
+            // when the downloaded local model is not yet LOADED INTO MEMORY, starts/joins background prewarm, and shows a
+            // short "still preparing" hint. If a race still reaches the post-record pipeline with samples while the engine is
+            // cold (for example a readiness change between start and stop), show a "Preparing model…" HUD state, then AWAIT
+            // the load before switching to the normal transcribing phase. When the model is already warm (the common
+            // post-prewarm case) this is skipped entirely. Cloud mode never enters this branch (CloudTranscriber.isReady
+            // defaults to true).
             // The preload WAIT is bounded by ``awaitPreloadBounded(_:)`` (NOT ``withTranscribeTimeout``): the CoreML load is
             // not cooperatively cancellable, so a task group would block on it at scope exit and DEFEAT the timeout (the
             // multi-minute first-ever ANE-compile freeze). ``awaitPreloadBounded`` instead abandons the WAIT (timeout/ESC)
@@ -931,7 +939,7 @@ final class DictationCoordinator {
 
         // Transcription done: reaching the 50% boundary of the progress bar. With polish on, flip into the polish phase (0.5...1);
         // with polish off, per requirements transcription completion fills directly to 1.0 (the polish phase is not shown).
-        if config.polishEnabled {
+        if polishEnabled {
             updateProcessing(0.5, .polishing)
         } else {
             updateProcessing(1.0, .transcribing)
@@ -942,14 +950,14 @@ final class DictationCoordinator {
         // Metrics (observability only): bracket the polish step. When polish is off, polishIfEnabled returns immediately so
         // polishMs stays ~0 and the summary is tagged polish=off (the spec allows omit-or-0).
         let polishStart = clock.now
-        let polished = await polishIfEnabled(transcript, entries: entries)
+        let polished = await polishIfEnabled(transcript, entries: entries, enabled: polishEnabled, style: polishStyle)
         metrics.polishMs = Self.milliseconds(clock.now - polishStart)
 
         // ESC cancel during polish: discard the polished result and inject nothing.
         guard !Task.isCancelled else { return }
 
         // Polish done: fill the progress bar to 100% (with polish off it was already set to 1.0 above, idempotent here).
-        if config.polishEnabled {
+        if polishEnabled {
             updateProcessing(1.0, .polishing)
         }
 
@@ -1002,8 +1010,8 @@ final class DictationCoordinator {
 
     /// Polishes per the config; both Provider construction failure / polish failure fall back to the original (never losing characters).
     /// - Parameter entries: the per-utterance dictionary snapshot (shared with Layer 1/3), used to build the Layer 2 glossary.
-    private func polishIfEnabled(_ transcript: String, entries: [DictionaryEntry]) async -> PolishStep {
-        guard config.polishEnabled else { return PolishStep(text: transcript, category: .none) }
+    private func polishIfEnabled(_ transcript: String, entries: [DictionaryEntry], enabled: Bool, style: PolishStyle) async -> PolishStep {
+        guard enabled else { return PolishStep(text: transcript, category: .none) }
 
         let provider: any LLMProvider
         do {
@@ -1025,7 +1033,7 @@ final class DictationCoordinator {
         let outcome = await polishPipeline.polish(
             transcript,
             context: polishContext(),
-            style: config.polishStyle,
+            style: style,
             provider: provider,
             polishEnabled: true,
             glossary: glossary
@@ -1050,6 +1058,9 @@ final class DictationCoordinator {
     /// Builds the polish ``LLMProvider`` per ``AppConfig/providerKind`` + credentials.
     /// Reuses the App-layer ``ProviderFactory``, with the credential account mapping consistent with the settings page.
     private func makePolishProvider() async throws -> any LLMProvider {
+        if let polishProviderFactoryOverride {
+            return try await polishProviderFactoryOverride()
+        }
         let model = config.model
         switch config.providerKind {
         case .openAI:
@@ -1159,11 +1170,10 @@ final class DictationCoordinator {
     /// This is the fix for the "hard timeout defeated by a non-cancellable load" hang: `withThrowingTaskGroup` awaits all
     /// children at scope exit, so wrapping the load there blocked on it for minutes; here nothing structured awaits the load.
     ///
-    /// The bound here is the generous ``modelLoadTimeout`` (default 240s), DECOUPLED from ``transcribeTimeout`` (90s): the
-    /// FIRST-ever cold load is a Core ML / ANE compile that can legitimately take ~1-2 min, so bounding this wait by the
-    /// transcribe timeout cut off a real first compile -> a forced "still preparing — try again" retry. The generous bound
-    /// lets a real first compile finish (the held utterance then transcribes with NO retry) while still being a safety net
-    /// against a true infinite hang. The actual transcribe call keeps using ``transcribeTimeout`` (see ``withTranscribeTimeout``).
+    /// The bound here is the generous ``modelLoadTimeout`` (default 240s), DECOUPLED from ``transcribeTimeout`` (90s): if this
+    /// defensive post-record path is reached, a first Core ML / ANE compile may legitimately take ~1-2 min. The generous
+    /// bound lets a real first compile finish while still being a safety net against a true infinite hang. The actual
+    /// transcribe call keeps using ``transcribeTimeout`` (see ``withTranscribeTimeout``).
     /// - Parameter preload: the cold-start load closure (`WhisperKitTranscriber.preload()` -> `Void`, mapping failure to `STTError`).
     private func awaitPreloadBounded(_ preload: @escaping @Sendable () async throws -> Void) async throws {
         let timeout = modelLoadTimeout
@@ -1209,8 +1219,9 @@ final class DictationCoordinator {
         let transcriber = try transcriberFactory()
         cachedTranscriber = transcriber
         cachedSignature = signature
+        preloadFailure = nil
         // A newly created one is prewarmed in the background (the local model triggers loading), not blocking the main thread, errors only logged.
-        preloadInBackground(transcriber)
+        preloadInBackground(transcriber, signature: signature)
         return transcriber
     }
 
@@ -1251,17 +1262,43 @@ final class DictationCoordinator {
         return key
     }
 
-    /// Background prewarm the transcriber: only meaningful for the local ``WhisperKitTranscriber`` (loading the CoreML engine).
-    /// Does not block the UI; prewarm failure only logs (not affecting the lazy-load fallback during the real later dictation).
-    private func preloadInBackground(_ transcriber: any Transcriber) {
-        guard let whisper = transcriber as? WhisperKitTranscriber else { return }
-        preloadTask?.cancel()
-        preloadTask = Task.detached(priority: .utility) {
+    /// Background prewarm the local transcriber (loading the CoreML engine). Does not block the UI; while this is running,
+    /// hotkey presses show a short "still preparing" hint and do not open the microphone.
+    private func preloadInBackground(_ transcriber: any Transcriber, replacingCurrent: Bool = true, signature: TranscriberSignature? = nil) {
+        guard config.sttMode == .local else { return }
+        if !replacingCurrent, preloadTask != nil { return }
+        if replacingCurrent {
+            preloadTask?.cancel()
+        }
+        let signature = signature ?? currentSignature()
+        preloadFailure = nil
+        preloadGeneration += 1
+        let generation = preloadGeneration
+        let task = Task.detached(priority: .utility) { () -> STTError? in
             do {
-                try await whisper.preload()
+                if await transcriber.isReady == false {
+                    try await transcriber.preload()
+                }
+                return nil
+            } catch is CancellationError {
+                // Superseded by a newer local transcriber/prewarm.
+                return nil
             } catch {
+                let mapped = (error as? STTError) ?? STTError.transcriptionFailed(reason: String(describing: error))
                 NSLog("[SayIt] 本地模型预热失败（将按需惰性加载）: %@", String(describing: error))
+                return mapped
             }
+        }
+        preloadTask = task
+        Task { [weak self] in
+            let failure = await task.value
+            guard let self, self.preloadGeneration == generation else { return }
+            if let failure {
+                self.preloadFailure = (signature, failure)
+            } else {
+                self.preloadFailure = nil
+            }
+            self.preloadTask = nil
         }
     }
 
@@ -1271,7 +1308,11 @@ final class DictationCoordinator {
         guard config.sttMode == .local else { return }
         guard isLocalModelReadyForUse(config.localModel) else { return }
         // Reuse currentTranscriber's cache + prewarm path, avoiding a duplicate instance.
-        _ = try? currentTranscriber()
+        guard let transcriber = try? currentTranscriber() else { return }
+        let signature = currentSignature()
+        if preloadFailure?.signature == signature {
+            preloadInBackground(transcriber, signature: signature)
+        }
     }
 
     /// Refreshes the cached cloud key OFF the main actor (Task.detached), so the per-dictation hot path never blocks on a
@@ -1831,6 +1872,9 @@ final class DictationCoordinator {
 
     /// Awaits the in-flight start Task's completion (no-op if none).
     func _test_awaitStart() async { await startTask?.value }
+
+    /// Awaits the in-flight background preload Task's completion (no-op if none).
+    func _test_awaitPreload() async { _ = await preloadTask?.value }
 
     /// The current in-flight start Task handle, captured for a test to `await` AFTER ``cancel()`` has nilled out
     /// ``startTask`` — letting the test deterministically wait for the cancelled (orphaned) start closure to fully run

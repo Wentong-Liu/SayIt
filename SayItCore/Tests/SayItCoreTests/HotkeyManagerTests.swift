@@ -29,6 +29,40 @@ final class HotkeyManagerTests: XCTestCase {
         XCTAssertFalse(manager.isRunning)
     }
 
+    func testStartInstallsLocalKeyDownMonitorForEscWhenSayItIsActive() {
+        let manager = HotkeyManager()
+        manager.start()
+        XCTAssertTrue(manager._test_hasLocalKeyDownMonitor,
+                      "ESC should be observed even when SayIt is the active app; global key monitors only see other apps")
+        manager.stop()
+        XCTAssertFalse(manager._test_hasLocalKeyDownMonitor)
+    }
+
+    func testLocalKeyDownOnlyRoutesEscape() {
+        let manager = HotkeyManager()
+        var keystrokes = 0
+        var commits = 0
+        var edits = 0
+        var cancels = 0
+        manager.onUserKeystroke = { keystrokes += 1 }
+        manager.onCommitKey = { commits += 1 }
+        manager.onEditKey = { edits += 1 }
+        manager.onCancel = { cancels += 1 }
+        manager.isSessionActive = { true }
+
+        guard manager._test_emitLocalKeyDown(keyCode: 0) != nil else { return }
+        guard manager._test_emitLocalKeyDown(keyCode: 36) != nil else { return }
+        guard manager._test_emitLocalKeyDown(keyCode: 51) != nil else { return }
+        XCTAssertEqual(keystrokes, 0)
+        XCTAssertEqual(commits, 0)
+        XCTAssertEqual(edits, 0)
+        XCTAssertEqual(cancels, 0)
+
+        guard manager._test_emitLocalKeyDown(keyCode: 53) != nil else { return }
+        XCTAssertEqual(keystrokes, 1)
+        XCTAssertEqual(cancels, 1)
+    }
+
     func testStartIsIdempotent() {
         let manager = HotkeyManager()
         manager.start()

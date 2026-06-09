@@ -39,6 +39,7 @@ final class DictationCoordinatorTests: XCTestCase {
         suggestionPanel: SuggestionPanelController? = nil,
         learnFreshness: Duration = .seconds(8),
         learnIdleAfter: Duration = .milliseconds(1),
+        polishProviderFactory: (() async throws -> any LLMProvider)? = nil,
         learnProviderFactory: (() async throws -> any LLMProvider)? = nil,
         termExtractorFactory: ((any LLMProvider) -> any LearnedTermExtracting)? = nil,
         metricsSink: ((String) -> Void)? = nil,
@@ -70,10 +71,66 @@ final class DictationCoordinatorTests: XCTestCase {
             suggestionPanel: suggestionPanel ?? SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true),
             learnFreshness: learnFreshness,
             learnIdleAfter: learnIdleAfter,
+            polishProviderFactory: polishProviderFactory,
             learnProviderFactory: learnProviderFactory ?? { throw ProviderError.missingAPIKey },
             termExtractorFactory: termExtractorFactory,
             metricsSink: metricsSink
         )
+    }
+
+    private actor FailingPreloadTranscriber: Transcriber {
+        private let error: STTError
+        private(set) var preloadCallCount = 0
+
+        init(error: STTError) {
+            self.error = error
+        }
+
+        var isReady: Bool { false }
+
+        func preload() async throws {
+            preloadCallCount += 1
+            throw error
+        }
+
+        func waitForPreloadAttempt() async {
+            while preloadCallCount == 0 {
+                await Task.yield()
+            }
+        }
+
+        func transcribe(_ audio: [Float], sampleRate: Double, language: String?, options: TranscribeOptions) async throws -> TranscriptionResult {
+            throw STTError.transcriptionFailed(reason: "should not transcribe")
+        }
+    }
+
+    private actor MutatingTranscriber: Transcriber {
+        private let text: String
+        private let beforeReturn: @MainActor () -> Void
+
+        init(text: String, beforeReturn: @escaping @MainActor () -> Void) {
+            self.text = text
+            self.beforeReturn = beforeReturn
+        }
+
+        func transcribe(_ audio: [Float], sampleRate: Double, language: String?, options: TranscribeOptions) async throws -> TranscriptionResult {
+            await beforeReturn()
+            return TranscriptionResult(text: text)
+        }
+    }
+
+    private final class CountingLLMProvider: LLMProvider, @unchecked Sendable {
+        private let output: String
+        private(set) var callCount = 0
+
+        init(output: String) {
+            self.output = output
+        }
+
+        func complete(messages: [LLMMessage]) async throws -> String {
+            callCount += 1
+            return output
+        }
     }
 
     nonisolated private static func makePrewarmProbeTranscriber(
@@ -431,6 +488,33 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["润色失败也要注入的原文"])
     }
 
+    func testPolishEnabledIsSnapshottedAtDictationStart() async {
+        let config = makeConfig(polishEnabled: false)
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let panel = RecordingPanelController(headless: true)
+        let provider = CountingLLMProvider(output: "润色后的文本")
+        let transcriber = MutatingTranscriber(text: "原始文本") {
+            config.polishEnabled = true
+        }
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            polishProviderFactory: { provider }
+        ) {
+            transcriber
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+
+        XCTAssertEqual(provider.callCount, 0, "a dictation that started with polish off must not enable polish mid-pipeline")
+        XCTAssertEqual(injector.injectedTexts, ["原始文本"])
+        XCTAssertEqual(panel.currentState, .idle)
+    }
+
     // MARK: - Warm transcriber reuse: with config unchanged, reuse the same instance across multiple dictations (not rebuilding each time -> not reloading the model each time)
 
     /// Regression guard: the model-reload performance bug. With config unchanged, multiple dictations must reuse the same transcriber instance,
@@ -707,9 +791,9 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertTrue(injector.injectedTexts.isEmpty, "nothing should be injected while the model is still downloading")
     }
 
-    /// When the local model is downloaded but not loaded into memory yet, the first hotkey press should prepare the
-    /// model immediately instead of starting a recording that will only block after the user finishes speaking.
-    func testHandleStartPreparesColdLocalModelBeforeRecording() async {
+    /// When the local model is downloaded but not loaded into memory yet, the first hotkey press should block recording,
+    /// kick/keep background prewarm, and show a short setup hint instead of opening the microphone.
+    func testHandleStartBlocksColdLocalModelBeforeRecording() async {
         let config = makeConfig()
         config.sttMode = .local
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
@@ -729,26 +813,22 @@ final class DictationCoordinatorTests: XCTestCase {
         }
 
         coordinator._test_handleStart()
+        await transcriber.waitUntilPreloadGated()
+        await coordinator._test_awaitStart()
 
-        var sawPreparing = false
-        for _ in 0..<200 {
-            if panel.currentState == .processing(progress: 0.0, phase: .preparingModel) {
-                sawPreparing = true
-                break
-            }
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-
-        XCTAssertTrue(sawPreparing, "the first hotkey press should show 'preparing model' before any recording starts")
+        let preparing = uiLanguageLocalized("hud.modelStillPreparing",
+                                            defaultValue: "Model is still preparing — try again in a moment")
+        XCTAssertEqual(panel.currentState, .error(preparing),
+                       "the first hotkey press should show a short preparing hint before any recording starts")
+        XCTAssertEqual(coordinator.phase, .idle, "prewarming should not keep a dictation session active")
         let startCount = await recorder.startCount
-        XCTAssertEqual(startCount, 0, "a cold downloaded model should be prepared before opening the microphone")
-        XCTAssertFalse(coordinator._test_isRecording, "preparing the model should not mark the coordinator as recording")
+        XCTAssertEqual(startCount, 0, "a cold downloaded model should be blocked before opening the microphone")
+        XCTAssertFalse(coordinator._test_isRecording, "prewarming should not mark the coordinator as recording")
         let preloaded = await transcriber.preloadCalled
         XCTAssertTrue(preloaded, "the hotkey press should kick the local model preload immediately")
         let calls = await transcriber.calls
-        XCTAssertTrue(calls.isEmpty, "preparing the model should not transcribe any audio from the first press")
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "preparing the model should not inject anything")
+        XCTAssertTrue(calls.isEmpty, "prewarming should not transcribe any audio from the first press")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "prewarming should not inject anything")
 
         await transcriber.releasePreload()
         await coordinator._test_awaitStart()
@@ -942,16 +1022,15 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(panel.currentState, .idle, "after a silent insertion the panel converges to idle (hidden)")
     }
 
-    // MARK: - Cold-start "Preparing model…" HUD state while the local model loads into memory
+    // MARK: - Cold-start background prewarm gate while the local model loads into memory
 
     /// On a COLD local-model start (model downloaded — the download gate passes — but the CoreML engine not yet loaded into
-    /// memory), the hotkey press must show "preparing model" and AWAIT the load BEFORE opening the microphone. The first press
-    /// prepares only; after the model is warm, the next press records and transcribes normally.
+    /// memory), the hotkey press must show a transient "still preparing" hint and NOT open the microphone. The background
+    /// prewarm keeps running; after it finishes, the next press records and transcribes normally.
     ///
     /// Determinism (no scheduling luck): the fake transcriber reports `isReady=false` and its `preload()` is GATED — it
-    /// suspends until the test releases it, pinning the "preparing model" window so the test can observe the HUD state before
-    /// the load completes (mirrors the recorder stop/start gates). After release the load finishes, `isReady` flips true, and
-    /// the following dictation transcribes + injects.
+    /// suspends until the test releases it, pinning the background prewarm so the test can observe the blocking hint before
+    /// the load completes. After release the load finishes, `isReady` flips true, and the following dictation transcribes + injects.
     func testColdLocalModelPreparesOnFirstPressThenNextPressTranscribes() async {
         let config = makeConfig()
         config.sttMode = .local
@@ -972,35 +1051,28 @@ final class DictationCoordinatorTests: XCTestCase {
         }
 
         coordinator._test_handleStart()
-
-        // The start path reaches the cold-start gate and pushes the preparing-model state; poll until the panel shows it.
-        var sawPreparing = false
-        for _ in 0..<200 {
-            if panel.currentState == .processing(progress: 0.0, phase: .preparingModel) {
-                sawPreparing = true
-                break
-            }
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-        XCTAssertTrue(sawPreparing, "a cold local-model start should show the 'preparing model' HUD phase before recording")
-        // The copy follows the UI language via the same localized helper as every other HUD state: compare against the
-        // resolver's output for the current persisted language (rather than hardcoding a locale) so this holds in en or zh.
-        let expectedCopy = UILanguageLocalizer.string("hud.preparingModel", defaultValue: "Preparing model…", bundle: .module)
-        XCTAssertEqual(panel.currentState.displayText, expectedCopy,
-                       "the preparing-model phase copy should be the UI-language-localized hud.preparingModel string")
-        XCTAssertNotEqual(expectedCopy, "Transcribing…", "the preparing copy must be distinct from the transcribing copy")
-        let firstStartCount = await recorder.startCount
-        XCTAssertEqual(firstStartCount, 0, "a cold first press prepares the model before opening the microphone")
-
-        // Release the gated load: the model finishes loading, and the first press returns to idle without recording.
-        await transcriber.releasePreload()
+        await transcriber.waitUntilPreloadGated()
         await coordinator._test_awaitStart()
 
+        let preparing = uiLanguageLocalized("hud.modelStillPreparing",
+                                            defaultValue: "Model is still preparing — try again in a moment")
+        XCTAssertEqual(panel.currentState, .error(preparing),
+                       "a cold local-model start should show the transient preparing hint before recording")
+        let firstStartCount = await recorder.startCount
+        XCTAssertEqual(firstStartCount, 0, "a cold first press blocks before opening the microphone")
+
+        // Release the gated background load: the model finishes loading, and the next press can record.
+        await transcriber.releasePreload()
+        for _ in 0..<50 {
+            if await transcriber.isReady { break }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+
         let preloaded = await transcriber.preloadCalled
-        XCTAssertTrue(preloaded, "the cold-start gate should have awaited preload() before recording")
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "the preparing press should not inject anything")
-        XCTAssertEqual(coordinator.phase, .idle, "after preparing, the coordinator should return to idle for the next hotkey press")
+        XCTAssertTrue(preloaded, "the cold-start gate should have kicked preload before recording")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "the prewarming press should not inject anything")
+        XCTAssertEqual(coordinator.phase, .idle, "while prewarming, the coordinator should stay idle for the next hotkey press")
 
         await coordinator._test_start()
         await coordinator._test_stop()
@@ -1035,62 +1107,117 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(injector.injectedTexts, ["热启动转写结果"], "a warm model should transcribe and inject normally")
     }
 
-    // MARK: - Preparing-model hang: bounded prepare wait abandons the WAIT (never the load), no hang, non-alarming
-
-    /// Regression guard (preparing-model hang, fixes 1+2): when the cold-start model load is NON-cancellable and never
-    /// returns within the bound, the prepare WAIT must elapse and converge to idle with a NON-alarming hint — WITHOUT
-    /// hanging (the old `withThrowingTaskGroup` awaited the un-stoppable load at scope exit, defeating the timeout). The
-    /// fake's `preload()` is GATED and NEVER released, so it never returns (modelling the multi-minute first-ever ANE
-    /// compile); the bounded wait elapses, the pipeline shows the "still preparing" copy (NOT "Transcription failed"),
-    /// converges to idle, and injects nothing. The detached load is NOT cancelled, so `preloadCalled` stays true (it keeps
-    /// running + caching so a retry would be warm). If this test ever HANGS, the defeated-timeout bug has regressed.
-    func testColdLocalModelBoundedPrepareConvergesToIdleAndDoesNotHang() async {
+    func testColdLocalModelHotkeyShowsTransientPreparingHintWhilePrewarmContinues() async {
         let config = makeConfig()
         config.sttMode = .local
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
         let panel = RecordingPanelController(headless: true)
-        let transcriber = FakeTranscriber(text: "不应被转写", ready: false)
-        await transcriber.gatePreload()   // gate and NEVER release: preload() never returns (non-cancellable cold load)
+        let transcriber = FakeTranscriber(text: "预热完成后才能转写", ready: false)
+        await transcriber.gatePreload()
         let coordinator = makeCoordinator(
             config: config,
             recorder: recorder,
             injector: injector,
             panel: panel,
-            modelReadiness: { _ in true },     // download gate passes; the cold in-memory load is what hangs
-            modelLoadTimeout: .milliseconds(50)  // tiny bound so the wait elapses fast
+            modelReadiness: { _ in true }
         ) {
             transcriber
         }
 
-        await coordinator._test_start()
-        // Awaiting the first start must NOT hang: the bounded wait elapses (~50ms) even though preload() never returns.
+        coordinator._test_handleStart()
+        await transcriber.waitUntilPreloadGated()
+        await coordinator._test_awaitStart()
 
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "a still-preparing convergence must inject nothing")
-        XCTAssertEqual(coordinator.phase, .idle, "the bounded prepare wait must converge to idle (never stuck)")
-        // The HUD shows the NON-alarming "still preparing" copy, NOT the scary "Transcription failed".
-        let stillPreparing = uiLanguageLocalized("hud.modelStillPreparing",
-                                                 defaultValue: "Model is still preparing — try again in a moment")
-        let failed = uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed")
-        XCTAssertEqual(panel.currentState, .error(stillPreparing),
-                       "the bounded-wait elapse must show the non-alarming still-preparing hint")
-        XCTAssertNotEqual(panel.currentState.displayText, failed,
-                          "the bounded-wait elapse must NOT show the scary transcription-failed copy")
-        // The detached load was kicked and is NOT cancelled — it keeps running so a retry is warm.
-        let preloaded = await transcriber.preloadCalled
-        XCTAssertTrue(preloaded, "the cold-start load must have been kicked (and keeps running detached)")
+        let preparing = uiLanguageLocalized("hud.modelStillPreparing",
+                                            defaultValue: "Model is still preparing — try again in a moment")
+        XCTAssertEqual(panel.currentState, .error(preparing),
+                       "a hotkey press during first prewarm should show a short setup hint, not park the HUD in processing")
+        XCTAssertEqual(coordinator.phase, .idle, "prewarming should not keep a dictation session active")
+        XCTAssertTrue(coordinator._test_hasTransientTask, "the preparing hint should auto-hide like other setup-blocking messages")
         let startCount = await recorder.startCount
-        XCTAssertEqual(startCount, 0, "a still-preparing first press should not open the microphone")
-        // Release the gate so the lingering detached load task can finish (test hygiene; no behavior assertion).
+        XCTAssertEqual(startCount, 0, "prewarming should not open the microphone")
+        let calls = await transcriber.calls
+        XCTAssertTrue(calls.isEmpty, "prewarming should not transcribe anything")
+
         await transcriber.releasePreload()
+        await coordinator._test_awaitStart()
     }
 
-    /// Regression guard (preparing-model hang, fix 2): ESC during the preparing phase must IMMEDIATELY abort the WAIT and
-    /// converge to idle injecting nothing; and a LATE bounded-wait elapse / load completion that resolves AFTER the cancel
-    /// must NOT re-show any HUD or error (the old defeated timeout threw minutes later and re-flashed "Transcription
-    /// failed"). The fake's `preload()` is gated; the test cancels while the prepare wait is in flight, then waits PAST the
-    /// (tiny) bound and releases the load — asserting the panel stays hidden (idle) the whole time and nothing is injected.
-    func testCancelDuringPreparingAbortsAndDoesNotReShowAfterLateResolve() async {
+    func testColdLocalModelDoesNotFlashListeningBeforePreparingHint() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let panel = RecordingPanelController(headless: true)
+        let transcriber = FakeTranscriber(text: "预热后才录音", ready: false)
+        await transcriber.gatePreload()
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in true }
+        ) {
+            transcriber
+        }
+
+        coordinator._test_handleStart()
+        XCTAssertNotEqual(panel.currentState, .listening,
+                          "a cold local model should not show the listening HUD before the prewarm gate decides recording is allowed")
+        await transcriber.waitUntilPreloadGated()
+        await coordinator._test_awaitStart()
+
+        let preparing = uiLanguageLocalized("hud.modelStillPreparing",
+                                            defaultValue: "Model is still preparing — try again in a moment")
+        XCTAssertEqual(panel.currentState, .error(preparing))
+        await transcriber.releasePreload()
+        await coordinator._test_awaitPreload()
+    }
+
+    func testColdLocalModelPreloadFailureShowsFailureInsteadOfPreparingForever() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let panel = RecordingPanelController(headless: true)
+        let transcriber = FailingPreloadTranscriber(error: .transcriptionFailed(reason: "模型加载失败"))
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in true }
+        ) {
+            transcriber
+        }
+
+        coordinator._test_handleStart()
+        await transcriber.waitForPreloadAttempt()
+        await coordinator._test_awaitStart()
+        await coordinator._test_awaitPreload()
+
+        let preparing = uiLanguageLocalized("hud.modelStillPreparing",
+                                            defaultValue: "Model is still preparing — try again in a moment")
+        XCTAssertEqual(panel.currentState, .error(preparing))
+
+        coordinator._test_handleStart()
+        await coordinator._test_awaitStart()
+
+        let failed = uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed")
+        XCTAssertEqual(panel.currentState, .error(failed),
+                       "after a background preload failure, the next hotkey press should surface failure instead of another preparing hint")
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 0, "a failed local-model preload must still block microphone recording")
+        XCTAssertTrue(injector.injectedTexts.isEmpty)
+    }
+
+    // MARK: - Cold local-model hotkey gate: prewarm in background, no recording until ready
+
+    /// Regression guard: when the downloaded local model is still cold in memory, the hotkey path must return to idle with a
+    /// short "still preparing" hint and keep the background prewarm running. It must not open the microphone, enter the
+    /// post-record `.preparingModel` wait, or inject anything while the model is cold.
+    func testColdLocalModelHotkeyGateReturnsImmediatelyAndKeepsPrewarming() async {
         let config = makeConfig()
         config.sttMode = .local
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
@@ -1103,45 +1230,87 @@ final class DictationCoordinatorTests: XCTestCase {
             recorder: recorder,
             injector: injector,
             panel: panel,
-            modelReadiness: { _ in true },
-            modelLoadTimeout: .milliseconds(40)
+            modelReadiness: { _ in true }
         ) {
             transcriber
         }
 
         coordinator._test_handleStart()
-        // Wait until the start task is sitting in the gated preload (the preparing-model window).
         await transcriber.waitUntilPreloadGated()
-        XCTAssertEqual(panel.currentState, .processing(progress: 0.0, phase: .preparingModel),
-                       "sanity: the HUD shows the preparing-model phase before cancel")
-        let captured = coordinator._test_startTask
+        await coordinator._test_awaitStart()
 
-        // ESC mid-prepare: must abort the wait promptly and hide the HUD.
-        coordinator._test_cancel()
-        await captured?.value
-        XCTAssertEqual(coordinator.phase, .idle, "ESC during preparing must converge to idle")
-        XCTAssertFalse(panel.currentState.isVisible, "ESC must hide the HUD (panel idle) during preparing")
-
-        // Wait PAST the bound and release the gated load, so any late finisher (timeout elapse / load completion) fires
-        // AFTER the cancel — it must NOT re-show the HUD or an error.
-        try? await Task.sleep(for: .milliseconds(120))
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "a still-preparing convergence must inject nothing")
+        XCTAssertEqual(coordinator.phase, .idle, "the cold-model hotkey gate must return to idle")
+        // The HUD shows the NON-alarming "still preparing" copy, NOT the scary "Transcription failed".
+        let stillPreparing = uiLanguageLocalized("hud.modelStillPreparing",
+                                                 defaultValue: "Model is still preparing — try again in a moment")
+        let failed = uiLanguageLocalized("hud.transcriptionFailed", defaultValue: "Transcription failed")
+        XCTAssertEqual(panel.currentState, .error(stillPreparing),
+                       "the hotkey gate must show the non-alarming still-preparing hint")
+        XCTAssertNotEqual(panel.currentState.displayText, failed,
+                          "the hotkey gate must NOT show the scary transcription-failed copy")
+        // The detached load was kicked and is NOT cancelled — it keeps running so a retry is warm.
+        let preloaded = await transcriber.preloadCalled
+        XCTAssertTrue(preloaded, "the cold-start load must have been kicked (and keeps running detached)")
+        let startCount = await recorder.startCount
+        XCTAssertEqual(startCount, 0, "a still-preparing first press should not open the microphone")
+        // Release the gate so the lingering detached load task can finish (test hygiene; no behavior assertion).
         await transcriber.releasePreload()
-        for _ in 0..<50 { await Task.yield(); try? await Task.sleep(for: .milliseconds(2)) }
-
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "after cancel nothing should ever be injected")
-        XCTAssertEqual(coordinator.phase, .idle, "a late timeout/completion after cancel must keep phase idle")
-        XCTAssertFalse(panel.currentState.isVisible,
-                       "a late timeout/completion after cancel must NOT re-show any HUD or error")
     }
 
-    // MARK: - Patient cold-load wait: first compile may exceed transcribeTimeout but completes within modelLoadTimeout
+    /// Repeated hotkey presses while the background prewarm is still running must keep blocking recording. Once the
+    /// preload finishes, the next press is allowed to record.
+    func testRepeatedHotkeyWhilePrewarmingBlocksUntilPreloadFinishes() async {
+        let config = makeConfig()
+        config.sttMode = .local
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let panel = RecordingPanelController(headless: true)
+        let transcriber = FakeTranscriber(text: "预热后转写", ready: false)
+        await transcriber.gatePreload()
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            panel: panel,
+            modelReadiness: { _ in true }
+        ) {
+            transcriber
+        }
 
-    /// Regression guard (patient cold-load, fix 1): the FIRST-ever cold model load is a Core ML / ANE compile that can
-    /// legitimately take >transcribeTimeout. The `.preparingModel` wait is bounded by the SEPARATE, generous
-    /// ``modelLoadTimeout`` — NOT ``transcribeTimeout`` — so a preload that takes LONGER than `transcribeTimeout` but
-    /// finishes within `modelLoadTimeout` must STILL succeed with NO forced "Model is still preparing — try again" retry.
-    /// With the hotkey-time prepare flow, the first press prepares only; the next warm press records and transcribes.
-    func testColdLoadLongerThanTranscribeTimeoutButWithinModelLoadTimeoutPreparesForNextPress() async {
+        coordinator._test_handleStart()
+        await transcriber.waitUntilPreloadGated()
+        await coordinator._test_awaitStart()
+
+        coordinator._test_handleStart()
+        await coordinator._test_awaitStart()
+
+        let preparing = uiLanguageLocalized("hud.modelStillPreparing",
+                                            defaultValue: "Model is still preparing — try again in a moment")
+        XCTAssertEqual(panel.currentState, .error(preparing),
+                       "a repeated hotkey while prewarming should keep showing the setup hint")
+        let blockedStartCount = await recorder.startCount
+        XCTAssertEqual(blockedStartCount, 0, "repeated hotkeys while prewarming must not open the microphone")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "repeated hotkeys while prewarming must not inject anything")
+
+        await transcriber.releasePreload()
+        for _ in 0..<50 {
+            if await transcriber.isReady { break }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        XCTAssertEqual(injector.injectedTexts, ["预热后转写"],
+                       "after background prewarm finishes, the next dictation should transcribe normally")
+    }
+
+    // MARK: - Cold-load bounds do not block the hotkey path
+
+    /// The first hotkey press should not wait on the cold load at all, even if the load would take longer than the
+    /// transcription timeout. It only starts/joins background prewarm and blocks recording until that prewarm finishes.
+    func testColdLoadLongerThanTranscribeTimeoutStillBlocksUntilBackgroundPrewarmFinishes() async {
         let config = makeConfig()
         config.sttMode = .local
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
@@ -1155,29 +1324,30 @@ final class DictationCoordinatorTests: XCTestCase {
             injector: injector,
             panel: panel,
             modelReadiness: { _ in true },
-            transcribeTimeout: .milliseconds(40),   // SHORT transcribe bound: would have cut off the preparing wait under the bug
-            modelLoadTimeout: .seconds(30)           // generous cold-load bound: the patient wait the preload finishes within
+            transcribeTimeout: .milliseconds(40),   // short bound: proves the hotkey gate is not tied to transcribe timeout
+            modelLoadTimeout: .seconds(30)           // long bound: proves the hotkey gate does not wait on modelLoadTimeout
         ) {
             transcriber
         }
 
         coordinator._test_handleStart()
-        // Sit in the gated preparing window past the (tiny) transcribeTimeout, proving the preparing wait is NOT bounded by it.
         await transcriber.waitUntilPreloadGated()
-        XCTAssertEqual(panel.currentState, .processing(progress: 0.0, phase: .preparingModel),
-                       "sanity: the HUD shows the preparing-model phase while the cold load is in flight")
-        try? await Task.sleep(for: .milliseconds(120))   // > transcribeTimeout (40ms): under the bug the wait already elapsed
-        // The cold load finishes (well within modelLoadTimeout): the patient wait prepares the next dictation.
-        await transcriber.releasePreload()
         await coordinator._test_awaitStart()
+        try? await Task.sleep(for: .milliseconds(120))   // > transcribeTimeout (40ms): the hotkey path must still be idle
 
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "the preparing press should not inject")
-        XCTAssertEqual(coordinator.phase, .idle, "the first press converges to idle after the patient cold load prepares")
-        // It must NOT have shown the "still preparing — try again" forced-retry hint.
         let stillPreparing = uiLanguageLocalized("hud.modelStillPreparing",
                                                  defaultValue: "Model is still preparing — try again in a moment")
-        XCTAssertNotEqual(panel.currentState, .error(stillPreparing),
-                          "a patient cold load that completes must NOT surface the still-preparing forced-retry hint")
+        XCTAssertEqual(panel.currentState, .error(stillPreparing),
+                       "the hotkey path should show the prewarm hint instead of waiting on the cold load")
+        let blockedStartCount = await recorder.startCount
+        XCTAssertEqual(blockedStartCount, 0, "the hotkey path must not open the microphone before prewarm finishes")
+
+        await transcriber.releasePreload()
+        for _ in 0..<50 {
+            if await transcriber.isReady { break }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
+        }
 
         await coordinator._test_start()
         await coordinator._test_stop()
@@ -1185,42 +1355,40 @@ final class DictationCoordinatorTests: XCTestCase {
                        "after the patient prepare finishes, the next dictation should transcribe normally")
     }
 
-    /// Regression guard (patient cold-load, fix 1 safety net): ``modelLoadTimeout`` is the bound that STILL applies to the
-    /// preparing wait — a cold load that never returns within `modelLoadTimeout` must elapse and converge to the
-    /// non-alarming still-preparing hint (never hang). The fake's `preload()` is gated and NEVER released; with a tiny
-    /// `modelLoadTimeout` the patient wait elapses fast, injects nothing, and shows the still-preparing copy. This is the
-    /// "still a safety net against a true infinite hang" half of decoupling the two timeouts.
-    func testColdLoadExceedingModelLoadTimeoutConvergesToStillPreparing() async {
+    /// Regression guard: the hotkey path must not wait on `modelLoadTimeout` when the local model is cold. It should start
+    /// background prewarm, show the same non-alarming hint, and leave recording blocked until prewarm completes.
+    func testColdLocalModelHotkeyGateDoesNotWaitForModelLoadTimeout() async {
         let config = makeConfig()
         config.sttMode = .local
         let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
         let injector = FakeTextInjector(result: .success(method: .pasteboard))
         let panel = RecordingPanelController(headless: true)
         let transcriber = FakeTranscriber(text: "不应被转写", ready: false)
-        await transcriber.gatePreload()   // gate and NEVER release: preload() never returns
+        await transcriber.gatePreload()
         let coordinator = makeCoordinator(
             config: config,
             recorder: recorder,
             injector: injector,
             panel: panel,
             modelReadiness: { _ in true },
-            transcribeTimeout: .seconds(30),     // long transcribe bound: proves the preparing wait is bounded by modelLoadTimeout, NOT this
-            modelLoadTimeout: .milliseconds(50)   // tiny cold-load bound so the safety-net elapses fast
+            transcribeTimeout: .seconds(30),
+            modelLoadTimeout: .seconds(30)
         ) {
             transcriber
         }
 
-        await coordinator._test_start()
-        // Must NOT hang despite the 30s transcribeTimeout: the preparing wait is bounded by the 50ms modelLoadTimeout.
+        coordinator._test_handleStart()
+        await transcriber.waitUntilPreloadGated()
+        await coordinator._test_awaitStart()
 
-        XCTAssertTrue(injector.injectedTexts.isEmpty, "a cold load exceeding modelLoadTimeout must inject nothing")
-        XCTAssertEqual(coordinator.phase, .idle, "the modelLoadTimeout safety net must converge to idle (never stuck)")
+        XCTAssertTrue(injector.injectedTexts.isEmpty, "a cold model must inject nothing before prewarm finishes")
+        XCTAssertEqual(coordinator.phase, .idle, "the hotkey gate must not wait for modelLoadTimeout")
         let stillPreparing = uiLanguageLocalized("hud.modelStillPreparing",
                                                  defaultValue: "Model is still preparing — try again in a moment")
         XCTAssertEqual(panel.currentState, .error(stillPreparing),
-                       "exceeding modelLoadTimeout must show the non-alarming still-preparing hint")
+                       "the hotkey gate must show the non-alarming still-preparing hint")
         let startCount = await recorder.startCount
-        XCTAssertEqual(startCount, 0, "a timed-out prepare should not open the microphone")
+        XCTAssertEqual(startCount, 0, "a cold-model hotkey press should not open the microphone")
         await transcriber.releasePreload()  // test hygiene: let the lingering detached load finish
     }
 
