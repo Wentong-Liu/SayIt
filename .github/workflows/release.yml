@@ -1,0 +1,120 @@
+name: Release DMG
+
+# 推送形如 v1.0.0 的 tag（或手动触发）→ 构建 Release → Developer ID 签名 → 打包 DMG → 公证 + staple → 创建 GitHub Release 并附上 DMG。
+#
+# 需要在仓库 Settings → Secrets and variables → Actions 配置以下 Secrets：
+#   DEVELOPER_ID_CERT_P12  —— Developer ID Application 证书（.p12）的 base64：  base64 -i cert.p12 | pbcopy
+#   CERT_PASSWORD          —— 上面 .p12 的导出密码
+#   AC_API_KEY_ID          —— App Store Connect API 密钥 ID
+#   AC_API_ISSUER_ID       —— App Store Connect API Issuer ID
+#   AC_API_KEY_P8          —— App Store Connect API 私钥（.p8）的 base64： base64 -i AuthKey_XXX.p8 | pbcopy
+# 详见 docs/RELEASE.md。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 创建 Release 需要写权限
+
+env:
+  SCHEME: SayIt
+  APP: SayIt
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: 生成 Xcode 工程（XcodeGen）
+        run: |
+          set -euo pipefail
+          cp Local.xcconfig.example Local.xcconfig
+          brew install xcodegen
+          xcodegen generate
+
+      - name: 导入 Developer ID 证书到临时钥匙串
+        env:
+          CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/build.keychain"
+          KC_PWD="$(uuidgen)"
+          security create-keychain -p "$KC_PWD" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PWD" "$KC"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PWD" "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          IDENT="$(security find-identity -v -p codesigning "$KC" | grep 'Developer ID Application' | head -1 | sed -E 's/^[^"]*"(.*)"$/\1/')"
+          test -n "$IDENT"
+          echo "SIGN_IDENTITY=$IDENT" >> "$GITHUB_ENV"
+          echo "签名身份：$IDENT"
+
+      - name: 构建 Release（先不签名）
+        run: |
+          set -euo pipefail
+          xcodebuild -project SayIt.xcodeproj -scheme "$SCHEME" -configuration Release \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+
+      - name: Developer ID 签名（含 hardened runtime）
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Build/Products/Release/$APP.app"
+          codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_PATH"
+          codesign --verify --strict --verbose=2 "$APP_PATH"
+
+      - name: 打包 DMG
+        run: |
+          set -euo pipefail
+          brew install create-dmg
+          APP_PATH="build/Build/Products/Release/$APP.app"
+          create-dmg \
+            --volname "$APP" \
+            --window-size 540 360 --icon-size 110 \
+            --icon "$APP.app" 150 180 --app-drop-link 390 180 \
+            --no-internet-enable \
+            "$APP.dmg" "$APP_PATH" || true   # create-dmg 偶尔在成功后返回非零，靠下一行确认产物
+          test -f "$APP.dmg"
+          codesign --force --timestamp --sign "$SIGN_IDENTITY" "$APP.dmg"
+
+      - name: 公证并 staple
+        env:
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          echo "$AC_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/ac_key.p8"
+          xcrun notarytool submit "$APP.dmg" \
+            --key "$RUNNER_TEMP/ac_key.p8" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "$APP.dmg"
+          rm "$RUNNER_TEMP/ac_key.p8"
+
+      - name: 上传构建产物（即使非 tag 也能下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP }}-dmg
+          path: ${{ env.APP }}.dmg
+
+      - name: 创建 GitHub Release（打 tag 时）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.APP }}.dmg
+          body: |
+            SayIt —— macOS 菜单栏里的本地语音听写，配合你的 Codex 订阅润色。
+
+            下载下方 `SayIt.dmg`，拖进「应用程序」即可。
+
+            SayIt — local voice dictation in your macOS menu bar, polished with your Codex subscription. Download `SayIt.dmg` below and drag it into Applications.

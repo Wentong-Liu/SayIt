@@ -1,0 +1,34 @@
+name: CI
+
+# 每次推送 main / 提 PR：跑单测 + 构建 App（不签名，纯验证能编译过）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Swift test (SayItCore)
+        run: |
+          cd SayItCore
+          swift test
+
+      - name: Generate Xcode project (XcodeGen)
+        run: |
+          cp Local.xcconfig.example Local.xcconfig
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build app (Release, unsigned)
+        run: |
+          xcodebuild -project SayIt.xcodeproj -scheme SayIt -configuration Release \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
