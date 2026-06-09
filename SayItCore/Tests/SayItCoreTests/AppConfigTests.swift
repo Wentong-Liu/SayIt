@@ -9,25 +9,21 @@ final class AppConfigTests: XCTestCase {
     private var defaults: UserDefaults!
     private var config: AppConfig!
 
-    override func setUp() {
-        super.setUp()
-        let suiteName = "AppConfigTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        self.suiteName = suiteName
-        self.defaults = defaults
-        // Pass the LOCAL `defaults` (not the `self.defaults` stored property) to the initializer: sending a
-        // main-actor-isolated stored property trips a #SendingRisksDataRace error under strict concurrency on the
-        // stable Swift toolchain (newer toolchains accept it), while a freshly-created local value is region-isolated
-        // and safe to send to a @MainActor initializer.
+    // setUp/tearDown are `async` so that, in this `@MainActor` test class, they adopt main-actor isolation
+    // (a synchronous `override func setUp()` overrides XCTestCase's *nonisolated* hook and stays nonisolated,
+    // which makes calling the `@MainActor` `AppConfig` initializer a cross-isolation "send" that the stable
+    // Swift toolchain rejects with #SendingRisksDataRace). On the main actor there is no isolation boundary.
+    override func setUp() async throws {
+        suiteName = "AppConfigTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
         config = AppConfig(defaults: defaults)
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         defaults.removePersistentDomain(forName: suiteName)
         config = nil
         defaults = nil
         suiteName = nil
-        super.tearDown()
     }
 
     // MARK: Default values
