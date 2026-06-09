@@ -1,14 +1,14 @@
 name: Release DMG
 
-# 推送形如 v1.0.0 的 tag（或手动触发）→ 构建 Release → Developer ID 签名 → 打包 DMG → 公证 + staple → 创建 GitHub Release 并附上 DMG。
+# Push a tag like v1.0.0 (or trigger manually) → build Release → Developer ID codesign → package DMG → notarize + staple → create a GitHub Release with the DMG attached.
 #
-# 需要在仓库 Settings → Secrets and variables → Actions 配置以下 Secrets：
-#   DEVELOPER_ID_CERT_P12  —— Developer ID Application 证书（.p12）的 base64：  base64 -i cert.p12 | pbcopy
-#   CERT_PASSWORD          —— 上面 .p12 的导出密码
-#   AC_API_KEY_ID          —— App Store Connect API 密钥 ID
+# Configure these Secrets under the repo Settings → Secrets and variables → Actions:
+#   DEVELOPER_ID_CERT_P12  —— base64 of the Developer ID Application certificate (.p12):  base64 -i cert.p12 | pbcopy
+#   CERT_PASSWORD          —— the export password of that .p12
+#   AC_API_KEY_ID          —— App Store Connect API Key ID
 #   AC_API_ISSUER_ID       —— App Store Connect API Issuer ID
-#   AC_API_KEY_P8          —— App Store Connect API 私钥（.p8）的 base64： base64 -i AuthKey_XXX.p8 | pbcopy
-# 详见 docs/RELEASE.md。
+#   AC_API_KEY_P8          —— base64 of the App Store Connect API private key (.p8): base64 -i AuthKey_XXX.p8 | pbcopy
+# See docs/RELEASE.md for details.
 
 on:
   push:
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # 创建 Release 需要写权限
+  contents: write   # write permission is required to create the Release
 
 env:
   SCHEME: SayIt
@@ -32,14 +32,14 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: 生成 Xcode 工程（XcodeGen）
+      - name: Generate Xcode project (XcodeGen)
         run: |
           set -euo pipefail
           cp Local.xcconfig.example Local.xcconfig
           brew install xcodegen
           xcodegen generate
 
-      - name: 导入 Developer ID 证书到临时钥匙串
+      - name: Import Developer ID certificate into a temporary keychain
         env:
           CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
           CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
@@ -58,22 +58,22 @@ jobs:
           IDENT="$(security find-identity -v -p codesigning "$KC" | grep 'Developer ID Application' | head -1 | sed -E 's/^[^"]*"(.*)"$/\1/')"
           test -n "$IDENT"
           echo "SIGN_IDENTITY=$IDENT" >> "$GITHUB_ENV"
-          echo "签名身份：$IDENT"
+          echo "Signing identity: $IDENT"
 
-      - name: 构建 Release（先不签名）
+      - name: Build Release (unsigned first)
         run: |
           set -euo pipefail
           xcodebuild -project SayIt.xcodeproj -scheme "$SCHEME" -configuration Release \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
 
-      - name: Developer ID 签名（含 hardened runtime）
+      - name: Codesign with Developer ID (hardened runtime)
         run: |
           set -euo pipefail
           APP_PATH="build/Build/Products/Release/$APP.app"
           codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_PATH"
           codesign --verify --strict --verbose=2 "$APP_PATH"
 
-      - name: 打包 DMG
+      - name: Package DMG
         run: |
           set -euo pipefail
           brew install create-dmg
@@ -83,11 +83,11 @@ jobs:
             --window-size 540 360 --icon-size 110 \
             --icon "$APP.app" 150 180 --app-drop-link 390 180 \
             --no-internet-enable \
-            "$APP.dmg" "$APP_PATH" || true   # create-dmg 偶尔在成功后返回非零，靠下一行确认产物
+            "$APP.dmg" "$APP_PATH" || true   # create-dmg sometimes exits non-zero even on success; the next line confirms the artifact
           test -f "$APP.dmg"
           codesign --force --timestamp --sign "$SIGN_IDENTITY" "$APP.dmg"
 
-      - name: 公证并 staple
+      - name: Notarize and staple
         env:
           AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
           AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
@@ -101,13 +101,13 @@ jobs:
           xcrun stapler staple "$APP.dmg"
           rm "$RUNNER_TEMP/ac_key.p8"
 
-      - name: 上传构建产物（即使非 tag 也能下载）
+      - name: Upload build artifact (downloadable even on non-tag runs)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP }}-dmg
           path: ${{ env.APP }}.dmg
 
-      - name: 创建 GitHub Release（打 tag 时）
+      - name: Create GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
