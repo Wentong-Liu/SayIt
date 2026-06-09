@@ -16,6 +16,10 @@
   </p>
 
   <p>
+    <strong><a href="https://github.com/Wentong-Liu/SayIt/releases/latest/download/SayIt.dmg">⬇️&nbsp;Download the latest SayIt.dmg</a></strong> · <a href="https://github.com/Wentong-Liu/SayIt/releases">All releases</a>
+  </p>
+
+  <p>
     <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
   </p>
 </div>
@@ -64,14 +68,14 @@ and microphone are all in **Settings**.
 ## Requirements
 
 - macOS 14 or later, Apple Silicon recommended.
-- About 1–2 GB of free disk for the local speech model, downloaded once on first
-  use.
+- About 1–2 GB of free disk for the local speech model, downloaded automatically
+  on first launch.
 
 ## Install
 
-For now, build from source (below). On first launch, grant **Microphone** and
-**Accessibility** in System Settings → Privacy & Security — Accessibility lets
-SayIt listen for the global hotkey and insert text into other apps.
+Download **[`SayIt.dmg`](https://github.com/Wentong-Liu/SayIt/releases/latest/download/SayIt.dmg)** from the [latest release](https://github.com/Wentong-Liu/SayIt/releases/latest), open it, and drag **SayIt** into **Applications**. It's Developer ID–signed and notarized, so it opens with no Gatekeeper warning.
+
+On first launch, SayIt **automatically downloads the local speech model** (~1–2 GB, one time) — you can watch the progress in Settings and the menu bar, and start dictating once it finishes. Also grant **Microphone** and **Accessibility** in System Settings → Privacy & Security — Accessibility lets SayIt listen for the global hotkey and insert text into other apps.
 
 ## Privacy
 
@@ -81,25 +85,6 @@ SayIt listen for the global hotkey and insert text into other apps.
   account or key.
 - **Your clipboard is preserved** — SayIt restores whatever you had copied after
   inserting text.
-
-## Build from source
-
-SayIt uses [XcodeGen](https://github.com/yonaskolb/XcodeGen); `project.yml` is the
-source of truth and the generated `SayIt.xcodeproj` is not committed.
-
-```sh
-brew install xcodegen
-cp Local.xcconfig.example Local.xcconfig   # set DEVELOPMENT_TEAM to your Apple Developer Team ID (optional for the core package)
-xcodegen generate
-scripts/build-and-install.sh               # builds a Release SayIt.app and installs it to /Applications
-```
-
-The portable logic lives in the **SayItCore** Swift package:
-
-```sh
-swift build --package-path SayItCore
-swift test  --package-path SayItCore
-```
 
 ## Contributing
 

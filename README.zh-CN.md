@@ -16,6 +16,10 @@
   </p>
 
   <p>
+    <strong><a href="https://github.com/Wentong-Liu/SayIt/releases/latest/download/SayIt.dmg">⬇️&nbsp;下载最新版 SayIt.dmg</a></strong> · <a href="https://github.com/Wentong-Liu/SayIt/releases">所有版本</a>
+  </p>
+
+  <p>
     <a href="README.md">English</a> · <strong>简体中文</strong>
   </p>
 </div>
@@ -51,35 +55,19 @@
 ## 环境要求
 
 - macOS 14 及以上，推荐 Apple Silicon。
-- 本地模型约需 1–2 GB 磁盘，首次使用时下载一次。
+- 本地模型约需 1–2 GB 磁盘，首次启动时自动下载一次。
 
 ## 安装
 
-目前请从源码构建（见下）。首次启动时，在 系统设置 → 隐私与安全性 里授予**麦克风**和**辅助功能**——辅助功能用于监听全局热键、并把文字注入到其它 app。
+从 [最新 Release](https://github.com/Wentong-Liu/SayIt/releases/latest) 下载 **[`SayIt.dmg`](https://github.com/Wentong-Liu/SayIt/releases/latest/download/SayIt.dmg)**，打开后把 **SayIt** 拖进 **应用程序**。它经过 Developer ID 签名并公证，双击直接打开、不会有 Gatekeeper 警告。
+
+首次启动时，SayIt 会**自动下载本地语音模型**（约 1–2 GB，仅一次）——可在 设置 和 菜单栏 看到进度，下完即可开始听写。另外请在 系统设置 → 隐私与安全性 里授予**麦克风**和**辅助功能**——辅助功能用于监听全局热键、并把文字注入到其它 app。
 
 ## 隐私
 
 - **本地识别 100% 在本机、离线**——用本地引擎时，音频绝不离开你的 Mac。
 - **云端识别和 AI 润色只在你主动开启时才用**，用的是你自己的账号或 key。
 - **剪贴板会还原**——SayIt 注入文字后，会把你原本复制的内容放回去。
-
-## 从源码构建
-
-SayIt 用 [XcodeGen](https://github.com/yonaskolb/XcodeGen)；`project.yml` 是唯一真相源，生成的 `SayIt.xcodeproj` 不入库。
-
-```sh
-brew install xcodegen
-cp Local.xcconfig.example Local.xcconfig   # 把 DEVELOPMENT_TEAM 设成你的 Apple Developer Team ID（只构建核心包可不填）
-xcodegen generate
-scripts/build-and-install.sh               # 构建 Release 版 SayIt.app 并安装到 /Applications
-```
-
-可移植的核心逻辑在 **SayItCore** Swift 包里：
-
-```sh
-swift build --package-path SayItCore
-swift test  --package-path SayItCore
-```
 
 ## 贡献
 
