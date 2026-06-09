@@ -6,17 +6,15 @@ import SayItCore
 ///
 /// Also brings up the end-to-end dictation orchestrator ``DictationCoordinator`` at launch (hotkey -> recording -> transcription -> polish -> injection).
 ///
-/// Authorization policy (avoiding disturbing the user at launch):
+/// Authorization policy:
 /// - Microphone: when undetermined, silently pop the system dialog (a side-effect-free, user-expected one-time request).
-/// - Accessibility: **does not open System Settings at launch**; instead guided by ``DictationCoordinator`` when the user first presses the dictation key
-///   and it is found unauthorized (on demand, matching intent).
+/// - Accessibility: ask immediately after the microphone prompt finishes, with ``DictationCoordinator`` still keeping the on-demand fallback.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        // First run only guides microphone permission (system dialog, user-expected). Accessibility is instead guided on demand when the dictation key is pressed.
-        requestMicrophoneIfNeeded()
+        requestStartupPermissionsIfNeeded()
 
         // Start the end-to-end dictation orchestration, bridging the high-level state to an observable holder (the menu-bar icon refreshes accordingly).
         DictationCoordinator.shared.onPhaseChange = { phase in
@@ -70,10 +68,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DictationCoordinator.shared.stop()
     }
 
-    /// Microphone: when undetermined, pop the system dialog to request (after the user denies, the dictation flow hints in the HUD).
-    private func requestMicrophoneIfNeeded() {
+    /// Microphone: when undetermined, pop the system dialog to request. Accessibility is requested right after that
+    /// first prompt resolves, and visible windows are brought forward because accessory apps are not reliably
+    /// reactivated by macOS after the permission sheet closes.
+    private func requestStartupPermissionsIfNeeded() {
         if MicrophonePermission.current == .notDetermined {
-            Task { _ = await MicrophonePermission.request() }
+            Task { @MainActor in
+                _ = await MicrophonePermission.request()
+                bringVisibleWindowsForward()
+                requestAccessibilityIfNeeded()
+            }
+        } else {
+            requestAccessibilityIfNeeded()
+        }
+    }
+
+    private func requestAccessibilityIfNeeded() {
+        if !AccessibilityAuthorization.isTrusted {
+            AccessibilityAuthorization.ensureTrusted(prompting: true)
+        }
+    }
+
+    private func bringVisibleWindowsForward() {
+        NSApp.activate(ignoringOtherApps: true)
+        for window in NSApp.windows where window.isVisible {
+            window.orderFrontRegardless()
         }
     }
 }
