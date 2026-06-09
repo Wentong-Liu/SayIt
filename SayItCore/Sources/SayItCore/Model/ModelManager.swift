@@ -31,6 +31,9 @@ import WhisperKit
 @MainActor
 @Observable
 public final class ModelManager {
+    /// Posted when a manager's state enters `.downloaded`.
+    public static let didDownloadNotification = Notification.Name("com.liuwentong.SayIt.ModelManagerDidDownload")
+
     /// The download/cache state of the current model.
     public enum State: Equatable, Sendable {
         /// No local cache (or files incomplete), needs downloading.
@@ -48,7 +51,12 @@ public final class ModelManager {
     }
 
     /// The real-time state observed by the UI. Read/written only on the main thread (`@MainActor`).
-    public private(set) var state: State = .notDownloaded
+    public private(set) var state: State = .notDownloaded {
+        didSet {
+            guard oldValue != .downloaded, state == .downloaded else { return }
+            NotificationCenter.default.post(name: Self.didDownloadNotification, object: self)
+        }
+    }
 
     /// The friendly name of the currently tracked model (e.g. `"large-v3-turbo"`).
     public private(set) var model: String

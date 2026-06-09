@@ -76,6 +76,27 @@ final class DictationCoordinatorTests: XCTestCase {
         )
     }
 
+    nonisolated private static func makePrewarmProbeTranscriber(
+        model: String,
+        onPreload prewarmStarted: XCTestExpectation
+    ) -> WhisperKitTranscriber {
+        WhisperKitTranscriber(model: model) { _ in
+            prewarmStarted.fulfill()
+            throw STTError.notReady
+        }
+    }
+
+    private func createCompleteModelCache(for model: String) throws -> URL {
+        let folder = ModelManager.repoCacheDirectory.appending(component: ModelManager.variant(for: model))
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for name in ["MelSpectrogram", "AudioEncoder", "TextDecoder"] {
+            let package = folder.appending(component: "\(name).mlmodelc")
+            try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: package.appending(component: "coremldata.bin"))
+        }
+        return folder
+    }
+
     // MARK: - Normal loop: start -> stop -> inject
 
     func testHappyPathInjectsTranscribedText() async {
@@ -1148,32 +1169,39 @@ final class DictationCoordinatorTests: XCTestCase {
         await transcriber.releasePreload()  // test hygiene: let the lingering detached load finish
     }
 
-    // MARK: - Prewarm on download completion: edge into .downloaded only
+    // MARK: - Prewarm on download completion
 
-    /// Regression guard (preparing-model hang, fix 4): the coordinator prewarms the engine on the EDGE into `.downloaded`
-    /// (so the first dictation after a fresh first-run download is warm, not a cold foreground compile), and ONLY on that
-    /// edge — a model already present at launch (seeded `previous == .downloaded`) never re-prewarms, and one download
-    /// never fires twice. Asserts on the pure ``DictationCoordinator/shouldPrewarmOnModelTransition(previous:current:)``
-    /// edge predicate the observation handler delegates to (deterministic, no `ModelManager` singleton / disk).
-    func testPrewarmFiresOnlyOnEdgeIntoDownloaded() {
-        // Fresh download finishing: <anything but .downloaded> -> .downloaded is the prewarm edge.
-        XCTAssertTrue(DictationCoordinator.shouldPrewarmOnModelTransition(
-            previous: .downloading(progress: 0.9, speedBytesPerSec: nil), current: .downloaded))
-        XCTAssertTrue(DictationCoordinator.shouldPrewarmOnModelTransition(
-            previous: .notDownloaded, current: .downloaded))
-        XCTAssertTrue(DictationCoordinator.shouldPrewarmOnModelTransition(
-            previous: .failed(reason: "x"), current: .downloaded))
-        // First-ever observation (nil) landing on .downloaded also counts as an edge.
-        XCTAssertTrue(DictationCoordinator.shouldPrewarmOnModelTransition(
-            previous: nil, current: .downloaded))
-        // Already downloaded at launch -> stays .downloaded: NOT an edge (never re-prewarm / never twice).
-        XCTAssertFalse(DictationCoordinator.shouldPrewarmOnModelTransition(
-            previous: .downloaded, current: .downloaded))
-        // Non-.downloaded targets are never a prewarm edge.
-        XCTAssertFalse(DictationCoordinator.shouldPrewarmOnModelTransition(
-            previous: .notDownloaded, current: .downloading(progress: 0.1, speedBytesPerSec: nil)))
-        XCTAssertFalse(DictationCoordinator.shouldPrewarmOnModelTransition(
-            previous: .downloaded, current: .failed(reason: "x")))
+    func testModelDownloadedNotificationPrewarmsLocalTranscriber() async throws {
+        let config = makeConfig()
+        config.sttMode = .local
+        let model = "sayit-test-prewarm-\(UUID().uuidString)"
+        config.localModel = model
+        let modelFolder = try createCompleteModelCache(for: model)
+        defer { try? FileManager.default.removeItem(at: modelFolder) }
+
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let prewarmStarted = expectation(description: "download completion starts WhisperKit preload")
+        var modelReady = false
+        let coordinator = makeCoordinator(
+            config: config,
+            recorder: recorder,
+            injector: injector,
+            modelReadiness: { _ in modelReady },
+            modelState: { modelReady ? .downloaded : .notDownloaded }
+        ) {
+            Self.makePrewarmProbeTranscriber(model: model, onPreload: prewarmStarted)
+        }
+
+        coordinator.start()
+        defer { coordinator.stop() }
+
+        modelReady = true
+        NotificationCenter.default.post(
+            name: ModelManager.didDownloadNotification,
+            object: ModelManager.shared)
+
+        await fulfillment(of: [prewarmStarted], timeout: 1.0)
     }
 
     // MARK: - Input device takes effect in real time: end-to-end dictation uses the persisted inputDeviceUID

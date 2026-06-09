@@ -246,6 +246,24 @@ final class ModelManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testPostsNotificationWhenModelBecomesDownloaded() throws {
+        let model = "sayit-notify-\(UUID().uuidString)"
+        let mgr = ModelManager(model: model)
+        XCTAssertEqual(mgr.state, .notDownloaded)
+
+        let folder = ModelManager.repoCacheDirectory.appending(component: ModelManager.variant(for: model))
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try createModelFiles(["MelSpectrogram", "AudioEncoder", "TextDecoder"], in: folder)
+
+        let exp = expectation(forNotification: ModelManager.didDownloadNotification, object: mgr)
+
+        mgr.refreshState()
+
+        wait(for: [exp], timeout: 0.2)
+        XCTAssertEqual(mgr.state, .downloaded)
+    }
+
+    @MainActor
     func testCancelDownloadWhenIdleIsNoop() {
         let mgr = ModelManager(model: "small")
         let before = mgr.state

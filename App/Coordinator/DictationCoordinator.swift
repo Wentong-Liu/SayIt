@@ -192,10 +192,8 @@ final class DictationCoordinator {
     /// The observer token for the config-change notification (registered in block form, must be removed with the token).
     private var configObserver: NSObjectProtocol?
 
-    /// The last ``ModelManager`` state seen by the prewarm-on-download observation, so it fires the background prewarm only
-    /// on the EDGE into `.downloaded` (`<anything else> -> .downloaded`) — never re-arming a prewarm for a model already
-    /// present at launch, and never twice for one download. `nil` until the observation is first armed in ``start()``.
-    private var lastObservedModelState: ModelManager.State?
+    /// The observer token for local-model download completion; lets completed downloads immediately kick a background preload.
+    private var modelDownloadObserver: NSObjectProtocol?
 
     /// The reused warm transcriber instance: paired with ``cachedSignature``. Reused across multiple dictations when the config is unchanged,
     /// so ``WhisperKitTranscriber``'s CoreML engine loads only once and stays warm (fixing the ~10s reload of the ~1GB model per dictation).
@@ -396,6 +394,16 @@ final class DictationCoordinator {
             }
         }
 
+        modelDownloadObserver = NotificationCenter.default.addObserver(
+            forName: ModelManager.didDownloadNotification,
+            object: ModelManager.shared,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.preloadLocalIfReady()
+            }
+        }
+
         applyHotkeyConfig()
         // ESC-to-cancel wiring: the manager fires onCancel only while a dictation session is active (phase != .idle), so ESC is never swallowed when idle.
         hotkeyManager.isSessionActive = { [weak self] in (self?.phase ?? .idle) != .idle }
@@ -425,10 +433,6 @@ final class DictationCoordinator {
         preloadLocalIfReady()
         // Warm the cached cloud key off the main actor at launch so the first cloud dictation does not block on a synchronous Keychain read.
         refreshCloudKeyInBackground()
-        // Prewarm-on-download: after a fresh first-run download finishes, kick a BACKGROUND prewarm so the FIRST dictation
-        // does not hit a cold multi-minute foreground CoreML compile. Arms an edge-triggered observation of the shared
-        // ModelManager's state here (independent of App/ModelDownloadNotifier, which a parallel task is changing).
-        observeModelDownloadForPrewarm()
     }
 
     /// Stops monitoring and cleans up (usually called before App exit; not required).
@@ -461,6 +465,10 @@ final class DictationCoordinator {
         if let configObserver {
             NotificationCenter.default.removeObserver(configObserver)
             self.configObserver = nil
+        }
+        if let modelDownloadObserver {
+            NotificationCenter.default.removeObserver(modelDownloadObserver)
+            self.modelDownloadObserver = nil
         }
         panel.hide()
         phase = .idle
@@ -1218,58 +1226,9 @@ final class DictationCoordinator {
     /// making the **first** dictation fast too. Construction failure (theoretically the local path will not) only logs, not affecting later on-demand construction.
     private func preloadLocalIfReady() {
         guard config.sttMode == .local else { return }
-        guard ModelManager.isDownloaded(model: config.localModel) else { return }
+        guard isLocalModelReadyForUse(config.localModel) else { return }
         // Reuse currentTranscriber's cache + prewarm path, avoiding a duplicate instance.
         _ = try? currentTranscriber()
-    }
-
-    /// Arms an edge-triggered observation of the shared ``ModelManager``'s `@Observable` state so a FRESH first-run
-    /// download (`<anything but .downloaded> -> .downloaded`) kicks a BACKGROUND prewarm of the WhisperKit engine — so the
-    /// FIRST dictation after the download does NOT hit a cold multi-minute foreground ANE compile (the heart of the
-    /// "Preparing model… freezes for minutes" report). Independent of `App/ModelDownloadNotifier` (which a parallel task is
-    /// changing): this re-arms its own `withObservationTracking` (no polling) and reuses the existing
-    /// ``preloadLocalIfReady`` / ``currentTranscriber`` prewarm path (idempotent; local mode only — a cloud user's edge is a
-    /// no-op since `preloadLocalIfReady` early-returns). Seeds `lastObservedModelState` so a model already present at launch
-    /// never spuriously re-prewarms.
-    private func observeModelDownloadForPrewarm() {
-        lastObservedModelState = ModelManager.shared.state
-        armModelDownloadObservation()
-    }
-
-    /// Re-arms a one-shot observation of `ModelManager.shared.state`; on each change it prewarms on the edge into
-    /// `.downloaded` and re-arms, tracking the live state without any timer/poll (mirrors the established observation
-    /// pattern). The `onChange` hop bounces back onto the main actor (this type is `@MainActor`).
-    private func armModelDownloadObservation() {
-        withObservationTracking {
-            _ = ModelManager.shared.state
-        } onChange: {
-            Task { @MainActor [weak self] in
-                self?.handleModelStateChangeForPrewarm()
-            }
-        }
-    }
-
-    /// Processes one observed ``ModelManager`` state change: on the EDGE into `.downloaded` (and only then) kicks the
-    /// background prewarm via ``preloadLocalIfReady`` (idempotent; local mode only), then re-arms the observation.
-    private func handleModelStateChangeForPrewarm() {
-        let previous = lastObservedModelState
-        let current = ModelManager.shared.state
-        lastObservedModelState = current
-        if Self.shouldPrewarmOnModelTransition(previous: previous, current: current) {
-            // The download just finished: reuse the launch/config prewarm path so the first dictation is warm. Local-mode
-            // gated inside preloadLocalIfReady (cloud is a no-op); the underlying preloadInBackground is detached + idempotent.
-            preloadLocalIfReady()
-        }
-        armModelDownloadObservation()
-    }
-
-    /// Pure edge predicate for "did the model just finish downloading?" — true ONLY on the transition `<anything but
-    /// .downloaded> -> .downloaded`. Mirrors `App/ModelDownloadNotifier`'s edge logic and the codebase's pure-predicate
-    /// style (`ModelManager.shouldAutoDownloadOnFirstRun`); factored out as a `static` so it is unit-testable without the
-    /// `ModelManager` singleton / disk. A model already present at launch (seeded `previous == .downloaded`) never
-    /// re-prewarms; one download never fires twice. `previous == nil` (never observed) into `.downloaded` counts as an edge.
-    static func shouldPrewarmOnModelTransition(previous: ModelManager.State?, current: ModelManager.State) -> Bool {
-        current == .downloaded && previous != .downloaded
     }
 
     /// Refreshes the cached cloud key OFF the main actor (Task.detached), so the per-dictation hot path never blocks on a
