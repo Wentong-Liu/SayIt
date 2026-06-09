@@ -200,19 +200,19 @@
       }
     },
     "hud.preparingModel" : {
-      "comment" : "Recording HUD: the local model is being loaded into memory (cold start) before transcription can begin",
+      "comment" : "Recording HUD: the local model is being loaded into memory (cold start) before transcription can begin; copy sets first-launch expectations since the first-ever Core ML compile is slow",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Preparing model…"
+            "value" : "Preparing model (first launch is slow)…"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "准备模型中…"
+            "value" : "准备模型中(首次启动较慢,请稍候…)"
           }
         }
       }
