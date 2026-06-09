@@ -85,6 +85,39 @@ final class WhisperKitTranscriberTests: XCTestCase {
         XCTAssertFalse(ready, "a failed load must leave the engine unloaded")
     }
 
+    func testConcurrentPreloadsShareOneInFlightEngineLoad() async throws {
+        let model = "sayit-concurrent-\(UUID().uuidString)"
+        let modelFolder = try makeCompleteFakeModelFolder(for: model)
+        defer { try? FileManager.default.removeItem(at: modelFolder) }
+
+        XCTAssertNotNil(ModelManager.cachedModelFolder(for: model),
+                        "the fake model folder must pass the same downloaded check production uses before loading")
+
+        let gate = EngineLoadGate()
+        let stt = WhisperKitTranscriber(model: model) { _ in
+            await gate.enterAndWait()
+            throw EngineLoadProbeError()
+        }
+
+        async let first = preloadResult(stt)
+        async let second = preloadResult(stt)
+
+        await gate.waitUntilStartCount(atLeast: 1)
+        for _ in 0..<100 {
+            if await gate.currentStartCount() >= 2 { break }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+
+        let startCount = await gate.currentStartCount()
+        XCTAssertEqual(startCount, 1,
+                       "a second preload while the first load is suspended must join the in-flight load, not start a duplicate Core ML load")
+
+        await gate.releaseAll()
+        assertPreloadFailed(await first)
+        assertPreloadFailed(await second)
+    }
+
     // MARK: - Pure mapping logic mapResult
 
     func testMapResultTrimsAndJoins() {
@@ -330,6 +363,70 @@ private final class CapturedText: @unchecked Sendable {
     var value: String {
         get { lock.withLock { stored } }
         set { lock.withLock { stored = newValue } }
+    }
+}
+
+private struct EngineLoadProbeError: Error {}
+
+private actor EngineLoadGate {
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+    private(set) var startCount = 0
+
+    func enterAndWait() async {
+        startCount += 1
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func waitUntilStartCount(atLeast target: Int) async {
+        while startCount < target {
+            await Task.yield()
+        }
+    }
+
+    func currentStartCount() -> Int { startCount }
+
+    func releaseAll() {
+        let pending = continuations
+        continuations.removeAll()
+        for continuation in pending {
+            continuation.resume()
+        }
+    }
+}
+
+private func makeCompleteFakeModelFolder(for model: String) throws -> URL {
+    let folder = ModelManager.repoCacheDirectory.appending(component: ModelManager.variant(for: model))
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    for name in ["MelSpectrogram", "AudioEncoder", "TextDecoder"] {
+        let package = folder.appending(component: "\(name).mlmodelc")
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        try Data("descriptor".utf8).write(to: package.appending(component: "coremldata.bin"))
+    }
+    return folder
+}
+
+private func preloadResult(_ stt: WhisperKitTranscriber) async -> Result<Void, Error> {
+    do {
+        try await stt.preload()
+        return .success(())
+    } catch {
+        return .failure(error)
+    }
+}
+
+private func assertPreloadFailed(_ result: Result<Void, Error>) {
+    switch result {
+    case .success:
+        XCTFail("expected preload to fail")
+    case .failure(let error as STTError):
+        guard case .transcriptionFailed = error else {
+            XCTFail("expected transcriptionFailed, got \(error)")
+            return
+        }
+    case .failure(let error):
+        XCTFail("unexpected error type: \(error)")
     }
 }
 

@@ -35,6 +35,10 @@ public actor WhisperKitTranscriber: Transcriber {
     /// Whether to prewarm the model during loading (reduces first-frame latency, at the cost of higher peak memory and slower loading).
     private let prewarm: Bool
 
+    /// Builds the underlying WhisperKit engine. Injectable only for unit tests that need to exercise load coordination
+    /// without touching Core ML or the network; production uses `WhisperKit(config)` directly.
+    private let engineLoader: (WhisperKitConfig) async throws -> WhisperKit
+
     /// A short, clean PUNCTUATED carrier always prepended to the Whisper prompt context to bias decoding toward
     /// sentence punctuation.
     ///
@@ -58,14 +62,31 @@ public actor WhisperKitTranscriber: Transcriber {
     /// The loaded WhisperKit engine; lazily built on the first ``preload()`` or ``transcribe(_:sampleRate:language:options:)``.
     private var engine: WhisperKit?
 
+    /// Tracks an in-flight engine load so actor reentrancy cannot start a duplicate Core ML compile/load while the first
+    /// `await WhisperKit(config)` is still suspended.
+    private var isLoadingEngine = false
+    private var engineLoadWaiters: [CheckedContinuation<Void, Never>] = []
+    private var engineLoadError: STTError?
+
     /// Creates a local WhisperKit transcriber.
     ///
     /// - Parameters:
     ///   - model: the model identifier. Defaults to `"large-v3-turbo"`, consistent with ``AppConfig``'s default local model.
     ///   - prewarm: whether to prewarm the model to reduce first-frame latency. Defaults to `false`.
     public init(model: String = "large-v3-turbo", prewarm: Bool = false) {
+        self.init(model: model, prewarm: prewarm) { config in
+            try await WhisperKit(config)
+        }
+    }
+
+    init(
+        model: String = "large-v3-turbo",
+        prewarm: Bool = false,
+        engineLoader: @escaping (WhisperKitConfig) async throws -> WhisperKit
+    ) {
         self.model = model
         self.prewarm = prewarm
+        self.engineLoader = engineLoader
     }
 
     /// Ensures the already-downloaded local model is loaded into memory and ready.
@@ -260,6 +281,9 @@ public actor WhisperKitTranscriber: Transcriber {
         if let engine {
             return engine
         }
+        if isLoadingEngine {
+            return try await waitForCurrentEngineLoad()
+        }
         // ``ModelManager/download(model:)`` is the SOLE downloader (first-launch auto-download + Settings Download button).
         // This engine only ever LOADS an already-present local model — it must NEVER start a competing download. If it did,
         // a dictation during/just-after the first-launch download would spawn a SECOND Hub snapshot that stalls behind
@@ -287,12 +311,40 @@ public actor WhisperKitTranscriber: Transcriber {
             load: true,
             download: false
         )
+        isLoadingEngine = true
+        engineLoadError = nil
         do {
-            let created = try await WhisperKit(config)
+            let created = try await engineLoader(config)
             engine = created
+            finishEngineLoad(error: nil)
             return created
         } catch {
-            throw STTError.transcriptionFailed(reason: "模型加载失败：\(String(describing: error))")
+            let mapped = STTError.transcriptionFailed(reason: "模型加载失败：\(String(describing: error))")
+            finishEngineLoad(error: mapped)
+            throw mapped
+        }
+    }
+
+    private func waitForCurrentEngineLoad() async throws -> WhisperKit {
+        await withCheckedContinuation { continuation in
+            engineLoadWaiters.append(continuation)
+        }
+        if let engine {
+            return engine
+        }
+        if let engineLoadError {
+            throw engineLoadError
+        }
+        throw STTError.transcriptionFailed(reason: "模型加载失败")
+    }
+
+    private func finishEngineLoad(error: STTError?) {
+        isLoadingEngine = false
+        engineLoadError = error
+        let waiters = engineLoadWaiters
+        engineLoadWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
         }
     }
 
