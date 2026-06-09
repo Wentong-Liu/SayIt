@@ -61,7 +61,7 @@
 
 从 [最新 Release](https://github.com/Wentong-Liu/SayIt/releases/latest) 下载 **[`SayIt.dmg`](https://github.com/Wentong-Liu/SayIt/releases/latest/download/SayIt.dmg)**，打开后把 **SayIt** 拖进 **应用程序**。它经过 Developer ID 签名并公证，双击直接打开、不会有 Gatekeeper 警告。
 
-首次启动时，SayIt 会**自动下载本地语音模型**（约 1–2 GB，仅一次）——可在 设置 和 菜单栏 看到进度，下完即可开始听写。另外请在 系统设置 → 隐私与安全性 里授予**麦克风**和**辅助功能**——辅助功能用于监听全局热键、并把文字注入到其它 app。
+首次启动时，SayIt 会**自动下载本地语音模型**（约 1–2 GB，仅一次）——可在 设置 和 菜单栏 看到进度。下载完成后还有**一次性的准备过程**——模型要为苹果神经引擎编译，首次大约需要一两分钟；准备好后即可听写，之后一直很快。另外请在 系统设置 → 隐私与安全性 里授予**麦克风**和**辅助功能**——辅助功能用于监听全局热键、并把文字注入到其它 app。
 
 要启用 AI 润色，需**手动在 设置 → 润色 里登录你的 ChatGPT 账号**——这是默认方式，用你已有的 ChatGPT/Codex 订阅（也可改用你自己的 OpenAI、Anthropic 或 DeepSeek API Key）。登录之前 SayIt 照常可用，只是直接插入未润色的原始转写文本。
 

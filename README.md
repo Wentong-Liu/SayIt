@@ -75,7 +75,7 @@ and microphone are all in **Settings**.
 
 Download **[`SayIt.dmg`](https://github.com/Wentong-Liu/SayIt/releases/latest/download/SayIt.dmg)** from the [latest release](https://github.com/Wentong-Liu/SayIt/releases/latest), open it, and drag **SayIt** into **Applications**. It's Developer ID–signed and notarized, so it opens with no Gatekeeper warning.
 
-On first launch, SayIt **automatically downloads the local speech model** (~1–2 GB, one time) — you can watch the progress in Settings and the menu bar, and start dictating once it finishes. Also grant **Microphone** and **Accessibility** in System Settings → Privacy & Security — Accessibility lets SayIt listen for the global hotkey and insert text into other apps.
+On first launch, SayIt **automatically downloads the local speech model** (~1–2 GB, one time) — you can watch the progress in Settings and the menu bar. After the download there's a **one-time preparation** — the model is compiled for the Apple Neural Engine, which can take a minute or two on that first run; once it's ready, dictation works and stays near-instant from then on. Also grant **Microphone** and **Accessibility** in System Settings → Privacy & Security — Accessibility lets SayIt listen for the global hotkey and insert text into other apps.
 
 To turn on AI polish, **sign in to your ChatGPT account manually in Settings → Polish** — this is the default and uses your existing ChatGPT/Codex subscription (you can also switch to your own OpenAI, Anthropic, or DeepSeek API key). Until you sign in, SayIt still works and inserts the raw transcription, just without polishing.
 
