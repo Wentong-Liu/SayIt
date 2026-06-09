@@ -77,6 +77,6 @@
 
 ## 许可
 
-[MIT](LICENSE) © 2026 Wentong Liu
+[MIT](LICENSE)
 
 用 [Claude Code](https://claude.com/claude-code) 构建。

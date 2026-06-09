@@ -97,6 +97,6 @@ commit messages are in English.
 
 ## License
 
-[MIT](LICENSE) © 2026 Wentong Liu
+[MIT](LICENSE)
 
 Built with [Claude Code](https://claude.com/claude-code).
