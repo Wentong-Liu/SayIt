@@ -93,9 +93,10 @@ public enum RecordingState: Equatable, Sendable {
     /// User-facing localized hint copy for "the local model is not yet downloaded/ready" (en + zh-Hans, via in-bundle `Bundle.module`).
     ///
     /// Does not add an enum case (avoiding disturbing ``RecordingPanelView``'s exhaustive switch): the caller wraps it into an existing
-    /// `.error(_:)`/`.info(_:)` state to display. When the local model is not cached, the local-transcription layer first triggers a download (possibly taking several minutes),
-    /// during which the HUD stays stuck at "transcribing" appearing frozen; the upper layer accordingly gives this hint **before transcription** and converges,
-    /// guiding the user to wait for the download to complete or switch to cloud.
+    /// `.error(_:)`/`.info(_:)` state to display. Shown by the readiness gate **before transcription**: the transcribe path never
+    /// auto-downloads the model (``ModelManager`` is the sole downloader; the engine load throws `notReady` rather than fetching),
+    /// so when the model is not yet ready the upper layer surfaces this hint and converges to idle, guiding the user to wait for the
+    /// download to complete or switch to cloud.
     public static var modelNotReadyMessage: String {
         localized("hud.modelNotReady",
                   fallback: "Local model still downloading — please wait or switch to cloud")

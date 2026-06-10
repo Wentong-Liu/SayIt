@@ -25,8 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Model-download readiness is surfaced by the menu-bar "ready" badge (SayItApp.menuBarLabel,
         // shown while sttMode == .local && !ModelManager.isDownloaded); no separate notifier.
 
-        // First-launch guidance, exactly once (gated on the persisted flag). Set the flag FIRST so the
-        // body is idempotent even if it returns early, then run the guidance.
+        // First-launch guidance, exactly once: `hasCompletedFirstRun` ensures the guidance BODY runs at most once per
+        // install. Set the flag FIRST, then run the body. (This flag guards the guidance only; the auto-download itself is
+        // independently gated by ``ModelManager/shouldAutoDownloadOnFirstRun(firstRun:sttMode:isDownloaded:)`` inside the body.)
         let config = AppConfig.shared
         if !config.hasCompletedFirstRun {
             config.hasCompletedFirstRun = true

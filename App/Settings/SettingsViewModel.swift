@@ -96,12 +96,9 @@ final class SettingsViewModel {
 
     // MARK: STT
 
-    /// Where speech transcription runs (local / cloud).
-    ///
-    /// This is an `@Observable`-tracked **stored** property (write-through to `config`), not a pure computed forward.
-    /// Key correctness point: `STTSettingsView` binds the segmented control's `selection` and the conditional section below to this **same**
-    /// observable source; if it were only a computed forward (reading/writing `config.sttMode`, while `AppConfig` is not `@Observable`),
-    /// switching the segmented control would not invalidate Observation and the section below would not re-render instantly. Storing it here enables instant switching.
+    /// Where speech transcription runs (local / cloud). Stored mirror, same rationale as ``triggerKey``.
+    /// sttMode-specific: `STTSettingsView` binds BOTH the segmented control's `selection` and the conditional section below
+    /// to this same observable source, so a computed forward would leave that section failing to re-render instantly on switch.
     var sttMode: STTMode {
         didSet {
             guard sttMode != oldValue else { return }

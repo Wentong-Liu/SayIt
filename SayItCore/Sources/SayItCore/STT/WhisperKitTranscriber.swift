@@ -95,8 +95,10 @@ public actor WhisperKitTranscriber: Transcriber {
     /// downloads — ``ModelManager`` is the sole downloader. The first call loads, repeated calls are idempotent. Recommended
     /// to call during idle time before the user's first recording to reduce first-frame latency.
     ///
-    /// - Throws: ``STTError/notReady`` when the model is not present on disk (``loadedEngine()`` fails cleanly without
-    ///   touching the network rather than silently downloading); ``STTError/transcriptionFailed(reason:)`` on a load failure.
+    /// - Throws: on the LOAD-INITIATING call, ``STTError/notReady`` when the model is not present on disk (``loadedEngine()``
+    ///   fails cleanly without touching the network rather than silently downloading), or ``STTError/transcriptionFailed(reason:)``
+    ///   on a load failure. A call that coalesces onto an already-in-flight load inherits that load's error, which is always
+    ///   ``STTError/transcriptionFailed(reason:)`` — never ``STTError/notReady``.
     public func preload() async throws {
         _ = try await loadedEngine()
     }
@@ -171,12 +173,9 @@ public actor WhisperKitTranscriber: Transcriber {
         promptTokens: [Int]?
     ) async throws -> TranscriptionResult {
         let options = Self.makeDecodingOptions(language: language, promptTokens: promptTokens)
-        // Do not explicitly annotate the return type, let inference capture WhisperKit's `[TranscriptionResult]`,
-        // then within the closure extract each segment into a module-agnostic raw tuple, to avoid the naming ambiguity.
-        // `engine.transcribe(...)` throws WhisperKit's own error type, never this module's
-        // ``STTError``, so here we only need one catch that uniformly maps any underlying failure to
-        // ``STTError/transcriptionFailed(reason:)`` (no longer keeping the never-hit dead branch
-        // `catch let error as STTError`).
+        // Let inference capture WhisperKit's `[TranscriptionResult]` (see the file-top note on the name clash), then map each
+        // segment into a module-agnostic raw tuple. `engine.transcribe(...)` throws WhisperKit's own error type, never this
+        // module's ``STTError``, so one catch uniformly maps any failure to ``STTError/transcriptionFailed(reason:)``.
         do {
             let wkResults = try await engine.transcribe(audioArray: audio, decodeOptions: options)
             let rawSegments: [RawSegment] = wkResults.flatMap { result in
