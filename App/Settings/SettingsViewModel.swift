@@ -21,7 +21,7 @@ final class SettingsViewModel {
     let modelManager: ModelManager
 
     /// Download/STT-related logging (same subsystem as `SayItCore`, with the category distinguished as settings).
-    @ObservationIgnored private let log = Logger(subsystem: "com.liuwentong.SayIt", category: "settings")
+    @ObservationIgnored private let log = Logger(subsystem: SayItCore.identifier, category: "settings")
 
     /// - Parameters:
     ///   - config: the injected config; defaults to `.shared`, unit tests/previews can pass an isolated instance.

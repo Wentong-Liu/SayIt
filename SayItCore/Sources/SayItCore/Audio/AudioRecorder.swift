@@ -52,7 +52,7 @@ public actor AudioRecorder: AudioRecording {
     private var capturedFrames: UInt64 = 0
 
     /// The unified logger used for querying (`log show --predicate 'subsystem == "com.liuwentong.SayIt"'`).
-    private nonisolated static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "audio")
+    private nonisolated static let log = Logger(subsystem: SayItCore.identifier, category: "audio")
 
     /// The real-time level stream holder (stream + continuation) for each recording session, rebuildable across sessions.
     ///

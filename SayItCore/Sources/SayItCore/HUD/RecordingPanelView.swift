@@ -174,7 +174,7 @@ public struct RecordingPanelView: View {
         }
         longLabelTask?.cancel()
         longLabelTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(Self.processingRampDuration * 1_000_000_000))
+            try? await Task.sleep(for: .seconds(Self.processingRampDuration))
             guard !Task.isCancelled else { return }
             // Only flip the copy if still in the processing state (no final result returned); otherwise keep the regular copy.
             if model.state.processingPhase != nil,

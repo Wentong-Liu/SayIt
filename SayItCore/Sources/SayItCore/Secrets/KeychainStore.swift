@@ -6,7 +6,7 @@ import Security
 /// Pushed down into the SayItCore package (originally in the ZhiYu app layer), so the App layer (CodexLoginService / ProviderFactory)
 /// and in-package code can both reuse it, avoiding a circular reference between the App and the package. Cross-target calls require public visibility.
 public enum KeychainStore {
-    public static let service = "com.liuwentong.SayIt"
+    public static let service = SayItCore.identifier
     /// The account name for the ChatGPT OAuth tokens.
     public static let chatGPTTokensAccount = "chatgpt.oauthTokens"
 

@@ -165,7 +165,7 @@ final class DictationCoordinator {
     /// with a dedicated `learn` category. `static` so it is reachable from the idle-timer / extract `Task` closures without
     /// actor-isolation or capture friction. Text values are interpolated with `privacy: .public` (the user's own machine,
     /// actively debugging) so they appear unredacted.
-    private nonisolated static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "learn")
+    private nonisolated static let log = Logger(subsystem: SayItCore.identifier, category: "learn")
 
     /// End-to-end pipeline metrics logger (observability only, no behavior). Emits ONE `.notice` key=value summary per
     /// COMPLETED dictation (one that reached injection) so the dev can see where the stop -> transcribe -> dict -> polish ->
@@ -173,7 +173,7 @@ final class DictationCoordinator {
     /// higher-level sibling of the #63 `stt` line (which measures pure WhisperKit inference) — both are retained. Only
     /// numbers are logged (`privacy: .public`); the transcribed/injected TEXT is never interpolated, only its char count.
     /// `static` so it is reachable without actor-isolation friction (mirrors the `learn` logger above).
-    private nonisolated static let metricsLog = Logger(subsystem: "com.liuwentong.SayIt", category: "metrics")
+    private nonisolated static let metricsLog = Logger(subsystem: SayItCore.identifier, category: "metrics")
 
     /// The injected override for building the term-extraction provider (learn-from-edits Part C). `nil` (production
     /// default) means reuse ``makePolishProvider()`` exactly (same provider/model/key path as polish) — see
@@ -778,11 +778,11 @@ final class DictationCoordinator {
         var clipSeconds = 0.0
     }
 
-    /// Converts a `ContinuousClock.Duration` to wall-clock milliseconds. Mirrors the #63 `WhisperKitTranscriber` math
-    /// (`components.seconds + components.attoseconds / 1e18`, then * 1000) so both logs use the identical conversion.
+    /// Converts a `ContinuousClock.Duration` to wall-clock milliseconds. Delegates to the shared
+    /// ``Duration/milliseconds`` (#63 `WhisperKitTranscriber` math: `components.seconds + components.attoseconds / 1e18`,
+    /// then * 1000) so both logs use the identical conversion.
     private static func milliseconds(_ duration: ContinuousClock.Duration) -> Double {
-        let c = duration.components
-        return (Double(c.seconds) + Double(c.attoseconds) / 1e18) * 1000
+        duration.milliseconds
     }
 
     /// The complete pipeline: stop recording -> transcribe -> (optional) polish -> inject. Runs in a background task, switching back to the main thread for UI calls.
@@ -1496,12 +1496,12 @@ final class DictationCoordinator {
         }
         injectionRecord = InjectionRecord(
             injectedText: injected,
-            expiresAt: Date().addingTimeInterval(learnFreshness.timeIntervalValue),
+            expiresAt: Date().addingTimeInterval(learnFreshness.seconds),
             armedAt: Date(),
             targetPID: capturedTarget?.processIdentifier
         )
         startIdleTimer()
-        Self.log.notice("armed (injectedLen=\(injected.count, privacy: .public), freshness=\(self.learnFreshness.timeIntervalValue, privacy: .public)s)")
+        Self.log.notice("armed (injectedLen=\(injected.count, privacy: .public), freshness=\(self.learnFreshness.seconds, privacy: .public)s)")
     }
 
     /// Starts/restarts the idle timer: after ``learnIdleAfter`` of no keystrokes (while armed) the compare fires. Reset on
@@ -1984,13 +1984,4 @@ final class DictationCoordinator {
 
     /// Exposes the suggestion panel so a test can drive Accept/Dismiss and assert visibility deterministically.
     var _test_suggestionPanel: SuggestionPanelController { suggestionPanel }
-}
-
-/// Converts a `Duration` to a `TimeInterval` (seconds) for `Date` arithmetic. `Duration.components` yields whole seconds +
-/// attoseconds (1e-18); both are summed so sub-second freshness values survive the conversion.
-private extension Duration {
-    var timeIntervalValue: TimeInterval {
-        let c = components
-        return TimeInterval(c.seconds) + TimeInterval(c.attoseconds) / 1_000_000_000_000_000_000
-    }
 }

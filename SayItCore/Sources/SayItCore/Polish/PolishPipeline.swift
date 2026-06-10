@@ -79,7 +79,7 @@ public struct PolishOutcome: Equatable, Sendable {
 public struct PolishPipeline: Sendable {
 
     /// Observability-only logger for polish failure fallbacks (additive: independent of whether the App injects `logFailure`).
-    private static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "polish")
+    private static let log = Logger(subsystem: SayItCore.identifier, category: "polish")
 
     /// An optional failure-log callback: called only on a "failure fallback", carrying a human-readable reason.
     /// Defaults to nil (no logging); the App layer can inject printing/reporting for debugging. `@Sendable` to satisfy concurrency safety.
