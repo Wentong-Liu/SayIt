@@ -72,25 +72,49 @@ public final class SystemPasteboard: PasteboardProtocol {
 public struct PasteboardBackup {
     /// The item snapshot recorded at save time.
     public let items: [[String: Data]]
-    /// The changeCount at save time. Used before restoring to decide whether the pasteboard was overwritten externally.
+    /// The changeCount at save time. Records the pasteboard state captured before injection.
     public let changeCountAtSave: Int
+    /// The changeCount expected to still be present when restoring: the value observed right after THIS
+    /// injection wrote its text. `restore` only puts the backup back if the pasteboard still equals this,
+    /// i.e. it still holds the text we wrote. If a user copied something new, or a later injection wrote
+    /// over it, the changeCount has moved on and the restore is skipped so that content is not clobbered.
+    /// `nil` means no write was performed (e.g. capture-only), so the guard does not apply.
+    public let changeCountAfterWrite: Int?
 
-    private init(items: [[String: Data]], changeCountAtSave: Int) {
+    private init(items: [[String: Data]], changeCountAtSave: Int, changeCountAfterWrite: Int?) {
         self.items = items
         self.changeCountAtSave = changeCountAtSave
+        self.changeCountAfterWrite = changeCountAfterWrite
     }
 
     /// Captures a snapshot of the current content from the pasteboard.
     public static func capture(from pasteboard: PasteboardProtocol) -> PasteboardBackup {
         PasteboardBackup(
             items: pasteboard.snapshotItems(),
-            changeCountAtSave: pasteboard.changeCount
+            changeCountAtSave: pasteboard.changeCount,
+            changeCountAfterWrite: nil
         )
     }
 
-    /// Restores the snapshot content back to the pasteboard.
-    /// Always performs the restore (even an empty snapshot clears it, returning to the state at capture time).
+    /// Returns a copy of this backup that, when restored, only restores if the pasteboard's changeCount
+    /// still equals `changeCount` — the value observed right after the injection wrote its text.
+    public func guardingChangeCount(_ changeCount: Int) -> PasteboardBackup {
+        PasteboardBackup(
+            items: items,
+            changeCountAtSave: changeCountAtSave,
+            changeCountAfterWrite: changeCount
+        )
+    }
+
+    /// Restores the snapshot content back to the pasteboard, unless the pasteboard has changed since this
+    /// injection wrote its text (see `changeCountAfterWrite`). Skipping in that case avoids clobbering
+    /// content a user copied during the restore delay, or text a newer injection wrote.
+    /// When no write was recorded (`changeCountAfterWrite == nil`) the restore is unconditional, so an
+    /// empty snapshot still clears the pasteboard back to its captured state.
     public func restore(to pasteboard: PasteboardProtocol) {
+        if let expected = changeCountAfterWrite, pasteboard.changeCount != expected {
+            return
+        }
         pasteboard.restoreItems(items)
     }
 }
