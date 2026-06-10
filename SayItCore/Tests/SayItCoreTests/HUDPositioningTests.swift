@@ -137,6 +137,64 @@ final class RecordingStateTests: XCTestCase {
                            state.displayText)
         }
     }
+
+    /// Regression guard (cold-load "taking longer" false alarm): after a cold local-model load the coordinator pushes
+    /// `.preparingModel` BEFORE `.transcribing`, so the very first `.processing` entry is the (separately-bounded) model-load
+    /// wait. If that load took ≥ the 3s ramp window the "taking longer" timer would already have fired the instant REAL
+    /// transcription begins, falsely showing "Taking longer than usual…" at t≈0. The fix treats the
+    /// `.preparingModel`→`.transcribing`/`.polishing` boundary as a fresh ramp start; this asserts on the pure
+    /// ``RecordingPanelView/shouldRestartRampLeavingPreparingModel(previousPhase:newState:)`` decision that drives it.
+    @MainActor
+    func testPhaseBoundaryRestartsRampLeavingPreparingModel() {
+        // The cold-load boundary: previous phase was .preparingModel, now actual transcription begins at progress 0 ->
+        // MUST restart the ramp/timer so the 3s threshold is measured from here, not from the cold load.
+        for newPhase in [RecordingState.ProcessingPhase.transcribing, .polishing] {
+            let toTranscribe = RecordingState.processing(progress: 0.0, phase: newPhase)
+            XCTAssertTrue(
+                RecordingPanelView.shouldRestartRampLeavingPreparingModel(previousPhase: .preparingModel, newState: toTranscribe),
+                "leaving .preparingModel into \(newPhase) at progress 0 must restart the ramp/timer (fresh transcription start)")
+        }
+    }
+
+    /// The restart fires ONLY at the exit-out-of-`.preparingModel` boundary while still mid-run; every other transition must
+    /// be left untouched so the existing single-ramp behavior is byte-identical:
+    /// - first entry straight into `.transcribing` (no preceding `.preparingModel`, e.g. a warm model) -> handled by the
+    ///   normal `processingStartedAt == nil` branch, not this one;
+    /// - an ordinary mid-stream `.transcribing`→`.polishing` switch -> must NOT restart (a single ramp spans the whole run);
+    /// - re-entering `.preparingModel` from `.preparingModel` -> not a transcription start;
+    /// - a final result (progress >= 1.0) leaving `.preparingModel` -> owned by the snap-to-100% branch, not a ramp restart.
+    @MainActor
+    func testPhaseBoundaryDoesNotRestartRampOnOtherTransitions() {
+        let transcribing0 = RecordingState.processing(progress: 0.0, phase: .transcribing)
+        // No preceding .preparingModel (warm model / first entry): NOT this branch's job.
+        XCTAssertFalse(
+            RecordingPanelView.shouldRestartRampLeavingPreparingModel(previousPhase: nil, newState: transcribing0),
+            "a first entry straight into .transcribing (warm model) must not be treated as a preparing-model boundary")
+        // Ordinary mid-stream phase switch within the run: must not restart the single ramp.
+        XCTAssertFalse(
+            RecordingPanelView.shouldRestartRampLeavingPreparingModel(
+                previousPhase: .transcribing,
+                newState: RecordingState.processing(progress: 0.5, phase: .polishing)),
+            "an ordinary .transcribing→.polishing mid-stream switch must not restart the ramp")
+        // Still preparing (no boundary crossed yet).
+        XCTAssertFalse(
+            RecordingPanelView.shouldRestartRampLeavingPreparingModel(
+                previousPhase: .preparingModel,
+                newState: RecordingState.processing(progress: 0.0, phase: .preparingModel)),
+            "staying in .preparingModel is not a transcription start")
+        // Final result leaving .preparingModel: owned by the snap-to-100% branch, not a ramp restart.
+        XCTAssertFalse(
+            RecordingPanelView.shouldRestartRampLeavingPreparingModel(
+                previousPhase: .preparingModel,
+                newState: RecordingState.processing(progress: 1.0, phase: .transcribing)),
+            "a final result (progress >= 1.0) must snap to 100%, not restart the ramp")
+        // Non-processing new states carry no phase/progress -> never a restart.
+        for nonProcessing in [RecordingState.idle, .listening, .info("x"), .error("x")] {
+            XCTAssertFalse(
+                RecordingPanelView.shouldRestartRampLeavingPreparingModel(previousPhase: .preparingModel, newState: nonProcessing),
+                "leaving .preparingModel into a non-processing state (\(nonProcessing)) must not restart the ramp")
+        }
+    }
     #endif
 
     func testErrorTextTrimsAndFallsBack() {
