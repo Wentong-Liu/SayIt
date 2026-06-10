@@ -92,6 +92,18 @@ struct STTSettingsView: View {
         return formatter
     }()
 
+    /// Formats a download-size estimate into the documented, human-facing string (e.g. "1.6 GB").
+    /// `.decimal` count style matches how the download sizes are stated in the README/docs and how
+    /// `ModelManager.estimatedDownloadBytes` computes them (decimal GB, 1_600_000_000 -> "1.6 GB"),
+    /// so this is kept separate from the `.binary` `speedFormatter` used for the live speed readout.
+    private static let sizeFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .decimal
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.includesUnit = true
+        return formatter
+    }()
+
     /// Persistent in-pane setup CTA for the local engine: shown only while the model is not yet usable
     /// (.notDownloaded / .failed), telling the user the required next step. The Download/Retry button in
     /// ``modelStatusRow`` performs the action; this just makes the requirement obvious. It disappears once
@@ -125,11 +137,11 @@ struct STTSettingsView: View {
             }
             // Disclose the approximate download size and the network requirement BEFORE the download
             // starts, as a subtle caption. The size is formatted from the existing
-            // `ModelManager.estimatedDownloadBytes` estimate (never hardcoded) via the same
-            // `ByteCountFormatter` used for the live speed readout.
+            // `ModelManager.estimatedDownloadBytes` estimate (never hardcoded) via the dedicated
+            // decimal `sizeFormatter` so it matches the documented sizes (e.g. "1.6 GB").
             Text(uiLanguageLocalized(format: "stt.download.sizeNote %@",
                                      defaultValue: "~%@ · requires a network connection",
-                                     Self.speedFormatter.string(fromByteCount: viewModel.estimatedLocalModelBytes)))
+                                     Self.sizeFormatter.string(fromByteCount: viewModel.estimatedLocalModelBytes)))
                 .settingsCaption()
 
         case .downloading(let progress, let speedBytesPerSec):
