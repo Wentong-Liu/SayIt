@@ -55,6 +55,10 @@ public struct RecordingPanelView: View {
     /// The start time of this processing round; `nil` means this round has not started ramping yet (set on the first entry into `.processing`).
     /// Used to decide whether the expected duration has been exceeded, and to guarantee the single ramp starts only once (a mid-stream phase switch does not restart it).
     @State private var processingStartedAt: Date?
+    /// The processing phase observed on the previous `handleStateChange` call (`nil` when not in `.processing`).
+    /// Lets the view detect the `.preparingModel`→`.transcribing`/`.polishing` boundary so the "taking longer" timer/ramp
+    /// is restarted from the start of ACTUAL transcription rather than being inherited from the cold model-load wait.
+    @State private var previousProcessingPhase: RecordingState.ProcessingPhase?
     /// Whether processing has exceeded `processingRampDuration` without returning a final result: when true the primary copy flips to "taking longer than usual".
     @State private var processingElapsedLong = false
     /// The handle of the delayed task that drives the "taking longer than usual" copy flip; cancelled when the final result arrives / the processing state is left.
@@ -127,6 +131,31 @@ public struct RecordingPanelView: View {
         return state.displayText
     }
 
+    /// Pure decision: should the `.processing` ramp + "taking longer" timer be restarted at this phase boundary?
+    ///
+    /// On a cold local-model load the coordinator pushes `.preparingModel` BEFORE `.transcribing`, so the very first entry
+    /// into `.processing` is the model-load wait (which the upper layer bounds separately). The ramp/timer therefore starts
+    /// counting against the cold load — and if that load took ≥ `processingRampDuration` the 3s "taking longer" threshold
+    /// has already fired the instant real transcription begins, falsely showing "Taking longer than usual…" at t≈0.
+    ///
+    /// To measure the threshold from the start of ACTUAL transcription, the `.preparingModel`→`.transcribing`/`.polishing`
+    /// transition is treated as a fresh ramp start. Returns true only for that specific exit-out-of-`.preparingModel`
+    /// transition while still mid-run (progress < 1.0); a final result (>= 1.0) is owned by the snap-to-100% branch, and a
+    /// `.transcribing`→`.polishing` switch is an ordinary mid-stream phase update that must NOT restart the bar.
+    static func shouldRestartRampLeavingPreparingModel(
+        previousPhase: RecordingState.ProcessingPhase?,
+        newState: RecordingState
+    ) -> Bool {
+        guard previousPhase == .preparingModel,
+              let newPhase = newState.processingPhase,
+              newPhase != .preparingModel,
+              let progress = newState.progress,
+              progress < 1.0 else {
+            return false
+        }
+        return true
+    }
+
     /// Responds to state changes, driving the single client-side ease of the progress bar and the "taking longer than usual" copy flip (decoupled from the backend).
     ///
     /// The progress bar is one 0%->90% single ease-out spanning the whole processing run, independent of the phase:
@@ -136,6 +165,8 @@ public struct RecordingPanelView: View {
     /// - Backend publishes the final result (progress >= 1.0) -> cancel the timer and snap the displayed value to 100%.
     /// - Mid-stream discrete updates (e.g. 0.5 at transcription completion) -> do not touch the progress bar: the single client-side ease owns the bar exclusively,
     ///   the phase boundary (50%) never anchors the bar position; the phase only selects the copy via ``statusText``.
+    /// - Cold-load boundary (`.preparingModel`→`.transcribing`/`.polishing`) -> treat as a FRESH ramp start so the 3s
+    ///   "taking longer" threshold is measured from the start of ACTUAL transcription, not the (separately-bounded) cold load.
     /// - Leaving the processing state -> reset all timer and copy state, ensuring a clean start from 0 next round.
     private func handleStateChange(_ state: RecordingState) {
         switch (state.processingPhase, state.progress) {
@@ -150,16 +181,24 @@ public struct RecordingPanelView: View {
                 withAnimation(.easeInOut(duration: Self.snapDuration)) {
                     displayedProgress = 1.0
                 }
+            } else if Self.shouldRestartRampLeavingPreparingModel(previousPhase: previousProcessingPhase, newState: state) {
+                // Cold-load boundary: the very first entry into `.processing` was `.preparingModel` (the model-load wait), so
+                // the ramp/timer started counting against that wait. Now that ACTUAL transcription begins, restart the ramp —
+                // resetting processingStartedAt/processingElapsedLong and re-arming the longLabelTask — so the 3s "taking
+                // longer" threshold is measured from here, not from the (possibly multi-second) cold model load.
+                beginProcessingRamp()
             } else if processingStartedAt == nil {
                 // First entry into the processing state: start the single 0%->90% ease. Always start from 0 (do not seed from progress),
                 // ensuring the bar is one continuous ease that never anchors to phase-boundary values like 0.0/0.5.
                 beginProcessingRamp()
             }
             // else: a mid-stream phase update while already ramping (e.g. 0.0->0.5) -- do not touch displayedProgress.
+            previousProcessingPhase = state.processingPhase
         default:
             // Leaving the processing state (idle/info/error/listening/transcribing-old-state): reset, preparing for the next round.
             resetProcessingTracking()
             displayedProgress = 0
+            previousProcessingPhase = nil
         }
     }
 
