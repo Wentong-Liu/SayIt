@@ -18,6 +18,12 @@ public struct CodexResponsesProvider: LLMProvider {
     /// the stream-level ceiling must independently bound total read time. A smaller value would wrongly kill a normal long reply
     /// before it finishes reading; so this must always be greater than or equal to the single-request timeout.
     private static let maxStreamSeconds: TimeInterval = 90
+    /// The ceiling (seconds) for draining the error body on a non-2xx response. A non-2xx server can half-open and hang
+    /// the body forever (URLRequest.timeoutInterval is per-chunk inactivity and never fires on a fully stalled body), so
+    /// the error-body read must be independently bounded just like the success stream. Defaults to `maxStreamSeconds`;
+    /// the error body is tiny (we only surface the first 500 chars), so even a much smaller cap would do -- it is the same
+    /// ceiling purely for consistency. `internal` and `var` only so tests can lower it to keep the stalled-body case fast.
+    nonisolated(unsafe) static var maxErrorBodySeconds: TimeInterval = maxStreamSeconds
     /// The data prefix of an SSE line (shared by prefix-checking and prefix-stripping, avoiding writing the same string twice).
     private static let dataPrefix = "data:"
     /// Observability-only logger for polish failures (HTTP non-2xx / stream timeout / stream-failed event).
@@ -140,10 +146,11 @@ public struct CodexResponsesProvider: LLMProvider {
         }
         let http = try HTTPResponseValidator.httpResponse(from: response)
         if !HTTPResponseValidator.successRange.contains(http.statusCode) {
-            // Read all the remaining body for error reporting (joined by newline, preserving each line's boundary).
-            var errLines: [String] = []
-            for try await line in bytes.lines { errLines.append(line) }
-            let body = errLines.joined(separator: "\n")
+            // Read the remaining body for error reporting, but bound it: a non-2xx server can half-open and hang the body
+            // forever, and (like the success stream) URLRequest.timeoutInterval never fires on a fully stalled body, so an
+            // unbounded `for await` here would hang the whole polish call. Race the drain against a timer; if the timer wins
+            // we surface the HTTP status with whatever partial body we read (possibly empty) instead of hanging.
+            let body = await Self.readErrorBody(bytes, timeout: Self.maxErrorBodySeconds)
             // Observability: surface the HTTP status + a truncated server error body (e.g. a 400 rejecting effort="none").
             // The bearer token lives only in a request header and is never interpolated here.
             Self.log.error("polish HTTP \(http.statusCode, privacy: .public): \(String(body.prefix(500)), privacy: .public)")
@@ -170,6 +177,38 @@ public struct CodexResponsesProvider: LLMProvider {
             group.cancelAll()
             return result
         }
+    }
+
+    /// Drains the non-2xx error body (lines joined by newline, preserving each line's boundary) under a hard timeout,
+    /// mirroring the success stream's race so a half-open/stalled body can never hang the polish call. Whatever was read
+    /// before the bound (possibly empty on an immediate stall) is returned; the caller then surfaces it with the HTTP
+    /// status. This never throws -- the bound is best-effort observability, the real error is the HTTP status the caller raises.
+    private static func readErrorBody(_ bytes: URLSession.AsyncBytes, timeout: TimeInterval) async -> String {
+        // A shared collector both racers see: the drain appends into it, so a timeout still yields the partial body read so far.
+        let collector = ErrorBodyCollector()
+        try? await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for try await line in bytes.lines { await collector.append(line) }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(timeout))
+                Self.log.error("polish error-body read timed out after \(Int(timeout), privacy: .public)s")
+                throw ProviderError.streamFailed(body: "error-body read timed out")
+            }
+            // Whichever finishes first wins: the drain completes -> cancel the timer; the timer fires -> its throw cancels the drain
+            // (AsyncBytes iteration responds to cancellation, abandoning the half-open connection).
+            _ = try await group.next()
+            group.cancelAll()
+        }
+        return await collector.joined()
+    }
+
+    /// Thread-safe accumulator for the bounded error-body drain: an actor so the drain task and the (possible) timeout
+    /// race never touch the line buffer concurrently, while still letting a timeout return whatever was read so far.
+    private actor ErrorBodyCollector {
+        private var lines: [String] = []
+        func append(_ line: String) { lines.append(line) }
+        func joined() -> String { lines.joined(separator: "\n") }
     }
 
     /// Reads SSE line by line, accumulating output_text.delta; on a terminal event returns the accumulated text, on an error event throws.
