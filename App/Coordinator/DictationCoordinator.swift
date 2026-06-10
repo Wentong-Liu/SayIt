@@ -120,8 +120,6 @@ final class DictationCoordinator {
         let injectedText: String
         /// When this record expires; after this instant a compare trigger is ignored (the user moved on long ago).
         let expiresAt: Date
-        /// When this record was armed (diagnostic / future tuning).
-        let armedAt: Date
         /// The process id of the focused app at arm time (a lightweight focus identity to detect "armed field lost focus").
         let targetPID: pid_t?
     }
@@ -1497,7 +1495,6 @@ final class DictationCoordinator {
         injectionRecord = InjectionRecord(
             injectedText: injected,
             expiresAt: Date().addingTimeInterval(learnFreshness.seconds),
-            armedAt: Date(),
             targetPID: capturedTarget?.processIdentifier
         )
         startIdleTimer()
@@ -1947,7 +1944,7 @@ final class DictationCoordinator {
     /// Force-arms a learn-from-edits injection record with a custom expiry, bypassing the AX read at arm time. Lets a test
     /// exercise the expired-record path deterministically (pass a past `expiresAt`) without waiting the real freshness window.
     func _test_armInjectionRecord(injected: String, expiresAt: Date) {
-        injectionRecord = InjectionRecord(injectedText: injected, expiresAt: expiresAt, armedAt: Date(), targetPID: nil)
+        injectionRecord = InjectionRecord(injectedText: injected, expiresAt: expiresAt, targetPID: nil)
     }
 
     /// Directly drives the COMMIT trigger (equivalent to a Return / keypad-Enter while armed), then awaits the in-flight

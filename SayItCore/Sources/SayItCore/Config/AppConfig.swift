@@ -97,6 +97,8 @@ public final class AppConfig {
     /// compatibility but no longer affects what is read back.
     public var localModel: String {
         get { Self.defaultLocalModel }
+        // Intentionally retained as an inert backward-compat write (the getter is fixed to turbo, so this
+        // write can never change what is read back); pinned by AppConfigTests.testLocalModelIsAlwaysTurbo.
         set { setString(newValue, forKey: Key.localModel) }
     }
 
