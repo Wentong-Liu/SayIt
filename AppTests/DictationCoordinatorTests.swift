@@ -42,6 +42,7 @@ final class DictationCoordinatorTests: XCTestCase {
         polishProviderFactory: (() async throws -> any LLMProvider)? = nil,
         learnProviderFactory: (() async throws -> any LLMProvider)? = nil,
         termExtractorFactory: ((any LLMProvider) -> any LearnedTermExtracting)? = nil,
+        frontmostPIDProvider: (() -> pid_t?)? = nil,
         metricsSink: ((String) -> Void)? = nil,
         transcriber: @escaping () throws -> any Transcriber
     ) -> DictationCoordinator {
@@ -74,6 +75,7 @@ final class DictationCoordinatorTests: XCTestCase {
             polishProviderFactory: polishProviderFactory,
             learnProviderFactory: learnProviderFactory ?? { throw ProviderError.missingAPIKey },
             termExtractorFactory: termExtractorFactory,
+            frontmostPIDProvider: frontmostPIDProvider,
             metricsSink: metricsSink
         )
     }
@@ -2125,6 +2127,78 @@ final class DictationCoordinatorTests: XCTestCase {
         await coordinator._test_handleFocusLoss()
         XCTAssertEqual(extractor.callCount, 1, "the focus-loss trigger should call the extractor once")
         XCTAssertTrue(suggestionPanel._test_isShown, "the focus-loss-triggered compare should show a suggestion")
+    }
+
+    /// FOCUS-GUARD (the bug fix): the focus-loss observer fires on ANY app deactivation (object:nil), and the AX reader is
+    /// system-wide, so a focus-loss that lands while a DIFFERENT app is frontmost must NOT compare — it would pair the
+    /// injected text of the armed app with the unrelated final text of the now-focused app and surface a spurious
+    /// suggestion. When the frontmost PID != the armed `targetPID`, the compare drops WITHOUT reading AX or calling the LLM.
+    func testLearnFromEditsFocusMovedToDifferentAppDropsNoCompare() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        // A reader that WOULD return an edited value if read — so a wrongly-fired compare would surface a suggestion.
+        let reader = FakeFocusedTextReader(single:
+            FocusedText(value: "a totally unrelated field in app Y", selectedLocation: nil, selectedLength: nil))
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "jon", corrected: "John"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        // Frontmost is app Y (pid 4321) at compare time, but the record was armed in app X (pid 1234).
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor },
+            frontmostPIDProvider: { 4321 }
+        ) {
+            FakeTranscriber(text: "I met jon today")
+        }
+
+        // Arm a record for app X (pid 1234) and mark a real edit so only the focus guard can stop the compare.
+        coordinator._test_armInjectionRecord(injected: "I met jon today",
+                                              expiresAt: Date(timeIntervalSinceNow: 60),
+                                              targetPID: 1234)
+        coordinator._test_handleEditKey()
+        XCTAssertTrue(coordinator._test_injectionRecordArmed)
+
+        await coordinator._test_handleFocusLoss()
+        XCTAssertEqual(reader.readCount, 0, "a focus-loss in a DIFFERENT app must NOT read the system-wide AX field")
+        XCTAssertEqual(extractor.callCount, 0, "a focus-loss in a DIFFERENT app must NOT call the extractor")
+        XCTAssertFalse(suggestionPanel._test_isShown, "a focus-loss in a DIFFERENT app must NOT surface a suggestion")
+        XCTAssertFalse(coordinator._test_injectionRecordArmed, "the record is still consumed once on the trigger")
+    }
+
+    /// FOCUS-GUARD (positive lock): when the frontmost app at compare time is STILL the armed app (matching PID), the
+    /// same-app compare proceeds — reads AX, calls the extractor, and surfaces the suggestion. Deterministic counterpart to
+    /// the mismatch drop above (the existing end-to-end focus-loss test relies on the test-runner being frontmost).
+    func testLearnFromEditsFocusStayedSameAppCompares() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let reader = FakeFocusedTextReader(single:
+            FocusedText(value: "I use Sequoia", selectedLocation: nil, selectedLength: nil))
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "sequoia", corrected: "Sequoia"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        // Frontmost is still pid 1234 (the armed app) at compare time.
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor },
+            frontmostPIDProvider: { 1234 }
+        ) {
+            FakeTranscriber(text: "I use sequoia")
+        }
+
+        coordinator._test_armInjectionRecord(injected: "I use sequoia",
+                                              expiresAt: Date(timeIntervalSinceNow: 60),
+                                              targetPID: 1234)
+        coordinator._test_handleEditKey()
+        XCTAssertTrue(coordinator._test_injectionRecordArmed)
+
+        await coordinator._test_handleFocusLoss()
+        XCTAssertEqual(reader.readCount, 1, "a same-app focus-loss should read the final AX field once")
+        XCTAssertEqual(extractor.callCount, 1, "a same-app focus-loss should call the extractor once")
+        XCTAssertTrue(suggestionPanel._test_isShown, "a same-app focus-loss should surface the suggestion")
     }
 
     /// EDIT-REQUIRED GATE (COMMIT): dictate + commit with NO edit key (no Backspace) -> the compare drops BEFORE any AX
