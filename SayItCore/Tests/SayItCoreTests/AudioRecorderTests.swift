@@ -131,6 +131,67 @@ final class AudioRecorderStateTests: XCTestCase {
         let recording = await recorder.isRecording
         XCTAssertFalse(recording)
     }
+
+    /// Locks the engine.start()-failure cleanup: a failed start must leave `recording`/`isRecording` false.
+    ///
+    /// Root cause guarded: the old `engine.start()` catch removed the tap + nil'd the engine but never reset the
+    /// `recording` flag, so a future reordering of the caller's `recording = true` (or any path that sets it before the
+    /// throw) would leave the recorder stuck "recording" after a failed start. The fix routes the catch through
+    /// `resetStateAfterStartFailure()`, which this test drives directly via the seam.
+    func testStartFailureCleanupResetsRecording() async {
+        let recorder = AudioRecorder()
+        let recordingAfterCleanup = await recorder.recordingAfterStartFailureCleanupForTesting()
+        XCTAssertFalse(recordingAfterCleanup, "a failed engine.start() must reset the recording flag")
+        let isRecording = await recorder.isRecording
+        XCTAssertFalse(isRecording, "isRecording must read false after a failed start")
+    }
+}
+
+/// Regression tests for the realtime-tap -> ingest funnel.
+///
+/// Root cause guarded: the realtime tap used to do `Task { await self.ingest(...) }` PER buffer -- unbounded (a burst
+/// spawns unbounded concurrent ingest tasks) and out-of-order (independent unstructured tasks acquire the actor in
+/// UNSPECIFIED order, so samples could be appended out of capture order). The fix funnels every buffer through a single
+/// `AsyncStream` drained by ONE task, so there is at most one in-flight ingest and capture order is preserved (FIFO).
+final class AudioIngestPipelineTests: XCTestCase {
+    /// Many buffers emitted exactly as the realtime tap does (off-actor `yield`) must accumulate in FIFO capture
+    /// order. Under the old per-buffer `Task` pattern this ordering was not guaranteed.
+    func testIngestPreservesCaptureOrder() async {
+        let recorder = AudioRecorder()
+        await recorder.beginIngestSessionForTesting()
+
+        // Emit a strictly increasing sequence: buffer i carries the single sample Float(i). FIFO accumulation must
+        // reproduce 0, 1, 2, ... exactly.
+        let count = 2_000
+        for i in 0..<count {
+            recorder.emitIngestForTesting([Float(i)], rawFrames: 1)
+        }
+        await recorder.endIngestSessionForTesting()
+
+        let samples = await recorder.accumulatedSamplesForTesting
+        XCTAssertEqual(samples.count, count, "every emitted buffer must be ingested")
+        let expected = (0..<count).map { Float($0) }
+        XCTAssertEqual(samples, expected, "ingest must preserve capture (FIFO) order")
+
+        let frames = await recorder.capturedFramesForTesting
+        XCTAssertEqual(frames, UInt64(count), "every buffer's raw frame count must be accumulated exactly once")
+    }
+
+    /// Samples emitted after the session ends (the pipeline finished) must NOT be accumulated -- the draining task has
+    /// exited, and any late `yield` into the finished stream is dropped. Mirrors the `ingest` "discard late samples"
+    /// guard and proves the funnel does not leak across sessions.
+    func testLateEmissionsAfterEndAreNotAccumulated() async {
+        let recorder = AudioRecorder()
+        await recorder.beginIngestSessionForTesting()
+        recorder.emitIngestForTesting([1, 2, 3], rawFrames: 3)
+        await recorder.endIngestSessionForTesting()
+
+        // Late tap delivery after the session ended: dropped (stream finished, recording false).
+        recorder.emitIngestForTesting([9, 9, 9], rawFrames: 3)
+
+        let samples = await recorder.accumulatedSamplesForTesting
+        XCTAssertEqual(samples, [1, 2, 3], "late emissions after the session ended must not pollute the result")
+    }
 }
 
 /// A regression test that reproduces and locks down "the mic test has no green bars the second time".

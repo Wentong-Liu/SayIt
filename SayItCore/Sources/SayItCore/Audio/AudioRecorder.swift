@@ -48,6 +48,20 @@ public actor AudioRecorder: AudioRecording {
     /// The number of frames requested per tap callback (buffer size). A larger value lowers the callback frequency.
     private let tapBufferSize: AVAudioFrameCount
 
+    /// Per-session funnel that serializes tap-delivered samples into a single ordered ingest pipeline.
+    ///
+    /// Why: the realtime tap runs on the audio real-time thread and must hand its `[Float]` (Sendable) samples back to
+    /// the actor for accumulation. Spawning one unstructured `Task { await ingest(...) }` PER buffer is both unbounded
+    /// (a burst spawns unbounded concurrent tasks) and out-of-order (independent unstructured tasks acquire the actor
+    /// in unspecified order, so samples can be appended out of capture order). Instead the tap `yield`s into this
+    /// `AsyncStream` and a single draining task (``ingestDrainTask``) consumes it FIFO -- so there is at most ONE
+    /// in-flight ingest and buffer order is preserved.
+    private nonisolated let ingestPipeline = IngestPipelineHolder()
+
+    /// The single task draining ``ingestPipeline`` for the current session, calling `ingest(_:rawFrames:)` serially in
+    /// FIFO order. Rebuilt on each `start()` (alongside the per-session stream); torn down on `stop()` / failed start.
+    private var ingestDrainTask: Task<Void, Never>?
+
     /// The total raw input frames captured in this recording session (for the summary log on stop()).
     private var capturedFrames: UInt64 = 0
 
@@ -97,6 +111,9 @@ public actor AudioRecorder: AudioRecording {
             engine.stop()
         }
         levelStream.finishCurrent()
+        // Finish the ingest pipeline too: the draining task captures `self` weakly (so it never kept us alive), and
+        // finishing its stream lets that now-orphaned task exit promptly instead of hanging on a never-finished stream.
+        ingestPipeline.endSession()
     }
 
     public var isRecording: Bool {
@@ -120,6 +137,45 @@ public actor AudioRecorder: AudioRecording {
     /// For testing: simulates the level-stream wrap-up at the end of a recording session (same source as `endSession()` inside `stop()`).
     nonisolated func endLevelSessionForTesting() {
         levelStream.endSession()
+    }
+
+    /// For testing: begins an ingest "session" without microphone permission/hardware -- flips `recording` on (so
+    /// `ingest(_:rawFrames:)` does not discard the samples as late) and rebuilds + starts the single draining task
+    /// (same source as `startIngestDrain()` inside `start()`). Lets unit tests drive the realtime-tap -> ingest funnel.
+    func beginIngestSessionForTesting() {
+        recording = true
+        startIngestDrain()
+    }
+
+    /// For testing: enqueues one ingest item into the current session's pipeline, exactly as the realtime tap does
+    /// (`ingestPipeline.currentContinuation.yield(...)` from off the actor). Ordering/single-flight is then exercised
+    /// by the single draining task started above.
+    nonisolated func emitIngestForTesting(_ samples: [Float], rawFrames: UInt64) {
+        ingestPipeline.currentContinuation.yield(IngestItem(samples: samples, rawFrames: rawFrames))
+    }
+
+    /// For testing: finishes the ingest pipeline and awaits the draining task to fully process the buffered items
+    /// (same source as `endIngestDrain()` inside `stop()`), so a test can assert the accumulated result afterwards.
+    func endIngestSessionForTesting() async {
+        await endIngestDrain()
+        recording = false
+    }
+
+    /// For testing: the channel-0 Float samples accumulated so far (via `ingest(_:rawFrames:)`), to assert the funnel
+    /// delivered every buffer in capture order.
+    var accumulatedSamplesForTesting: [Float] { accumulator.samples }
+
+    /// For testing: the number of raw frames accumulated so far (via `ingest(_:rawFrames:)`), to assert the funnel
+    /// delivered every buffer.
+    var capturedFramesForTesting: UInt64 { capturedFrames }
+
+    /// For testing: sets up an "as-if a start had marked us recording" state, then runs the REAL engine.start()-failure
+    /// cleanup (`resetStateAfterStartFailure()`, the same helper the `catch` invokes) and returns the resulting
+    /// `recording` flag. Locks the "a failed start resets `isRecording`" guarantee without microphone permission/hardware.
+    func recordingAfterStartFailureCleanupForTesting() -> Bool {
+        recording = true
+        resetStateAfterStartFailure()
+        return recording
     }
 
     public func start(deviceUID: String? = nil) async throws {
@@ -148,6 +204,12 @@ public actor AudioRecorder: AudioRecording {
         //      and reusing the old stream causes "no green bars on the retest". The consumer reads `levels` after `start()`,
         //      so rebuild here first, ensuring they get this session's new stream.
         levelStream.beginSession()
+
+        // 1.6) Rebuild this session's ingest pipeline and spin up the SINGLE draining task that serializes the
+        //      tap-delivered samples (at most one in-flight ingest, FIFO order). The tap `yield`s into the pipeline
+        //      instead of spawning an unstructured `Task` per buffer (unbounded + out-of-order). The drain task ends
+        //      naturally when the pipeline's continuation is finished (in `stop()` / the failure catch / `deinit`).
+        startIngestDrain()
 
         // Pair the level-stream lifecycle with the engine lifecycle: any failure after beginSession()
         // (converterUnavailable / engineStartFailed / the invalid-format fast-fail below / any AVFoundation throw)
@@ -204,10 +266,13 @@ public actor AudioRecorder: AudioRecording {
             )
             recording = true
         } catch {
-            // installTapStartAndStore already nils self.engine on its own throw paths, and the fast-fail above
-            // throws before self.engine is assigned, so the catch only needs to tear down the level stream
-            // (touching self.engine here would conflict with the existing engine-cleanup contract). Re-throw unchanged.
+            // installTapStartAndStore already nils self.engine on its own throw paths (incl. resetting `recording`),
+            // and the fast-fail above throws before self.engine is assigned, so the catch only needs to tear down
+            // the per-session streams (touching self.engine here would conflict with the existing engine-cleanup
+            // contract). Tear down BOTH this session's level stream and its ingest pipeline + draining task so a
+            // failed start leaves no orphaned live-but-dead stream / lingering drain task behind. Re-throw unchanged.
             levelStream.endSession()
+            await endIngestDrain()
             throw error
         }
     }
@@ -226,6 +291,9 @@ public actor AudioRecorder: AudioRecording {
         // Capture this session's continuation snapshot: the tap always delivers levels into the stream "rebuilt by this start()",
         // so even if start() later rebuilds a new stream, the old tap will not wrongly deliver to the new session.
         let levelContinuation = levelStream.currentContinuation
+        // Likewise capture this session's ingest continuation: the tap funnels every buffer's samples into the SINGLE
+        // draining pipeline rebuilt by this start(), preserving order and bounding concurrency to one in-flight ingest.
+        let ingestContinuation = ingestPipeline.currentContinuation
 
         // Build the converter from the hardware format to the target format (handling sample rate + channel down-mix + quantization).
         guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
@@ -261,7 +329,11 @@ public actor AudioRecorder: AudioRecording {
             }
 
             guard !samples.isEmpty else { return }
-            Task { await self.ingest(samples, rawFrames: UInt64(frameLength)) }
+            // Funnel the samples into this session's ingest pipeline rather than spawning one unstructured
+            // `Task { await self.ingest(...) }` per buffer (unbounded concurrent ingests + out-of-order appends).
+            // The single draining task started in `start()` consumes the pipeline FIFO, so there is at most one
+            // in-flight ingest and capture order is preserved.
+            ingestContinuation.yield(IngestItem(samples: samples, rawFrames: UInt64(frameLength)))
         }
 
         // Start the engine.
@@ -272,9 +344,41 @@ public actor AudioRecorder: AudioRecording {
         } catch {
             Self.log.error("engine.start() FAILED: \(error.localizedDescription, privacy: .public)")
             inputNode.removeTap(onBus: 0)
-            self.engine = nil
+            resetStateAfterStartFailure()
             throw AudioRecordingError.engineStartFailed(error.localizedDescription)
         }
+    }
+
+    /// Resets the actor state left by a failed `engine.start()` (the caller already removed the tap): release the
+    /// engine and clear `recording`. `recording` is only set to `true` by `start()` AFTER `installTapStartAndStore`
+    /// returns, but resetting it here makes the failure cleanup self-contained (mirrors the engine teardown) and robust
+    /// to any future reordering of the `recording = true` assignment, so a failed start always leaves clean state.
+    private func resetStateAfterStartFailure() {
+        self.engine = nil
+        self.recording = false
+    }
+
+    /// Rebuilds the per-session ingest pipeline and starts the SINGLE draining task that serializes tap-delivered
+    /// samples (at most one in-flight ingest, FIFO order). Replaces any prior session's task (it should already have
+    /// ended via `endIngestDrain()`, but cancel defensively). `self` is captured weakly so the running task never
+    /// keeps the actor alive past its last external reference (the task ends when the continuation is finished).
+    private func startIngestDrain() {
+        ingestDrainTask?.cancel()
+        let stream = ingestPipeline.beginSession()
+        ingestDrainTask = Task { [weak self] in
+            for await item in stream {
+                guard let self else { return }
+                await self.ingest(item.samples, rawFrames: item.rawFrames)
+            }
+        }
+    }
+
+    /// Finishes the current session's ingest pipeline and awaits the draining task, so every buffer the tap already
+    /// handed off is accumulated before `stop()` drains the result (or the failed-start cleanup completes).
+    private func endIngestDrain() async {
+        ingestPipeline.endSession()
+        await ingestDrainTask?.value
+        ingestDrainTask = nil
     }
 
     @discardableResult
@@ -287,6 +391,9 @@ public actor AudioRecorder: AudioRecording {
         // Release this session's engine: the next start() rebuilds a brand-new engine.
         engine = nil
         recording = false
+        // Finish this session's ingest pipeline + await the single draining task to fully process any buffered
+        // samples already handed off by the tap, so they are accumulated before drain() reads the result below.
+        await endIngestDrain()
         Self.log.notice("stop(): totalCapturedFrames=\(self.capturedFrames, privacy: .public) accumulatedSamples=\(self.accumulator.count, privacy: .public)")
         // Recording ended: first zero the level to settle the HUD waveform, then end this session's stream.
         // The next `start()` rebuilds a brand-new stream; the consumer just re-reads `levels` at that point.
@@ -416,6 +523,65 @@ private final class TapCounter {
 /// boxes (`FeedState`/`TapCounter`) used elsewhere in this file.
 private final class EngineHolder: @unchecked Sendable {
     nonisolated(unsafe) var engine: AVAudioEngine?
+}
+
+/// One unit of work handed from the realtime tap to the actor's ingest pipeline: the converted channel-0 Float
+/// samples plus the raw input frame count for this buffer. `[Float]`/`UInt64` are Sendable, so funneling this struct
+/// across the isolation boundary (tap thread -> draining task -> actor) never moves the non-Sendable AVAudioPCMBuffer.
+private struct IngestItem: Sendable {
+    let samples: [Float]
+    let rawFrames: UInt64
+}
+
+/// A "per-session rebuildable" ingest pipeline holder.
+///
+/// Why it is needed: the realtime tap must hand each buffer's samples back to the actor for accumulation. Spawning one
+/// unstructured `Task { await ingest(...) }` PER buffer is unbounded (a burst spawns unbounded concurrent ingests) and
+/// out-of-order (independent unstructured tasks acquire the actor in unspecified order). This holder funnels the tap's
+/// items into a single `AsyncStream` that ONE draining task consumes FIFO, so there is at most one in-flight ingest and
+/// capture order is preserved. Mirrors ``LevelStreamHolder``'s lock-guarded, per-`start()`-rebuildable stream pattern,
+/// but buffers `.unbounded` (audio samples must never be dropped, unlike the keep-latest level stream).
+///
+/// Concurrency safety: an `OSAllocatedUnfairLock` (`Sendable`) guards the stream/continuation pair, so the tap (off
+/// actor) and the actor methods (`start`/`stop`) read/write it safely from any context.
+private final class IngestPipelineHolder: Sendable {
+    private struct Pair {
+        var stream: AsyncStream<IngestItem>
+        var continuation: AsyncStream<IngestItem>.Continuation
+    }
+
+    private let lock: OSAllocatedUnfairLock<Pair>
+
+    init() {
+        lock = OSAllocatedUnfairLock(initialState: Self.makePair())
+    }
+
+    /// Constructs a brand-new pair of unbounded ingest stream + continuation (audio must never be dropped).
+    private static func makePair() -> Pair {
+        var continuation: AsyncStream<IngestItem>.Continuation!
+        let stream = AsyncStream<IngestItem>(bufferingPolicy: .unbounded) { continuation = $0 }
+        return Pair(stream: stream, continuation: continuation)
+    }
+
+    /// The current session's continuation (for the tap to deliver items).
+    var currentContinuation: AsyncStream<IngestItem>.Continuation {
+        lock.withLock { $0.continuation }
+    }
+
+    /// Start a new session: finish the old stream (its draining task ends) and swap in a brand-new pair, returning the
+    /// new stream so the caller can spin up this session's single draining task on it.
+    func beginSession() -> AsyncStream<IngestItem> {
+        lock.withLock { pair in
+            pair.continuation.finish()
+            pair = Self.makePair()
+            return pair.stream
+        }
+    }
+
+    /// End the current session: finish the stream so its draining task drains the remaining buffered items then exits.
+    func endSession() {
+        lock.withLock { $0.continuation.finish() }
+    }
 }
 
 /// A "per-session rebuildable" level stream holder.

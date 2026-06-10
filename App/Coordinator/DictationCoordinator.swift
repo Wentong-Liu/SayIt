@@ -1189,7 +1189,13 @@ final class DictationCoordinator {
     /// bound lets a real first compile finish while still being a safety net against a true infinite hang. The actual
     /// transcribe call keeps using ``transcribeTimeout`` (see ``withTranscribeTimeout``).
     /// - Parameter preload: the cold-start load closure (`WhisperKitTranscriber.preload()` -> `Void`, mapping failure to `STTError`).
-    private func awaitPreloadBounded(_ preload: @escaping @Sendable () async throws -> Void) async throws {
+    /// - Parameter onTimeoutTaskSpawned: test-only hook handed the timeout finisher's `Task` handle the instant it is
+    ///   spawned, so a test can observe (after this method returns) that the orphaned-timeout fix cancelled it. Defaults
+    ///   to nil; the production call site never passes it, so the production behavior is unchanged.
+    private func awaitPreloadBounded(
+        onTimeoutTaskSpawned: (@MainActor (Task<Void, Never>) -> Void)? = nil,
+        _ preload: @escaping @Sendable () async throws -> Void
+    ) async throws {
         let timeout = modelLoadTimeout
         // The load runs detached so it is NOT a structured child of this scope (never awaited at exit) and is NOT cancelled
         // when this wait is abandoned — it keeps loading + caching so the NEXT dictation is fast.
@@ -1197,19 +1203,37 @@ final class DictationCoordinator {
             try await preload()
         }
         let box = PreloadWaitBox()
+        // The two finisher tasks (load-watcher + timeout) are spawned inside the continuation closure; capture their
+        // handles here so they can be cancelled once the wait resolves. WITHOUT this, Finisher 2's
+        // `Task.sleep(for: modelLoadTimeout=240s)` is an ORPHAN: when the load finishes early (Finisher 1) or ESC
+        // cancels (Finisher 3) wins the resume race, the sleep keeps lingering ~240s per prepare, accumulating idle
+        // tasks. Note: we deliberately do NOT cancel `loadTask` — the CoreML load keeps running so the next dictation
+        // is warm; only the WAIT finishers are losers to reap.
+        var loadWatcherTask: Task<Void, Never>?
+        var timeoutTask: Task<Void, Never>?
+        defer {
+            // The continuation has resolved (success / timeout / cancel / load failure): the surviving finishers are now
+            // pure no-ops on the resume-once box, so cancel BOTH to reap any still-sleeping timeout task promptly. The
+            // detached CoreML `loadTask` is intentionally left running.
+            loadWatcherTask?.cancel()
+            timeoutTask?.cancel()
+        }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 box.store(continuation)
                 // Finisher 1: the load finished or failed -> resume with its outcome (detached, so it is never cancelled here).
-                Task.detached {
+                loadWatcherTask = Task.detached {
                     let result = await loadTask.result
                     box.resume(with: result.mapError { $0 as Error })
                 }
                 // Finisher 2: the bounded wait elapsed -> abandon the WAIT (not the load) with the non-alarming marker.
-                Task.detached {
+                // Cancelled by the `defer` above once the wait resolves, so it never lingers the full timeout.
+                let spawnedTimeoutTask = Task.detached {
                     try? await Task.sleep(for: timeout)
                     box.resume(with: .failure(PrepareStillLoading()))
                 }
+                timeoutTask = spawnedTimeoutTask
+                onTimeoutTaskSpawned?(spawnedTimeoutTask)
             }
         } onCancel: {
             // Finisher 3: ESC cancelled this run -> resume PROMPTLY so the HUD dismisses immediately; the catch arm in
@@ -2013,4 +2037,15 @@ final class DictationCoordinator {
 
     /// Exposes the suggestion panel so a test can drive Accept/Dismiss and assert visibility deterministically.
     var _test_suggestionPanel: SuggestionPanelController { suggestionPanel }
+
+    /// Drives ``awaitPreloadBounded(onTimeoutTaskSpawned:_:)`` directly with the given preload closure, reporting the
+    /// orphaned-timeout finisher's `Task` handle to `onTimeoutTaskSpawned` the instant it is spawned (so a test still
+    /// receives the handle even when the load FAILS and this rethrows). Lets a test assert the wait resolving early
+    /// (load done/failed or ESC) CANCELS the timeout finisher instead of leaving it sleeping the full ``modelLoadTimeout``.
+    func _test_awaitPreloadBounded(
+        onTimeoutTaskSpawned: @escaping @MainActor (Task<Void, Never>) -> Void,
+        _ preload: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        try await awaitPreloadBounded(onTimeoutTaskSpawned: onTimeoutTaskSpawned, preload)
+    }
 }

@@ -23,6 +23,12 @@ final class MicTestViewModel {
     /// The task consuming the `levels` stream in the background; cancelled on stopping the test.
     @ObservationIgnored private var levelTask: Task<Void, Never>?
 
+    /// The in-flight `recorder.stop()` task started by ``stopTesting()`` (instead of a fire-and-forget detached Task),
+    /// so a subsequent ``startTesting()`` can `await` it before `recorder.start()`. Mirrors the coordinator's
+    /// `pendingStopTask` pattern: a rapid stop/start otherwise races the `AVAudioEngine` teardown (the next `start()`
+    /// reaching the actor before the previous `stop()` -> `.alreadyRecording` / a racy engine rebuild).
+    @ObservationIgnored private var pendingStopTask: Task<Void, Never>?
+
     /// Monotonic id of the current level-consuming task. Bumped each time a new level task is created
     /// (start/restart); each task captures its own generation and only writes ``level`` while it still
     /// matches. This closes the post-suspension stale-write race: a cancelled OLD task that already
@@ -110,6 +116,9 @@ final class MicTestViewModel {
     private func makeLevelTask(deviceUID: String?, stopFirst: Bool, generation: Int) -> Task<Void, Never> {
         Task { [weak self] in
             guard let self else { return }
+            // Await any in-flight stopTesting() stop FIRST, so a rapid stop->start does not race the AVAudioEngine
+            // teardown (the new start() reaching the actor before the prior stop() -> .alreadyRecording / a racy rebuild).
+            await self.awaitPendingStop()
             if stopFirst {
                 // Stop the old capture first: when not recording it throws .notRecording, which is just ignored in the device-switch scenario.
                 _ = try? await self.recorder.stop()
@@ -146,10 +155,22 @@ final class MicTestViewModel {
         level = 0
         levelTask?.cancel()
         levelTask = nil
-        Task { [recorder] in
+        // Track the stop task (instead of fire-and-forget) so a subsequent startTesting() awaits it via
+        // awaitPendingStop() before recorder.start(), avoiding a rapid stop/start racing the AVAudioEngine teardown.
+        // Replacing any prior pending stop is safe: a second stop while one is in flight is idempotent (stop() throws
+        // .notRecording when not recording, which is ignored here).
+        pendingStopTask = Task { [recorder] in
             // stop() throws .notRecording when not recording; just ignored in the test scenario.
             _ = try? await recorder.stop()
         }
+    }
+
+    /// Awaits any in-flight ``stopTesting()`` stop task so the recorder has fully torn down before the next
+    /// `recorder.start()`. Mirrors the coordinator's `awaitPendingStop()`.
+    private func awaitPendingStop() async {
+        guard let pending = pendingStopTask else { return }
+        await pending.value
+        pendingStopTask = nil
     }
 
     /// Restarts the test capture with the currently selected device (called when switching the device).
