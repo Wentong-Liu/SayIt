@@ -111,14 +111,15 @@ struct SayItApp: App {
     @ViewBuilder
     private var menuBarLabel: some View {
         let _ = uiLocale
-        if case .downloading(let progress, _) = ModelManager.shared.state {
+        switch menuBarModelReadiness {
+        case .downloading(let percent):
             // Icon + a compact percentage so a brand-new user sees the install is in progress.
             HStack(spacing: 3) {
                 Image("MenuBarIcon")
-                Text(verbatim: "\(Int(progress * 100))%")
+                Text(verbatim: "\(percent)%")
             }
             .accessibilityLabel("SayIt")
-        } else if needsLocalModel {
+        case .needsLocalModel:
             // Persistent "setup needed" badge overlaid on the icon: the local engine is selected but
             // its model is absent (state `.notDownloaded`/`.failed` while sttMode == .local).
             Image("MenuBarIcon")
@@ -128,7 +129,7 @@ struct SayItApp: App {
                         .foregroundStyle(Theme.accent)
                 }
                 .accessibilityLabel("SayIt")
-        } else {
+        case .ready:
             Image("MenuBarIcon")
                 .accessibilityLabel("SayIt")
         }
@@ -140,18 +141,39 @@ struct SayItApp: App {
         AppConfig.shared.sttMode == .local && !ModelManager.isDownloaded(model: AppConfig.shared.localModel)
     }
 
+    /// The single classification of `ModelManager.shared.state` + `needsLocalModel` into the three menu-bar
+    /// presentations, so `menuBarLabel` and `modelStatusText` read the identical percentage (`Int(progress*100)`)
+    /// and the identical not-ready condition from ONE place. Evaluated inside the view bodies, so reading
+    /// `ModelManager.shared.state` here still registers `@Observable` tracking (the no-poll re-render is preserved).
+    private enum MenuBarModelReadiness {
+        case downloading(percent: Int)
+        case needsLocalModel
+        case ready
+    }
+
+    private var menuBarModelReadiness: MenuBarModelReadiness {
+        if case .downloading(let progress, _) = ModelManager.shared.state {
+            return .downloading(percent: Int(progress * 100))
+        }
+        if needsLocalModel {
+            return .needsLocalModel
+        }
+        return .ready
+    }
+
     /// A localized status line for the dropdown menu so the download progress / not-ready state is
     /// visible on open even with Settings closed; `nil` when the model is ready (no line needed).
     private var modelStatusText: String? {
-        if case .downloading(let progress, _) = ModelManager.shared.state {
+        switch menuBarModelReadiness {
+        case .downloading(let percent):
             return uiLanguageLocalized(format: "menu.modelDownloading %d",
                                        defaultValue: "Downloading model… %d%%",
-                                       Int(progress * 100))
-        }
-        if needsLocalModel {
+                                       percent)
+        case .needsLocalModel:
             return uiLanguageLocalized("menu.modelNotReady",
                                        defaultValue: "Setup needed — local model not downloaded")
+        case .ready:
+            return nil
         }
-        return nil
     }
 }

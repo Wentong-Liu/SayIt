@@ -273,9 +273,7 @@ public final class HotkeyManager {
 
     /// In hold mode, if the trigger key itself is a modifier, its down/up goes through `.flagsChanged` (modifier keys do not send keyDown/keyUp).
     private func handleHoldFlagsChanged(_ event: NSEvent, key: TriggerKey) {
-        let isPressed: Bool = key == .fnGlobe
-            ? event.modifierFlags.contains(.function)
-            : (event.keyCode == key.keyCode && event.modifierFlags.contains(key.modifierFlag))
+        let isPressed = isTriggerPressEdge(event, key: key)
 
         if isPressed {
             if let result = holdMachine.keyDown() { emit(result) }

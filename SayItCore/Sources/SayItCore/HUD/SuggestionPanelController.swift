@@ -139,19 +139,10 @@ public final class SuggestionPanelController {
     // MARK: - Panel building / layout
 
     private func buildPanel() {
-        let p = NSPanel(contentRect: NSRect(origin: .zero, size: Layout.initialSize),
-                        styleMask: [.borderless, .nonactivatingPanel],
-                        backing: .buffered, defer: false)
-        p.level = .floating
-        p.isOpaque = false
-        p.backgroundColor = .clear
-        p.hasShadow = false
-        p.isMovable = false
-        // Unlike the dictation HUD, this panel MUST accept clicks (Add / Dismiss), so it does NOT ignore mouse events.
-        p.ignoresMouseEvents = false
-        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        p.contentView = NSHostingView(rootView: SuggestionPanelView(model: model))
-        panel = p
+        // ignoresMouseEvents: false — unlike the dictation HUD, this panel MUST accept clicks (Add / Dismiss), so it does NOT ignore mouse events.
+        panel = HUDPanelFactory.makePanel(contentSize: Layout.initialSize,
+                                          ignoresMouseEvents: false,
+                                          contentView: NSHostingView(rootView: SuggestionPanelView(model: model)))
     }
 
     /// Measures the natural size for the current content, sets the panel size and positions it at the lower-center of the screen.

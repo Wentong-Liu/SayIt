@@ -105,18 +105,10 @@ public final class RecordingPanelController {
     // MARK: - Panel building / layout
 
     private func buildPanel() {
-        let p = NSPanel(contentRect: NSRect(origin: .zero, size: Layout.initialSize),
-                        styleMask: [.borderless, .nonactivatingPanel],
-                        backing: .buffered, defer: false)
-        p.level = .floating
-        p.isOpaque = false
-        p.backgroundColor = .clear
-        p.hasShadow = false
-        p.isMovable = false
-        p.ignoresMouseEvents = true          // The HUD only displays, it does not intercept clicks (the user operates the app below as usual)
-        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        p.contentView = NSHostingView(rootView: RecordingPanelView(model: model))
-        panel = p
+        // ignoresMouseEvents: true — the HUD only displays, it does not intercept clicks (the user operates the app below as usual)
+        panel = HUDPanelFactory.makePanel(contentSize: Layout.initialSize,
+                                          ignoresMouseEvents: true,
+                                          contentView: NSHostingView(rootView: RecordingPanelView(model: model)))
     }
 
     /// Measures the natural size for the current content, sets the panel size and clamps the position.

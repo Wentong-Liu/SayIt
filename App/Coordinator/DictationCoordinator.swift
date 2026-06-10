@@ -357,8 +357,7 @@ final class DictationCoordinator {
         self.modelLoadTimeout = modelLoadTimeout
         // The default reader trims the openAIAPIKey from the Keychain (matching makeConfiguredTranscriber / the old currentSignature).
         self.cloudKeyReader = cloudKeyReader ?? {
-            (KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            KeychainStore.trimmedValue(account: KeychainStore.Account.openAIAPIKey)
         }
         self.polishProviderFactoryOverride = polishProviderFactory
         // Store the override as-is; nil means buildLearnProvider() reuses makePolishProvider() (resolved at call time, so no
@@ -1344,8 +1343,7 @@ final class DictationCoordinator {
         case .local:
             return WhisperKitTranscriber(model: config.localModel)
         case .cloud:
-            let key = (KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = KeychainStore.trimmedValue(account: KeychainStore.Account.openAIAPIKey)
             guard !key.isEmpty else { throw STTError.notReady }
             return CloudTranscriber(apiKey: key, model: config.cloudSTTModel)
         }

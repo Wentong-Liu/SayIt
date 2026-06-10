@@ -86,8 +86,7 @@ public struct OpenAICompatibleProvider: LLMProvider {
         guard let parsed = try? JSONDecoder().decode(ResponseBody.self, from: data),
               let message = parsed.choices.first?.message else {
             // Under a success status code yet choices[].message cannot be parsed: log a body fragment to aid debugging (behavior unchanged, still throws .invalidResponse).
-            let snippet = String((String(data: data, encoding: .utf8) ?? "").prefix(500))
-            NSLog("[SayIt][OpenAICompatible] HTTP %d 成功但 JSON 解码失败，body 片段=%@", http.statusCode, snippet)
+            HTTPResponseValidator.logDecodeFailure(tag: "OpenAICompatible", statusCode: http.statusCode, data: data)
             throw ProviderError.invalidResponse
         }
         // content is null/missing (a legal empty reply) falls back to an empty string, no longer falsely reporting .invalidResponse; when there is content it is returned as-is.
