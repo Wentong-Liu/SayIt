@@ -405,6 +405,80 @@ final class DictionaryStoreTests: XCTestCase {
         XCTAssertEqual(reloaded, [entry])
     }
 
+    // MARK: - addLearned: dedup + variant-merge + usageCount bump
+
+    /// First learned correction for a brand-new canonical: creates exactly one `.learnedFromEdit` entry with the heard
+    /// form as its single variant and `usageCount == 1` (the first use).
+    func testAddLearnedCreatesNewEntry() async throws {
+        let store = makeStore()
+        await store.addLearned(canonical: "Typeless", heard: "Type+")
+
+        let entries = await store.all()
+        XCTAssertEqual(entries.count, 1)
+        let e = try XCTUnwrap(entries.first)
+        XCTAssertEqual(e.canonical, "Typeless")
+        XCTAssertEqual(e.variants, ["Type+"])
+        XCTAssertEqual(e.source, .learnedFromEdit)
+        XCTAssertEqual(e.usageCount, 1, "the first learned correction counts as one use")
+    }
+
+    /// CORE DEDUP REGRESSION: repeatedly correcting the SAME misheard -> corrected pair must NOT stack duplicate entries.
+    /// The existing entry is reused; the new heard is merged into its variants (deduped) and usageCount bumped.
+    func testAddLearnedSameCanonicalAndHeardMergesIntoOneEntry() async throws {
+        let store = makeStore()
+        await store.addLearned(canonical: "Typeless", heard: "Type+")
+        await store.addLearned(canonical: "Typeless", heard: "Type+")
+        await store.addLearned(canonical: "Typeless", heard: "Type+")
+
+        let entries = await store.all()
+        XCTAssertEqual(entries.count, 1, "the same (canonical, heard) pair must never stack duplicate entries")
+        let e = try XCTUnwrap(entries.first)
+        XCTAssertEqual(e.variants, ["Type+"], "an already-known variant is not duplicated")
+        XCTAssertEqual(e.usageCount, 3, "each repeat bumps usageCount")
+        // The dedup must survive a process restart (it was actually committed to disk, not just deduped in memory).
+        let reloaded = try decodeOnDisk().entries
+        XCTAssertEqual(reloaded.count, 1)
+        XCTAssertEqual(reloaded.first?.usageCount, 3)
+    }
+
+    /// A NEW heard form for an EXISTING canonical is merged into that entry's variants (still one entry), and usageCount bumps.
+    func testAddLearnedNewHeardMergesIntoExistingCanonical() async throws {
+        let store = makeStore()
+        await store.addLearned(canonical: "Typeless", heard: "Type+")
+        await store.addLearned(canonical: "Typeless", heard: "type less")
+
+        let entries = await store.all()
+        XCTAssertEqual(entries.count, 1, "a new heard for the same canonical merges, never appends a second entry")
+        let e = try XCTUnwrap(entries.first)
+        XCTAssertEqual(e.variants, ["Type+", "type less"], "the new heard is appended to the variant list")
+        XCTAssertEqual(e.usageCount, 2)
+    }
+
+    /// Distinct canonicals stay separate entries (the merge keys on canonical, it does not collapse everything).
+    func testAddLearnedDistinctCanonicalsStaySeparate() async throws {
+        let store = makeStore()
+        await store.addLearned(canonical: "Typeless", heard: "Type+")
+        await store.addLearned(canonical: "TradingView", heard: "Trading Will")
+
+        let entries = await store.all()
+        XCTAssertEqual(Set(entries.map(\.canonical)), ["Typeless", "TradingView"])
+        XCTAssertEqual(entries.count, 2)
+    }
+
+    /// Merging into an existing canonical preserves that entry's id (it is an in-place update, not a replace), so UI
+    /// list identity / any external reference by id survives.
+    func testAddLearnedMergeKeepsEntryId() async throws {
+        let store = makeStore()
+        await store.addLearned(canonical: "Typeless", heard: "Type+")
+        let beforeEntries = await store.all()
+        let originalID = try XCTUnwrap(beforeEntries.first?.id)
+
+        await store.addLearned(canonical: "Typeless", heard: "type less")
+        let afterEntries = await store.all()
+        let mergedID = try XCTUnwrap(afterEntries.first?.id)
+        XCTAssertEqual(mergedID, originalID, "merging must update the existing entry in place, keeping its id")
+    }
+
     // MARK: - Change notification
 
     func testAddPostsChangeNotification() async {
