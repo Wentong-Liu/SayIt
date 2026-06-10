@@ -97,8 +97,7 @@ public struct AnthropicProvider: LLMProvider {
         try HTTPResponseValidator.throwIfHTTPError(http, body: String(data: data, encoding: .utf8) ?? "")
         guard let parsed = try? JSONDecoder().decode(ResponseBody.self, from: data) else {
             // Under a success status code yet the content block array cannot be parsed: log a body fragment to aid debugging (behavior unchanged, still throws .invalidResponse).
-            let snippet = String((String(data: data, encoding: .utf8) ?? "").prefix(500))
-            NSLog("[SayIt][Anthropic] HTTP %d 成功但 JSON 解码失败，body 片段=%@", http.statusCode, snippet)
+            HTTPResponseValidator.logDecodeFailure(tag: "Anthropic", statusCode: http.statusCode, data: data)
             throw ProviderError.invalidResponse
         }
         return parsed.content

@@ -46,6 +46,13 @@ public enum KeychainStore {
         return false
     }
 
+    /// Reads `account` and trims surrounding whitespace/newlines, returning "" when the account is absent.
+    /// The single source for the "read a stored API key, ready to use" path shared by the cloud STT key sites
+    /// (`DictationCoordinator`'s default `cloudKeyReader` and `makeConfiguredTranscriber`).
+    public static func trimmedValue(account: String) -> String {
+        (get(account: account) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public static func get(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
