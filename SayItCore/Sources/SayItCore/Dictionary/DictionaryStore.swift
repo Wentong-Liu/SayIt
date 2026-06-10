@@ -82,6 +82,34 @@ public actor DictionaryStore {
         commit(dict)
     }
 
+    /// Records a learned "heard -> corrected" correction, **deduping on `canonical`** so repeatedly correcting the same
+    /// term never stacks duplicate entries.
+    ///
+    /// - If an entry with the same `canonical` already exists, the `heard` form is merged into its `variants` (skipped if
+    ///   already present, so the same `(canonical, heard)` pair stays a single variant) and its `usageCount` is bumped by
+    ///   one — an in-place mutation that keeps the entry's `id`.
+    /// - Otherwise a fresh `.learnedFromEdit` entry is appended with `variants == [heard]` and `usageCount == 1` (the
+    ///   first use).
+    ///
+    /// Done inside the actor so the lookup + merge + write is atomic (a plain caller-side `all()` then `add()`/`update()`
+    /// would race two concurrent corrections into duplicate entries). The first existing entry with a matching canonical
+    /// wins (canonical is compared exactly as stored; learned entries always carry the extractor's canonical verbatim).
+    public func addLearned(canonical: String, heard: String) {
+        var dict = ensureLoaded()
+        if let index = dict.entries.firstIndex(where: { $0.canonical == canonical }) {
+            var existing = dict.entries[index]
+            if !existing.variants.contains(heard) {
+                existing.variants.append(heard)
+            }
+            existing.usageCount += 1
+            dict.entries[index] = existing
+        } else {
+            dict.entries.append(DictionaryEntry(
+                canonical: canonical, variants: [heard], source: .learnedFromEdit, usageCount: 1))
+        }
+        commit(dict)
+    }
+
     /// Replaces an existing entry by `id`; only writes to disk + posts a notification when found **and the content actually changes**.
     public func update(_ entry: DictionaryEntry) {
         var dict = ensureLoaded()

@@ -135,8 +135,10 @@ public struct LearnedTermExtractor: LearnedTermExtracting {
     }
 
     /// Robustly parses the model reply into a ``LearnedTerm``, or `nil`. Strips code fences, locates the first balanced
-    /// `{...}` object, and decodes it. A null pair (or any missing/empty field) yields `nil`. The single-term hard guard
-    /// is applied by the caller, not here.
+    /// `{...}` object, and decodes it. A null pair (or any missing/empty field) yields `nil`. A no-op "correction" where
+    /// `heard == corrected` (the model returned the same term for both, so the user changed nothing) also yields `nil` —
+    /// surfacing a "add X to dictionary?" prompt for an unchanged term is pointless. The single-term hard guard is applied
+    /// by the caller, not here.
     static func parse(_ reply: String) -> LearnedTerm? {
         guard let jsonSlice = firstJSONObject(in: reply) else { return nil }
         guard let data = jsonSlice.data(using: .utf8) else { return nil }
@@ -145,6 +147,8 @@ public struct LearnedTermExtractor: LearnedTermExtracting {
         let trimmedHeard = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCorrected = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHeard.isEmpty, !trimmedCorrected.isEmpty else { return nil }
+        // No-op correction: the user changed nothing, so there is nothing to learn -> drop (no suggestion surfaced).
+        guard trimmedHeard != trimmedCorrected else { return nil }
         return LearnedTerm(heard: trimmedHeard, corrected: trimmedCorrected)
     }
 

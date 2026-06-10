@@ -116,6 +116,33 @@ final class LearnedTermExtractorTests: XCTestCase {
         XCTAssertNil(term, "empty / whitespace-only fields -> nil")
     }
 
+    // MARK: - No-op correction (heard == corrected)
+
+    /// A no-op "correction" where the model returns the same term for both `heard` and `corrected` is not a real edit:
+    /// it must be DROPPED so no pointless "add X to dictionary?" suggestion is surfaced.
+    func testHeardEqualsCorrectedYieldsNil() async {
+        let provider = FakeProvider(.returns(#"{"heard": "useEffect", "corrected": "useEffect"}"#))
+        let extractor = LearnedTermExtractor(provider: provider)
+        let term = await extractor.extract(injected: "useEffect", final: "useEffect")
+        XCTAssertNil(term, "heard == corrected is a no-op and must be dropped")
+    }
+
+    /// The no-op drop compares the trimmed forms: differing only in surrounding whitespace is still a no-op.
+    func testHeardEqualsCorrectedAfterTrimYieldsNil() async {
+        let provider = FakeProvider(.returns(#"{"heard": "  John ", "corrected": "John"}"#))
+        let extractor = LearnedTermExtractor(provider: provider)
+        let term = await extractor.extract(injected: "John", final: "John")
+        XCTAssertNil(term, "heard == corrected after trimming is a no-op and must be dropped")
+    }
+
+    /// A genuine correction (heard != corrected) is still returned after the no-op guard is added (no over-rejection).
+    func testGenuineCorrectionStillReturnedAfterNoOpGuard() async {
+        let provider = FakeProvider(.returns(#"{"heard": "jon", "corrected": "John"}"#))
+        let extractor = LearnedTermExtractor(provider: provider)
+        let term = await extractor.extract(injected: "jon", final: "John")
+        XCTAssertEqual(term, LearnedTerm(heard: "jon", corrected: "John"))
+    }
+
     // MARK: - Prompt shape
 
     func testPromptContainsBothTexts() async {

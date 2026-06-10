@@ -2070,6 +2070,54 @@ final class DictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(added?.source, .learnedFromEdit, "the source should be learnedFromEdit")
     }
 
+    /// DEDUP REGRESSION (Accept path): re-confirming a correction whose `corrected` canonical is ALREADY in the dictionary
+    /// must NOT stack a duplicate entry — it merges the heard form into the existing entry and bumps its usageCount. Guards
+    /// against the old unconditional `store.add` that piled up duplicate canonicals.
+    func testLearnFromEditsAcceptDedupesExistingCanonical() async {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder(samples: [0.1, 0.2])
+        let injector = FakeTextInjector(result: .success(method: .pasteboard))
+        let store = DictionaryStore(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appending(component: "sayit-coord-learn-dedup-\(UUID().uuidString)"))
+        // Pre-seed the SAME canonical the upcoming correction will confirm.
+        await store.addLearned(canonical: "Typeless", heard: "Type less")
+
+        let reader = learnReader(armed: "我之前用过Type+和闪电书。", edited: "我之前用过Typeless和闪电书。")
+        let extractor = FakeLearnedTermExtractor(result: LearnedTerm(heard: "Type+", corrected: "Typeless"))
+        let suggestionPanel = SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true)
+        let coordinator = makeCoordinator(
+            config: config, recorder: recorder, injector: injector,
+            dictionaryStore: store, axReader: reader, suggestionPanel: suggestionPanel,
+            learnProviderFactory: { DummyLLMProvider() },
+            termExtractorFactory: { _ in extractor }
+        ) {
+            FakeTranscriber(text: "我之前用过Type+和闪电书。")
+        }
+
+        await coordinator._test_start()
+        await coordinator._test_stop()
+        coordinator._test_handleEditKey()
+        await coordinator._test_handleCommitKey()
+        XCTAssertTrue(suggestionPanel._test_isShown)
+
+        suggestionPanel._test_accept()
+        // Wait until the merge committed (usageCount bumped past the pre-seed value of 1).
+        var merged: DictionaryEntry?
+        for _ in 0..<200 {
+            let entries = await store.all()
+            if entries.first?.usageCount == 2 { merged = entries.first; break }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let entries = await store.all()
+        XCTAssertEqual(entries.count, 1, "re-confirming an existing canonical must not stack a duplicate entry")
+        let e = merged ?? entries.first
+        XCTAssertEqual(e?.canonical, "Typeless")
+        XCTAssertEqual(e?.variants, ["Type less", "Type+"], "the new heard merges into the existing entry's variants")
+        XCTAssertEqual(e?.usageCount, 2, "Accept on an existing canonical bumps usageCount")
+    }
+
     /// TRIGGER ON IDLE: with a tiny `learnIdleAfter`, the compare fires after the user pauses (no commit key), shows the
     /// suggestion, and the extractor is called once.
     func testLearnFromEditsIdleTrigger() async {

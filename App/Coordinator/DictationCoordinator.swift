@@ -1673,12 +1673,12 @@ final class DictationCoordinator {
             heard: heard,
             onAccept: { [weak self] in
                 guard let self else { return }
-                // Persist off the main actor (DictionaryStore is an actor). The record this suggestion came
-                // from was already consumed up front in `fireCompare`, so we must NOT clear `injectionRecord`
-                // here — a newer dictation may have armed a fresh one and clearing it would silently disarm
-                // learn-from-edits for that newer injection.
-                Task { await self.dictionaryStore.add(
-                    DictionaryEntry(canonical: corrected, variants: [heard], source: .learnedFromEdit)) }
+                // Persist off the main actor (DictionaryStore is an actor). `addLearned` dedupes on canonical, so
+                // re-confirming the same corrected term merges the new heard into the existing entry and bumps its
+                // usageCount instead of stacking a duplicate. The record this suggestion came from was already
+                // consumed up front in `fireCompare`, so we must NOT clear `injectionRecord` here — a newer dictation
+                // may have armed a fresh one and clearing it would silently disarm learn-from-edits for that newer injection.
+                Task { await self.dictionaryStore.addLearned(canonical: corrected, heard: heard) }
             },
             onDismiss: {
                 // Dismiss / auto-expire: never add. The record this suggestion came from was already consumed
