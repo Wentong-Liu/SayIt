@@ -285,6 +285,15 @@ final class DictationCoordinator {
     /// the shipped behavior. (Mirrors the injectable-seam pattern the init already uses.)
     private let metricsSink: ((String) -> Void)?
 
+    /// Reads the process id of the CURRENTLY frontmost App (learn-from-edits focus guard). Used by ``fireCompare()`` to
+    /// confirm the focused app at compare time is still the SAME app that was armed (``InjectionRecord/targetPID``) before
+    /// reading AX / calling the LLM: the AX reader is system-wide (``AXTextReader`` uses `AXUIElementCreateSystemWide`), so
+    /// after the user switches to a different app it would read THAT app's focused field — pairing the injected text of app X
+    /// with the unrelated final text of app Y and surfacing a spurious suggestion. Defaults to reading
+    /// `NSWorkspace.shared.frontmostApplication?.processIdentifier`; injectable so a test can drive a mismatched / matching
+    /// frontmost PID deterministically without switching real apps.
+    private let frontmostPIDProvider: () -> pid_t?
+
     /// - Parameters:
     ///   - config: the application config; defaults to `.shared`.
     ///   - hotkeyManager: the hotkey manager; defaults to constructing per the current config.
@@ -309,6 +318,9 @@ final class DictationCoordinator {
     ///     inject one that returns a dummy provider (or throws to exercise the no-provider drop) without the real Keychain.
     ///   - termExtractorFactory: builds the learn-from-edits term extractor from a provider; defaults to a real
     ///     ``LearnedTermExtractor``. Tests inject a fake returning a chosen ``LearnedTerm`` / nil.
+    ///   - frontmostPIDProvider: reads the currently-frontmost App's process id for the learn-from-edits focus guard;
+    ///     defaults to `NSWorkspace.shared.frontmostApplication?.processIdentifier`. Tests inject one to drive a
+    ///     mismatched / matching frontmost PID without switching real apps.
     init(config: AppConfig = .shared,
          hotkeyManager: HotkeyManager? = nil,
          recorder: AudioRecording = AudioRecorder(),
@@ -330,6 +342,7 @@ final class DictationCoordinator {
          polishProviderFactory: (() async throws -> any LLMProvider)? = nil,
          learnProviderFactory: (() async throws -> any LLMProvider)? = nil,
          termExtractorFactory: ((any LLMProvider) -> any LearnedTermExtracting)? = nil,
+         frontmostPIDProvider: (() -> pid_t?)? = nil,
          metricsSink: ((String) -> Void)? = nil) {
         self.config = config
         self.recorder = recorder
@@ -363,6 +376,8 @@ final class DictationCoordinator {
         // Store the override as-is; nil means buildLearnProvider() reuses makePolishProvider() (resolved at call time, so no
         // self-capturing closure is stored during init — which Swift forbids on a stored property).
         self.learnProviderFactoryOverride = learnProviderFactory
+        // Default reads the live frontmost App's PID; the learn focus guard uses it to confirm the armed app is still focused.
+        self.frontmostPIDProvider = frontmostPIDProvider ?? { NSWorkspace.shared.frontmostApplication?.processIdentifier }
         self.metricsSink = metricsSink
     }
 
@@ -1575,6 +1590,18 @@ final class DictationCoordinator {
             return
         }
 
+        // Focus must still be on the SAME app we armed. The AX reader is system-wide (`AXUIElementCreateSystemWide`), so if
+        // the user has switched to a DIFFERENT app it would read THAT app's now-focused field — pairing the injected text of
+        // app X with the unrelated final text of app Y and surfacing a spurious suggestion. (The focus-loss observer fires on
+        // ANY app deactivation, object:nil, so the deactivating app need not be ours.) When the frontmost PID no longer
+        // matches `record.targetPID`, the armed field's final text is no longer reachable -> drop WITHOUT reading AX or
+        // calling the LLM. A nil `targetPID` (arm-time capture failed) is treated as unverifiable -> drop too, since we
+        // cannot confirm focus stayed put.
+        guard let armedPID = record.targetPID, frontmostPIDProvider() == armedPID else {
+            Self.log.notice("compare: focus moved to a different app -> drop")
+            return
+        }
+
         // Read the FINAL focused text. nil -> no longer readable (moved away / secure) -> drop silently.
         guard let final = axReader.readFocusedText() else {
             Self.log.notice("compare: AX final unreadable")
@@ -1945,10 +1972,11 @@ final class DictationCoordinator {
     /// or did NOT (AX nil), without exposing the private record's contents.
     var _test_injectionRecordArmed: Bool { injectionRecord != nil }
 
-    /// Force-arms a learn-from-edits injection record with a custom expiry, bypassing the AX read at arm time. Lets a test
-    /// exercise the expired-record path deterministically (pass a past `expiresAt`) without waiting the real freshness window.
-    func _test_armInjectionRecord(injected: String, expiresAt: Date) {
-        injectionRecord = InjectionRecord(injectedText: injected, expiresAt: expiresAt, targetPID: nil)
+    /// Force-arms a learn-from-edits injection record with a custom expiry (and optional armed-app PID), bypassing the AX
+    /// read at arm time. Lets a test exercise the expired-record path deterministically (pass a past `expiresAt`) without
+    /// waiting the real freshness window, and drive the focus-guard PID match/mismatch with a known `targetPID`.
+    func _test_armInjectionRecord(injected: String, expiresAt: Date, targetPID: pid_t? = nil) {
+        injectionRecord = InjectionRecord(injectedText: injected, expiresAt: expiresAt, targetPID: targetPID)
     }
 
     /// Directly drives the COMMIT trigger (equivalent to a Return / keypad-Enter while armed), then awaits the in-flight
