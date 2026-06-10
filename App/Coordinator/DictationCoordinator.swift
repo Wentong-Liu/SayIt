@@ -563,13 +563,14 @@ final class DictationCoordinator {
         capturedTarget = currentFrontmostTarget()
 
         // STT pre-flight gate: in local mode, if the model cannot possibly load yet (not cached on disk, OR still
-        // downloading), do NOT record — recording a full utterance only to discard it at the post-record :730 gate wastes
-        // the user's words and their breath. Use the SAME cheap, network-free readiness signal as that gate
-        // (isLocalModelReadyForUse, which treats an in-progress download as not-ready so a mid-download dictation can never
-        // enter the stuck "preparing model" HUD), but surface the state-aware not-ready message immediately. Returns BEFORE
-        // panel.show(.listening) and BEFORE the start chime, so the HUD goes straight to the error toast (no listening→error
-        // flicker, no misleading "started" chime). The :730 gate stays as a belt-and-suspenders backstop. Cloud mode is never
-        // gated here (CloudTranscriber needs no local model).
+        // downloading), do NOT record — recording a full utterance only to discard it at the post-record readiness gate
+        // (the `isLocalModelReadyForUse`/`modelNotReadyToIdle` gate in `runPipeline`) wastes the user's words and their
+        // breath. Use the SAME cheap, network-free readiness signal as that gate (isLocalModelReadyForUse, which treats an
+        // in-progress download as not-ready so a mid-download dictation can never enter the stuck "preparing model" HUD),
+        // but surface the state-aware not-ready message immediately. Returns BEFORE panel.show(.listening) and BEFORE the
+        // start chime, so the HUD goes straight to the error toast (no listening→error flicker, no misleading "started"
+        // chime). The runPipeline `isLocalModelReadyForUse`/`modelNotReadyToIdle` gate stays as a belt-and-suspenders
+        // backstop. Cloud mode is never gated here (CloudTranscriber needs no local model).
         if config.sttMode == .local, !isLocalModelReadyForUse(config.localModel) {
             // Resync the single-tap-toggle state machine BEFORE returning. single-tap-toggle is the DEFAULT InteractionMode,
             // so in the headline scenario (first launch, model still downloading) the first tap already flipped `isActive`
@@ -981,7 +982,8 @@ final class DictationCoordinator {
     /// choose truthful, actionable copy instead of collapsing "not configured" and "runtime failure" into one boolean.
     /// Internal (not `private`) only so `@testable` tests can construct it to drive ``injectFinalText`` directly; it is not part of any public surface.
     enum PolishFailureCategory: Equatable {
-        /// Polish ran (or was off) and there is nothing to hint — insert silently. Covers polish-off and `.polished`.
+        /// Polish ran (or was off) and there is nothing to hint — insert silently. Covers polish-off, `.polished`, and
+        /// `.skipped` (e.g. `.skipped(.emptyInput)`/`.skipped(.disabled)`) — anything that is not a genuine runtime `.failedFallback`.
         case none
         /// Polish is enabled but has NO usable credentials (the caught ``ProviderError/missingAPIKey``): the call never ran.
         /// Drives a provider-aware "sign in / add an API key under Settings ▸ Polish" hint (actionable, not a scary failure).
@@ -1707,7 +1709,7 @@ final class DictationCoordinator {
 
     /// Local model not ready: the HUD shows a state-aware, actionable not-ready hint then returns to idle, and does not enter transcription.
     /// Routed through ``showSetupBlockingError(_:)`` so it is a non-success (`.error`, NOT green `.info`) toast that stays on screen
-    /// long enough to read and act on. This is the post-record :730 backstop; the primary block is the ``handleStart()`` pre-flight gate,
+    /// long enough to read and act on. This is the post-record readiness backstop (the `isLocalModelReadyForUse`/`modelNotReadyToIdle` gate in `runPipeline`); the primary block is the ``handleStart()`` pre-flight gate,
     /// which uses the SAME ``modelNotReadyMessage()`` copy so both paths tell the user the same truthful story.
     private func modelNotReadyToIdle() {
         showSetupBlockingError(modelNotReadyMessage())

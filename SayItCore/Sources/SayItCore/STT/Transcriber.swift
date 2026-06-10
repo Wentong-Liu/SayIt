@@ -58,7 +58,8 @@ public protocol Transcriber: Sendable {
     /// Idempotent: a second call (or a call while the in-flight background prewarm is already running) is a cheap no-op /
     /// join. Only ``WhisperKitTranscriber`` does real work (loads the CoreML engine and maps any failure to
     /// ``STTError/transcriptionFailed(reason:)``); every other conformer inherits the default no-op (nothing to load). See
-    /// the default below.
+    /// the default below. The clean ``STTError/notReady``-on-absent guarantee applies to the call that INITIATES the load; a
+    /// call that coalesces onto an already-in-flight load that fails inherits the generic ``STTError/transcriptionFailed(reason:)``.
     func preload() async throws
 }
 

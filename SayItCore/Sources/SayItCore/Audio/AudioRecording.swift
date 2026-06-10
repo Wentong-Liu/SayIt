@@ -61,8 +61,9 @@ public protocol AudioRecording: Sendable {
     /// Real-time input level stream: each captured buffer segment produces one normalized RMS level (0...1).
     ///
     /// Consumed by the HUD waveform/volume indicator (`for await level in recorder.levels { ... }`).
-    /// No new values are produced after recording stops; stays valid across multiple recordings (same long-lived stream).
-    /// 0 means silence, 1 means near full scale. The exact mapping is implementation-defined (may include log compression to match perception).
+    /// No new values are produced after recording stops; the stream ENDS when this recording stops. Each new recording
+    /// (`start()`) yields a FRESH stream, so the consumer must re-read `levels` after `start()` (mirrors AudioRecorder's
+    /// per-session rebuild). 0 means silence, 1 means near full scale. The exact mapping is implementation-defined (may include log compression to match perception).
     var levels: AsyncStream<Double> { get }
 }
 

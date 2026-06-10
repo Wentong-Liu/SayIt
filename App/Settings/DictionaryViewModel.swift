@@ -79,9 +79,10 @@ final class DictionaryViewModel {
     /// Adds a new manual / global entry, then refreshes the mirror (so the UI updates even before the
     /// notification round-trips). Variants are sanitized (trimmed, deduped, canonical-equal/empty dropped).
     ///
-    /// In the single-word UI the editor calls `add(canonical:)` only — `variants` default to `[]` (the matcher
-    /// auto-derives spoken forms from the canonical), `caseSensitive` to `false`, and `enabled` to `true`. The
-    /// remaining parameters stay for callers / tests that still supply explicit variants.
+    /// In the single-word UI the editor calls `add(canonical:)` only — `variants` default to `[]` (with no explicit variants
+    /// the matcher matches the canonical only via exact / case-insensitive / single-token run-on normalization; it does NOT
+    /// synthesize multi-word spoken forms — that is the LLM layer's job), `caseSensitive` to `false`, and `enabled` to `true`.
+    /// The remaining parameters stay for callers / tests that still supply explicit variants.
     func add(canonical: String, variants: [String] = [], caseSensitive: Bool = false, enabled: Bool = true) async {
         let trimmedCanonical = canonical.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCanonical.isEmpty else { return }

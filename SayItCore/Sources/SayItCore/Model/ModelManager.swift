@@ -482,18 +482,9 @@ public final class ModelManager {
                             fallback: "Download finished but the model files are incomplete"))
                 }
             } catch {
-                // Cancellation is NOT a failure. The authoritative signal is `Task.isCancelled`:
-                // `cancelDownload()` calls `downloadTask?.cancel()`, which sets the cancellation flag
-                // on THIS very task (the one running this closure), so the flag is observable here no
-                // matter which layer threw. That matters because the thrown error's shape is NOT
-                // reliable: WhisperKit's Hub layer (`HubApi.httpGet`) catches the underlying
-                // `URLError(.cancelled)` in a generic `catch` and re-throws it type-erased as
-                // `Hub.HubClientError.downloadError("已取消")` (an internal enum we can't name), while the
-                // file-transfer layer instead surfaces a real `URLError(.cancelled)`. We therefore key
-                // off the task flag first, and fall back to `isCancellation(error)` to also catch a
-                // cancellation that arrived without our task being flagged. On cancel, fall back to the
-                // local actual state (`.notDownloaded` when partial); on a genuine failure, show a clean
-                // short message and log the raw cause for diagnostics (never store the NSError dump).
+                // Cancellation is NOT a failure. Key off `Task.isCancelled` first (the thrown error's type is unreliable —
+                // WhisperKit's Hub layer re-throws cancellation type-erased), falling back to `isCancellation(error)`.
+                // On cancel resolve from disk; on a genuine failure show a short message and log the raw cause.
                 let cancelled = Task.isCancelled || Self.isCancellation(error)
                 if !cancelled {
                     Self.log.error("Model download failed for \(newModel, privacy: .public): \(error, privacy: .public)")

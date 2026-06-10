@@ -13,8 +13,10 @@ public struct CodexResponsesProvider: LLMProvider {
     /// The connection/response timeout (seconds) for a single request.
     private static let requestTimeout = LLMDefaults.requestTimeout
     /// The overall ceiling (seconds) of the SSE read loop: beyond it the stream is judged stalled and fails, avoiding an infinite hang.
-    /// Must be >= requestTimeout: requestTimeout only covers connecting/first byte, while the stream-level timeout must wrap the entire streamed read;
-    /// a smaller value would wrongly kill a normal long reply before it finishes reading; so this must always be greater than or equal to the single-request timeout.
+    /// Must be >= requestTimeout: requestTimeout is URLRequest.timeoutInterval, an INACTIVITY timeout (it fires only when no
+    /// bytes move for that interval and resets on each chunk), so a long SSE stream that keeps producing deltas never trips it;
+    /// the stream-level ceiling must independently bound total read time. A smaller value would wrongly kill a normal long reply
+    /// before it finishes reading; so this must always be greater than or equal to the single-request timeout.
     private static let maxStreamSeconds: TimeInterval = 90
     /// The data prefix of an SSE line (shared by prefix-checking and prefix-stripping, avoiding writing the same string twice).
     private static let dataPrefix = "data:"

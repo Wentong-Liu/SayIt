@@ -11,8 +11,9 @@ import Foundation
 /// - **Whole-word boundaries**: a hit must land on "non-word character / start-or-end of string" boundaries (word character = letter or digit),
 ///   so `Cat`->`Dog` will never turn `Caterpillar` into `Dogerpillar`.
 /// - **Priority + longest-match-first**: a single left-to-right scan produces **non-overlapping** replacements, arbitrated in the order
-///   (1) exact case-sensitive -> (2) exact case-insensitive -> (3) joined-lowercase canonical (single-token only) -> (4) explicit-variant multi-token merge,
-///   with a stable tie-break at the same level by "spanning more tokens first" then "entry declaration order".
+///   (1) exact case-sensitive -> (2) exact case-insensitive -> (3) single-token joined-lowercase run-on normalization of the
+///   canonical (e.g. `useeffect`->`useEffect`; the canonical never synthesizes multi-word spoken forms) -> (4) explicit-variant
+///   multi-token merge, with a stable tie-break at the same level by "spanning more tokens first" then "entry declaration order".
 /// - **Scope filtering, usageCount increment, and Levenshtein / Double Metaphone fuzzy & phonetic matching**
 ///   are **not in this PR** (to keep determinism; later PRs will introduce them conservatively and opt-in).
 ///
