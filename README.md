@@ -4,7 +4,7 @@
   <h1>SayIt</h1>
 
   <p>
-    <strong>Free, native macOS voice dictation.</strong><br>
+    <strong>Free, native macOS voice dictation with AI polish.</strong><br>
     Hold a key, speak, and clean, polished text lands at your cursor — in any app.
   </p>
 
@@ -46,7 +46,7 @@ always runs on-device, fully offline, and your audio never leaves your machine.
 ### ♻️ Uses your Codex subscription to polish
 
 If you vibe-code, you almost certainly already pay for **ChatGPT / Codex** or
-**Claude**. SayIt polishes your dictation through that same account — cleaning up
+**Claude**. SayIt polishes your dictation through that same account or API — cleaning up
 filler words, punctuation, and phrasing — so there's **no second subscription and
 nothing extra to pay**.
 
