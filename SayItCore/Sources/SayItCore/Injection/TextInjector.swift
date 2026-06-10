@@ -35,6 +35,10 @@ public final class TextInjector: TextInjecting {
     private let axInserter: AXTextInserting
     /// Wait implementation: defaults to Task.sleep; unit tests can inject an instantly-returning stub to avoid slowing tests.
     private let sleeper: @Sendable (Duration) async -> Void
+    /// The currently scheduled (delayed) pasteboard restore, if any. Tracked so a new injection can cancel
+    /// the previous restore before scheduling its own — otherwise the stale restore could run after the new
+    /// injection's writeString and overwrite that text before its Cmd-V is read.
+    private var pendingRestore: Task<Void, Never>?
 
     public init(
         configuration: Configuration = .default,
@@ -78,7 +82,9 @@ public final class TextInjector: TextInjecting {
     /// Pasteboard paste path: save -> write -> Cmd-V -> restore after a delay.
     private func injectViaPasteboard(_ text: String) -> InjectionResult {
         let backup = PasteboardBackup.capture(from: pasteboard)
-        pasteboard.writeString(text)
+        // Record the changeCount produced by our own write so restore can verify the pasteboard still holds
+        // exactly the text THIS injection wrote before putting the original content back.
+        let changeCountAfterWrite = pasteboard.writeString(text)
 
         let posted = keystroke.postPaste()
         guard posted else {
@@ -88,17 +94,22 @@ public final class TextInjector: TextInjecting {
 
         // Restore the original pasteboard after a delay, giving the target App time to read the pasteboard.
         // Run asynchronously via Task to avoid blocking the caller; the paste has been delivered at this point.
-        scheduleRestore(backup)
+        scheduleRestore(backup.guardingChangeCount(changeCountAfterWrite))
         return .success(method: .pasteboard)
     }
 
     /// Restore the pasteboard after a delay.
+    /// Cancels any previously scheduled restore first: rapid back-to-back dictations would otherwise race —
+    /// a stale restore could fire after the newer injection's writeString and wipe its text. The change-count
+    /// guard on the backup is the second line of defense (it also covers the user copying during the delay).
     private func scheduleRestore(_ backup: PasteboardBackup) {
+        pendingRestore?.cancel()
         let delay = configuration.restoreDelay
         let pb = pasteboard
         let sleep = sleeper
-        Task { @MainActor in
+        pendingRestore = Task { @MainActor in
             await sleep(delay)
+            guard !Task.isCancelled else { return }
             backup.restore(to: pb)
         }
     }

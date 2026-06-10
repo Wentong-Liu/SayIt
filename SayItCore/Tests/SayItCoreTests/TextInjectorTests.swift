@@ -42,6 +42,33 @@ final class FakePasteboard: PasteboardProtocol {
     }
 }
 
+/// A sleeper whose every call suspends until the test explicitly releases it, letting a test
+/// deterministically interleave a pending restore with a later injection.
+@MainActor
+final class ControllableSleeper {
+    private var pending: [CheckedContinuation<Void, Never>] = []
+    private(set) var sleepCallCount = 0
+
+    private func park() async {
+        sleepCallCount += 1
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            pending.append(cont)
+        }
+    }
+
+    /// The closure handed to TextInjector; each invocation parks on the main actor until `releaseAll()`.
+    var sleeper: @Sendable (Duration) async -> Void {
+        { [self] _ in await park() }
+    }
+
+    /// Wakes every parked sleep so the corresponding restore Task can proceed.
+    func releaseAll() {
+        let conts = pending
+        pending.removeAll()
+        for cont in conts { cont.resume() }
+    }
+}
+
 @MainActor
 final class StubKeystroke: KeystrokePosting {
     var result: Bool
@@ -243,6 +270,84 @@ final class TextInjectorTests: XCTestCase {
             await Task.yield()
         }
         XCTAssertEqual(pb.string(), "clipboard-original")
+    }
+
+    /// changeCount guard: if the pasteboard was overwritten (by the user copying something, or by a later
+    /// injection) during the restore delay, the delayed restore must NOT clobber it.
+    func testRestoreSkippedWhenPasteboardChangedDuringDelay() async {
+        let pb = FakePasteboard()
+        pb.seedString("clipboard-original")
+        let sleeper = ControllableSleeper()
+        let injector = TextInjector(
+            pasteboard: pb,
+            keystroke: StubKeystroke(result: true),
+            frontmostProvider: StubFrontmostProvider(target: makeTarget()),
+            axInserter: StubAXInserter(trusted: false, insertResult: false),
+            sleeper: sleeper.sleeper
+        )
+
+        let result = injector.inject("dictated text")
+        XCTAssertEqual(result, .success(method: .pasteboard))
+
+        // The restore Task is now parked inside the sleeper. Wait until it has actually parked.
+        for _ in 0..<1000 where sleeper.sleepCallCount == 0 {
+            await Task.yield()
+        }
+
+        // The user copies something new while the restore is still pending.
+        pb.seedString("user-copied-something")
+
+        // Release the parked restore and give it a chance to run.
+        sleeper.releaseAll()
+        for _ in 0..<1000 where pb.restoreCount == 0 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(pb.string(), "user-copied-something",
+                       "restore must not clobber content the user copied during the delay")
+        XCTAssertEqual(pb.restoreCount, 0, "a changeCount mismatch must skip the restore entirely")
+    }
+
+    /// Race guard: a second injection that starts while the first's restore is still pending must cancel
+    /// that pending restore, so the stale first-backup never overwrites the second injection's text before
+    /// the second Cmd-V can read it. Only the (newer) second restore should ever run.
+    func testSecondInjectCancelsFirstPendingRestore() async {
+        let pb = FakePasteboard()
+        pb.seedString("clipboard-original")
+        let sleeper = ControllableSleeper()
+        let injector = TextInjector(
+            pasteboard: pb,
+            keystroke: StubKeystroke(result: true),
+            frontmostProvider: StubFrontmostProvider(target: makeTarget()),
+            axInserter: StubAXInserter(trusted: false, insertResult: false),
+            sleeper: sleeper.sleeper
+        )
+
+        // First dictation: writes "first", parks its restore.
+        XCTAssertEqual(injector.inject("first"), .success(method: .pasteboard))
+        for _ in 0..<1000 where sleeper.sleepCallCount == 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(pb.string(), "first")
+
+        // Second dictation arrives before the first's restore fired: writes "second", parks its own restore.
+        XCTAssertEqual(injector.inject("second"), .success(method: .pasteboard))
+        for _ in 0..<1000 where sleeper.sleepCallCount < 2 {
+            await Task.yield()
+        }
+        XCTAssertEqual(pb.string(), "second")
+
+        // Release every parked restore and let everything settle.
+        sleeper.releaseAll()
+        for _ in 0..<2000 {
+            await Task.yield()
+        }
+
+        // The stale first restore must have been cancelled, so it never ran: exactly one restore (the newer
+        // injection's) executed. Without the cancellation, both restores would fire (restoreCount == 2) and
+        // the stale one could clobber the second injection's text before its Cmd-V is read.
+        XCTAssertEqual(pb.restoreCount, 1,
+                       "the first restore must be cancelled; only the newer injection's restore runs")
     }
 }
 
