@@ -27,7 +27,7 @@ public actor WhisperKitTranscriber: Transcriber {
     public static let requiredSampleRate: Double = 16_000
 
     /// Lightweight observability logger for local inference timing (no transcription text is ever logged).
-    private nonisolated static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "stt")
+    private nonisolated static let log = Logger(subsystem: SayItCore.identifier, category: "stt")
 
     /// The model identifier (e.g. `"large-v3-turbo"`, `"base"`, `"small.en"`).
     public nonisolated let model: String
@@ -73,14 +73,14 @@ public actor WhisperKitTranscriber: Transcriber {
     /// - Parameters:
     ///   - model: the model identifier. Defaults to `"large-v3-turbo"`, consistent with ``AppConfig``'s default local model.
     ///   - prewarm: whether to prewarm the model to reduce first-frame latency. Defaults to `false`.
-    public init(model: String = "large-v3-turbo", prewarm: Bool = false) {
+    public init(model: String = AppConfig.defaultLocalModel, prewarm: Bool = false) {
         self.init(model: model, prewarm: prewarm) { config in
             try await WhisperKit(config)
         }
     }
 
     init(
-        model: String = "large-v3-turbo",
+        model: String = AppConfig.defaultLocalModel,
         prewarm: Bool = false,
         engineLoader: @escaping (WhisperKitConfig) async throws -> WhisperKit
     ) {
@@ -140,7 +140,7 @@ public actor WhisperKitTranscriber: Transcriber {
         let result = try await runDecode(engine: engine, audio: audio, language: language, promptTokens: promptTokens)
         let elapsed = clock.now - start
         let clipSeconds = Double(audio.count) / sampleRate
-        let inferenceSeconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        let inferenceSeconds = elapsed.seconds
         let inferenceMs = inferenceSeconds * 1000
         let rtf = clipSeconds > 0 ? inferenceSeconds / clipSeconds : 0
         Self.log.notice(

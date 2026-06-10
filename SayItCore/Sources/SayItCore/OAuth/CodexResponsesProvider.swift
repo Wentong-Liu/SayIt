@@ -21,7 +21,7 @@ public struct CodexResponsesProvider: LLMProvider {
     /// Observability-only logger for polish failures (HTTP non-2xx / stream timeout / stream-failed event).
     /// `nonisolated static` so it is reachable from the static `readStream` and the `@Sendable` task-group closures.
     /// NEVER interpolate the bearer token / Authorization header here -- only server-side status codes and truncated error bodies are logged.
-    private nonisolated static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "polish")
+    private nonisolated static let log = Logger(subsystem: SayItCore.identifier, category: "polish")
 
     public init(accessToken: String, accountId: String, model: String,
                 userAgent: String = ChatGPTOAuth.defaultUserAgent, session: URLSession = .shared) {
@@ -158,7 +158,7 @@ public struct CodexResponsesProvider: LLMProvider {
                 try await Self.readStream(bytes, decoder: decoder)
             }
             group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(Self.maxStreamSeconds * 1_000_000_000))
+                try await Task.sleep(for: .seconds(Self.maxStreamSeconds))
                 let msg = "stream timed out after \(Int(Self.maxStreamSeconds))s"
                 Self.log.error("polish stream timeout: \(msg, privacy: .public)")
                 throw ProviderError.streamFailed(body: msg)

@@ -32,7 +32,7 @@ import WhisperKit
 @Observable
 public final class ModelManager {
     /// Posted when a manager's state enters `.downloaded`.
-    public static let didDownloadNotification = Notification.Name("com.liuwentong.SayIt.ModelManagerDidDownload")
+    public static let didDownloadNotification = Notification.Name("\(SayItCore.identifier).ModelManagerDidDownload")
 
     /// The download/cache state of the current model.
     public enum State: Equatable, Sendable {
@@ -101,7 +101,7 @@ public final class ModelManager {
 
     /// - Parameter model: the initially tracked model friendly name; defaults to `"large-v3-turbo"`, consistent with ``AppConfig/localModel``'s
     ///   default and ``WhisperKitTranscriber``'s default.
-    public init(model: String = "large-v3-turbo") {
+    public init(model: String = AppConfig.defaultLocalModel) {
         self.model = model
         self.state = Self.isDownloaded(model: model) ? .downloaded : .notDownloaded
     }
@@ -160,7 +160,7 @@ public final class ModelManager {
     /// Diagnostic logger. The user-facing `.failed(reason:)` carries only a clean short message;
     /// the underlying raw error (NSError dump, network/IO cause) is logged here so it stays
     /// recoverable via `log show` without surfacing garbage in the settings UI.
-    nonisolated private static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "model")
+    nonisolated private static let log = Logger(subsystem: SayItCore.identifier, category: "model")
 
     /// Resolves a catalog key for the user-facing `.failed(reason:)` message in the app's currently
     /// selected UI language (``AppConfig/uiLanguage``) rather than the system locale.

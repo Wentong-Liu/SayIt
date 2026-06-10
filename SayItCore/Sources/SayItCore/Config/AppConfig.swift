@@ -17,7 +17,7 @@ public final class AppConfig {
 
     /// The notification posted when config changes; `object` is the changed `AppConfig` instance.
     /// Listeners should re-read the properties they care about after receiving it (the notification carries no diff).
-    public static let didChangeNotification = Notification.Name("com.liuwentong.SayIt.AppConfigDidChange")
+    public static let didChangeNotification = Notification.Name("\(SayItCore.identifier).AppConfigDidChange")
 
     private let defaults: UserDefaults
     private let notificationCenter: NotificationCenter
@@ -198,7 +198,7 @@ public final class AppConfig {
 
     // MARK: Default constants (single source of truth)
 
-    static let defaultLocalModel = "large-v3-turbo"
+    nonisolated public static let defaultLocalModel = "large-v3-turbo"
     static let defaultCloudSTTModel = "gpt-4o-mini-transcribe"
     static let defaultPolishEnabled = true
     static let defaultSoundCuesEnabled = true

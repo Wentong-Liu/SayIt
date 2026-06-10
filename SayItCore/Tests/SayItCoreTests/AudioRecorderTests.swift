@@ -161,7 +161,7 @@ final class AudioLevelStreamReconsumableTests: XCTestCase {
         }
         // Timeout fallback: avoid hanging forever when the second session gets no values (i.e. the old bug's manifestation).
         let timeoutTask = Task { () -> Int in
-            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            try? await Task.sleep(for: .seconds(timeout))
             task.cancel()
             return 0
         }

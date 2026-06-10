@@ -31,7 +31,7 @@ final class MicTestViewModel {
     @ObservationIgnored private var levelGeneration = 0
 
     /// Mic-test logging (same subsystem/category as ``SettingsViewModel`` so start failures land in the same place).
-    @ObservationIgnored private let log = Logger(subsystem: "com.liuwentong.SayIt", category: "settings")
+    @ObservationIgnored private let log = Logger(subsystem: SayItCore.identifier, category: "settings")
 
     /// The selectable input device list (with the "System Default" option presented separately by the UI).
     private(set) var devices: [AudioInputDevice] = []

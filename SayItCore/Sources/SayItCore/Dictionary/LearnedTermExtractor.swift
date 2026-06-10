@@ -52,7 +52,7 @@ public struct LearnedTermExtractor: LearnedTermExtracting {
     /// `log stream --predicate 'subsystem == "com.liuwentong.SayIt"'`; reuses the existing subsystem with the dedicated
     /// `learn` category shared with the coordinator. `static` so it fits this `Sendable` value type and is reachable from
     /// the non-mutating `extract`. Debug text is interpolated with `privacy: .public` (active on-device debugging).
-    private static let log = Logger(subsystem: "com.liuwentong.SayIt", category: "learn")
+    private static let log = Logger(subsystem: SayItCore.identifier, category: "learn")
 
     /// - Parameters:
     ///   - provider: the LLM provider to call (same construction as polish).

@@ -71,7 +71,7 @@ final class CodexLoginService {
 
         // Timeout wrap-up: if still listening when time is up (the user did not complete authorization), automatically finish to release the port and trigger the completion.
         timeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(Self.loginTimeout * 1_000_000_000))
+            try? await Task.sleep(for: .seconds(Self.loginTimeout))
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard let self, self.listener != nil else { return }

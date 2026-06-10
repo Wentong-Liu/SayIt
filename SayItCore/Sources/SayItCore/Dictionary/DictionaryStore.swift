@@ -22,7 +22,7 @@ public actor DictionaryStore {
     ///
     /// Posted after each CRUD that truly changes the dictionary (add / update / remove / replaceAll) succeeds.
     /// `object` is `nil` (an `actor` cannot be a notification object); listeners call ``all()`` on receipt to re-read the latest content.
-    public static let didChangeNotification = Notification.Name("com.liuwentong.SayIt.DictionaryStoreDidChange")
+    public static let didChangeNotification = Notification.Name("\(SayItCore.identifier).DictionaryStoreDidChange")
 
     /// The default dictionary root directory: `Application Support/SayIt` (same root as ``ModelManager/downloadBase``).
     ///
@@ -46,7 +46,7 @@ public actor DictionaryStore {
     private let fileURL: URL
     private let notificationCenter: NotificationCenter
     private let fileManager: FileManager
-    private let logger = Logger(subsystem: "com.liuwentong.SayIt", category: "dictionary")
+    private let logger = Logger(subsystem: SayItCore.identifier, category: "dictionary")
 
     /// The in-memory cache; `nil` means it has not yet been loaded from disk (lazy-loaded once).
     private var cache: UserDictionary?
