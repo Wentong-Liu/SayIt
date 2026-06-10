@@ -118,6 +118,43 @@ final class WhisperKitTranscriberTests: XCTestCase {
         assertPreloadFailed(await second)
     }
 
+    /// Regression guard for the localization fix: when the Core ML engine load throws, the surfaced
+    /// `STTError.transcriptionFailed(reason:)` must route through the localized helper
+    /// (`model.loadFailed` -> en "Failed to load the model"), NOT the old hardcoded Chinese literal
+    /// ("模型加载失败"), and must still append the raw cause for diagnostics.
+    func testEngineLoadFailureUsesLocalizedReasonNotHardcodedChinese() async throws {
+        let model = "sayit-loadfail-\(UUID().uuidString)"
+        let modelFolder = try makeCompleteFakeModelFolder(for: model)
+        defer { try? FileManager.default.removeItem(at: modelFolder) }
+
+        let stt = WhisperKitTranscriber(model: model) { _ in
+            throw EngineLoadProbeError()
+        }
+
+        // The expected localized base, resolved the same way production does (UILanguageLocalizer via Bundle.module).
+        let expectedBase = ModelManager.localizedFailureReason("model.loadFailed",
+                                                               fallback: "Failed to load the model")
+
+        do {
+            try await stt.preload()
+            XCTFail("expected the injected engine-load failure to surface")
+        } catch let STTError.transcriptionFailed(reason) {
+            XCTAssertTrue(reason.hasPrefix(expectedBase),
+                          "reason must start with the localized base, got: \(reason)")
+            XCTAssertTrue(reason.contains("EngineLoadProbeError"),
+                          "the raw cause must be appended for diagnostics, got: \(reason)")
+            // The old hardcoded Chinese literal must no longer be the leading copy. (When the chosen UI
+            // language IS zh-Hans the localized value legitimately equals "模型加载失败", so only assert it is
+            // not the exact old hardcoded prefix form when the resolved base differs from that literal.)
+            if expectedBase != "模型加载失败" {
+                XCTAssertFalse(reason.hasPrefix("模型加载失败"),
+                               "must not lead with the old hardcoded Chinese literal, got: \(reason)")
+            }
+        } catch {
+            XCTFail("unexpected error type: \(error)")
+        }
+    }
+
     // MARK: - Pure mapping logic mapResult
 
     func testMapResultTrimsAndJoins() {

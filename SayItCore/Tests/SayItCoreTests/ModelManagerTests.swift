@@ -135,6 +135,28 @@ final class ModelManagerTests: XCTestCase {
                        "a zero-length weight.bin must NOT count as downloaded")
     }
 
+    /// Regression guard for the robust file-size read: a package whose weight blob is a real,
+    /// multi-byte file must be judged complete. The prior `attributes[.size] as? Int` cast was
+    /// fragile (the `.size` value is an `NSNumber`, not a plain `Int`); a spurious bridge miss
+    /// there would wrongly report a present blob as empty. The blob is sized well past the
+    /// short literals used elsewhere so this exercises a non-trivial size read.
+    func testHasRequiredModelFilesTrueWhenWeightBlobIsLarge() throws {
+        let folder = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try createCompleteModelPackage(named: "MelSpectrogram", in: folder)
+        try createCompleteModelPackage(named: "AudioEncoder", in: folder)
+
+        // TextDecoder: a real, multi-byte (1 MiB) weight blob — a non-trivial size to read back.
+        let mlmodelc = folder.appending(component: "TextDecoder.mlmodelc")
+        let weightsDir = mlmodelc.appending(component: "weights")
+        try FileManager.default.createDirectory(at: weightsDir, withIntermediateDirectories: true)
+        try Data("descriptor".utf8).write(to: mlmodelc.appending(component: "coremldata.bin"))
+        try Data(count: 1 << 20).write(to: weightsDir.appending(component: "weight.bin"))
+
+        XCTAssertTrue(ModelManager.hasRequiredModelFiles(in: folder),
+                      "a package whose weight blob is a real multi-byte file must count as downloaded")
+    }
+
     func testHasRequiredModelFilesFalseWhenDescriptorMissing() throws {
         // A `.mlmodelc` directory with no coremldata.bin descriptor is not a loadable package.
         let folder = try makeTempDir()

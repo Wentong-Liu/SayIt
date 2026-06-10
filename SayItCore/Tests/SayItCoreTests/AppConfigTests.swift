@@ -270,6 +270,38 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(AppConfig(defaults: defaults).model, ProviderKind.anthropic.defaultModel)
     }
 
+    /// Regression guard for the self-heal fix: reading the `model` getter when the stored id is invalid for the
+    /// current provider must PERSIST the clamped default back to UserDefaults (not just clamp on every read), so the
+    /// stale id is replaced on disk. Previously the getter returned the default but left the invalid raw value stored.
+    func testStaleStoredModelPersistsClampToUserDefaults() {
+        defaults.set(ProviderKind.anthropic.rawValue, forKey: "provider.kind")
+        defaults.set("claude-3-5-haiku-20241022", forKey: "provider.model")
+        let stale = AppConfig(defaults: defaults)
+
+        // The getter returns the valid default...
+        XCTAssertEqual(stale.model, ProviderKind.anthropic.defaultModel)
+        // ...AND it has rewritten the raw stored value, so the invalid id no longer lingers on disk.
+        XCTAssertEqual(defaults.string(forKey: "provider.model"), ProviderKind.anthropic.defaultModel,
+                       "an out-of-provider stored model must self-heal by persisting the clamped default")
+    }
+
+    /// A valid stored model must NOT be rewritten by the clamp path (no spurious write/notification).
+    func testValidStoredModelIsNotRewrittenByGetter() {
+        let valid = ProviderKind.openAI.modelOptions.map(\.id).first!
+        defaults.set(ProviderKind.openAI.rawValue, forKey: "provider.kind")
+        defaults.set(valid, forKey: "provider.model")
+        var posts = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: AppConfig.didChangeNotification, object: nil, queue: nil) { _ in posts += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        let cfg = AppConfig(defaults: defaults)
+        _ = cfg.model
+        _ = cfg.model
+        XCTAssertEqual(defaults.string(forKey: "provider.model"), valid)
+        XCTAssertEqual(posts, 0, "reading a valid stored model must not post a change notification")
+    }
+
     // MARK: Silent fallback for corrupt/unknown values
 
     func testUnknownRawValueFallsBackToDefault() {

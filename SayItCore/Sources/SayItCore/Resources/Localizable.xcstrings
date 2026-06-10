@@ -91,6 +91,24 @@
         }
       }
     },
+    "model.loadFailed" : {
+      "comment" : "Local model failed to load (Core ML engine load error); surfaced as the STTError reason, the raw cause is appended after it",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Failed to load the model"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型加载失败"
+          }
+        }
+      }
+    },
     "hud.done" : {
       "comment" : "Recording HUD: neutral completion fallback",
       "extractionState" : "manual",

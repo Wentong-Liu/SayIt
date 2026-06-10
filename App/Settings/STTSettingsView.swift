@@ -75,7 +75,11 @@ struct STTSettingsView: View {
         .formStyle(.grouped)
         .settingsFormTypography()
         .onAppear {
-            viewModel.reloadCredentials()
+            // Clear a stale status line from a previous visit, and refresh credentials WITHOUT clobbering an
+            // unsaved key the user may have typed before the pane last disappeared (the view model lives for
+            // the whole SettingsView, so onAppear can re-run with a dirty buffer).
+            viewModel.clearStatusMessages()
+            viewModel.reloadCredentialsIfClean()
             // On entering the page, refresh the download state per the current model's actual local cache.
             viewModel.refreshLocalModelState()
         }

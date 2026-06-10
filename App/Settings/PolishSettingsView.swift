@@ -81,7 +81,13 @@ struct PolishSettingsView: View {
         }
         .formStyle(.grouped)
         .settingsFormTypography()
-        .onAppear { viewModel.reloadCredentials() }
+        .onAppear {
+            // Clear a stale status line from a previous visit, and refresh credentials WITHOUT clobbering an
+            // unsaved key the user may have typed before the pane last disappeared (the view model lives for
+            // the whole SettingsView, so onAppear can re-run with a dirty buffer).
+            viewModel.clearStatusMessages()
+            viewModel.reloadCredentialsIfClean()
+        }
     }
 
     /// ChatGPT OAuth login/logout.
