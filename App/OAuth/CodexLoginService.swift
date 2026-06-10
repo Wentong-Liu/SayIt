@@ -15,6 +15,11 @@ final class CodexLoginService {
     private var state: String = ""
     private var completion: ((Result<OAuthTokens, Error>) -> Void)?
     private var timeoutTask: Task<Void, Never>?
+    /// Monotonically increasing identity for the current login flow. login() is re-entrant: starting a
+    /// new flow wraps up the prior one and bumps this id. The token-exchange Task captures the id at the
+    /// start of its async round-trip and re-checks it before delivering, so an orphaned prior-flow exchange
+    /// that resolves late cannot fire the new flow's completion with stale cross-flow tokens.
+    private var flowID: UInt64 = 0
 
     enum LoginError: Error, CustomStringConvertible {
         case serverFailed, stateMismatch, noCode, exchangeFailed(String), cancelled, timedOut
@@ -45,8 +50,7 @@ final class CodexLoginService {
     /// Starts the login flow: start service -> open browser -> wait for callback -> exchange token.
     /// Re-entrancy protection: if there is already a login in progress, wrap up the old flow first (cancel listener + report cancelled to the old completion), guaranteeing only one session at a time.
     func login(completion: @escaping (Result<OAuthTokens, Error>) -> Void) {
-        finish(.failure(LoginError.cancelled))  // Clean up the previous round (if any): cancel the old listener, trigger the old completion, stop the old timeout
-        self.completion = completion
+        beginFlow(installing: completion)
         let pkce = PKCE.generate()
         self.pkce = pkce
         self.state = UUID().uuidString
@@ -82,6 +86,15 @@ final class CodexLoginService {
         NSWorkspace.shared.open(ChatGPTOAuth.authorizeURL(pkce: pkce, state: state))
     }
 
+    /// Wraps up any prior flow (cancel listener + fire its completion with .cancelled + stop its timeout),
+    /// stamps a fresh `flowID`, and installs the new completion. Centralizes the re-entrant flow-identity
+    /// transition so the token-exchange guard (deliverExchangeResult) and the regression test agree on it.
+    private func beginFlow(installing completion: @escaping (Result<OAuthTokens, Error>) -> Void) {
+        finish(.failure(LoginError.cancelled))  // Clean up the previous round (if any): cancel the old listener, trigger the old completion, stop the old timeout
+        flowID &+= 1  // Stamp a fresh flow identity so a prior flow's in-flight exchange cannot deliver into this one.
+        self.completion = completion
+    }
+
     private func handle(_ conn: NWConnection) {
         conn.start(queue: .main)
         conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, _ in
@@ -108,6 +121,10 @@ final class CodexLoginService {
         guard st == state else { finish(.failure(LoginError.stateMismatch)); return }
         guard let code, let verifier = pkce?.verifier else { finish(.failure(LoginError.noCode)); return }
 
+        // Capture the current flow identity before the async round-trip. login() is re-entrant, so a
+        // second login() may start (and wrap up this one with .cancelled) while this exchange is still
+        // in flight; deliverExchangeResult drops a late result whose flow is no longer current.
+        let flow = flowID
         Task {
             do {
                 let (data, resp) = try await URLSession.shared.data(
@@ -116,20 +133,47 @@ final class CodexLoginService {
                 guard let http, HTTPResponseValidator.successRange.contains(http.statusCode) else {
                     // Token exchange non-2xx: the diagnostic string contains only the status code, never the response body (to avoid token leaks).
                     let statusCode = http?.statusCode ?? -1
-                    self.finish(.failure(LoginError.exchangeFailed("HTTP \(statusCode)"))); return
+                    self.deliverExchangeResult(flow: flow, .failure(LoginError.exchangeFailed("HTTP \(statusCode)"))); return
                 }
                 let tokens = try ChatGPTOAuth.parseTokenResponse(data)
                 // Do not report success on save failure: if it cannot be written to the keychain, report failure honestly.
                 if KeychainStore.saveChatGPTTokens(tokens) {
-                    self.finish(.success(tokens))
+                    self.deliverExchangeResult(flow: flow, .success(tokens))
                 } else {
-                    self.finish(.failure(LoginError.exchangeFailed(
+                    self.deliverExchangeResult(flow: flow, .failure(LoginError.exchangeFailed(
                         uiLanguageLocalized("login.keychainWriteFailed", defaultValue: "Unable to write to keychain"))))
                 }
             } catch {
-                self.finish(.failure(LoginError.exchangeFailed(error.localizedDescription)))
+                self.deliverExchangeResult(flow: flow, .failure(LoginError.exchangeFailed(error.localizedDescription)))
             }
         }
+    }
+
+    /// Delivers a token-exchange result, but only if `flow` is still the current login flow. A prior
+    /// flow's exchange can resolve after a re-entrant login() has already wrapped it up (with .cancelled)
+    /// and installed a new completion; without this guard that orphaned result would call finish() and
+    /// fire the *new* flow's completion with the *prior* flow's outcome (cross-flow mix-up). The normal
+    /// single-login path always has `flow == flowID`, so behavior there is unchanged.
+    private func deliverExchangeResult(flow: UInt64, _ result: Result<OAuthTokens, Error>) {
+        guard flow == flowID else { return }
+        finish(result)
+    }
+
+    // MARK: - Test seams (only @testable-visible, the public API is unchanged)
+
+    /// For testing: performs the same re-entrant flow-identity transition as `login()` (wrap up any prior
+    /// flow + stamp a fresh `flowID` + install the new completion), WITHOUT starting the loopback listener
+    /// or opening a browser. Returns the new flow id so a test can mimic an exchange Task that captured it.
+    func beginFlowForTesting(installing completion: @escaping (Result<OAuthTokens, Error>) -> Void) -> UInt64 {
+        beginFlow(installing: completion)
+        return flowID
+    }
+
+    /// For testing: drives the exact guarded delivery the token-exchange Task uses (same source as the
+    /// `self.deliverExchangeResult(...)` calls inside `onCallback`), so a test can reproduce a late
+    /// prior-flow result arriving after a re-entrant login without any real network round-trip.
+    func deliverExchangeResultForTesting(flow: UInt64, _ result: Result<OAuthTokens, Error>) {
+        deliverExchangeResult(flow: flow, result)
     }
 
     private func finish(_ result: Result<OAuthTokens, Error>) {
