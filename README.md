@@ -24,6 +24,10 @@
   </p>
 </div>
 
+<div align="center">
+  <img src="docs/demo.gif" width="720" alt="SayIt in action — hold the key, speak, and polished text appears at the cursor">
+</div>
+
 <hr>
 
 SayIt turns your voice into polished text anywhere on your Mac. It's built for
@@ -64,6 +68,13 @@ turn it off and SayIt stays 100% free and fully offline.
 
 That's it. Trigger key, interaction mode, which AI polishes your text, language,
 and microphone are all in **Settings**.
+
+## Settings
+
+|  |  |
+|:--:|:--:|
+| <img src="docs/settings-speech.png" width="410" alt="Speech settings — recognition engine and local model"> | <img src="docs/settings-polish.png" width="410" alt="Polish settings — provider, style, and credentials"> |
+| **Speech** — local model or cloud API, and which model | **Polish** — ChatGPT/Codex login or your own API key, plus style and model |
 
 ## Requirements
 

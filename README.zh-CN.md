@@ -24,6 +24,10 @@
   </p>
 </div>
 
+<div align="center">
+  <img src="docs/demo.gif" width="720" alt="SayIt 演示——按住键说话，松开后润色好的文字出现在光标处">
+</div>
+
 <hr>
 
 **喜欢 Typeless，但觉得免费额度不够用？** SayIt 用**本地模型**做语音识别、用**你已经在付的 Codex 订阅**来润色——**完全免费**，没有额度、没有月费。
@@ -51,6 +55,13 @@
 3. **松开或再点一下**——润色好的文字出现在光标处。
 
 就这样。触发键、交互方式、用哪个 AI 润色、界面语言、麦克风，都在**设置**里。
+
+## 设置
+
+|  |  |
+|:--:|:--:|
+| <img src="docs/settings-speech.png" width="410" alt="语音设置——识别引擎与本地模型"> | <img src="docs/settings-polish.png" width="410" alt="润色设置——服务方、风格与登录凭据"> |
+| **语音** —— 本地模型或云端 API，以及用哪个模型 | **润色** —— 登录 ChatGPT/Codex 或填你自己的 API Key，外加风格和模型 |
 
 ## 环境要求
 
