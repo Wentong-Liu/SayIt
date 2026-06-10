@@ -102,6 +102,53 @@ final class MicTestViewModelObservationTests: XCTestCase {
         XCTAssertEqual(config.inputDeviceUID, "uid-while-idle", "the pick still persists")
     }
 
+    // MARK: - rapid stop/start awaits the in-flight stop before starting
+
+    /// Regression: a rapid `stopTesting()` -> `startTesting()` must `await` the in-flight stop's
+    /// `recorder.stop()` BEFORE the next `recorder.start()` reaches the actor.
+    ///
+    /// Root cause guarded: `stopTesting()` used to fire an untracked `Task { _ = try? await recorder.stop() }`. The
+    /// immediately-following `startTesting()` then called `recorder.start()` while that stop was still tearing down the
+    /// `AVAudioEngine` — racing the teardown (the real recorder would throw `.alreadyRecording` / rebuild racily). The
+    /// fix tracks the stop in `pendingStopTask` and awaits it via `awaitPendingStop()` before start.
+    ///
+    /// Determinism: the fake's `stop()` is gated to pin the recorder in the "stop in flight, still recording" window.
+    /// While gated, the second `startTesting()`'s level task must be BLOCKED in `awaitPendingStop()` — so `startCount`
+    /// must NOT advance. Releasing the gate lets the stop finish, after which `start()` finally runs.
+    func testRapidStopThenStartAwaitsPendingStopBeforeStart() async throws {
+        let config = makeConfig()
+        let recorder = FakeAudioRecorder()
+        let vm = MicTestViewModel(config: config, recorder: recorder)
+
+        // First start: capture is live.
+        vm.startTesting()
+        try await pollUntil { await recorder.startCount == 1 }
+
+        // Arm the stop gate so the NEXT stop() suspends (still recording) until released.
+        await recorder.gateStop()
+
+        // Rapid stop -> start. stopTesting() spawns the tracked pendingStopTask (which enters gated stop()),
+        // then startTesting() spawns a level task that must await that pending stop before recorder.start().
+        vm.stopTesting()
+        await recorder.waitUntilStopGated()   // ensure the stop is actually parked in the gate
+        vm.startTesting()
+
+        // While the stop is gated, the new start MUST be blocked in awaitPendingStop(): startCount stays at 1.
+        // Give the (would-be racing) start task several scheduler turns to (wrongly) run start() if unfixed.
+        for _ in 0..<50 { await Task.yield() }
+        let countWhileGated = await recorder.startCount
+        XCTAssertEqual(countWhileGated, 1,
+                       "the second start must await the in-flight stop; it must NOT start while the stop is still tearing down")
+
+        // Release the stop: it finishes, then the awaited start runs.
+        await recorder.releaseStop()
+        try await pollUntil { await recorder.startCount == 2 }
+        let stops = await recorder.stopCount
+        XCTAssertEqual(stops, 1, "exactly one stop ran for the single stopTesting()")
+
+        vm.onDisappear()
+    }
+
     // MARK: - Helpers
 
     /// Polls `condition` (an async actor read) until true or a short timeout elapses.

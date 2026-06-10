@@ -2647,3 +2647,99 @@ private actor HangingTranscriber: Transcriber {
         return TranscriptionResult(text: "never")
     }
 }
+
+/// Regression tests for the orphaned cold-start prepare-timeout finisher.
+///
+/// Root cause guarded: ``DictationCoordinator/awaitPreloadBounded`` resolves on the FIRST of {load finished, timeout
+/// elapsed, ESC cancel}. The timeout finisher was a detached `Task.sleep(for: modelLoadTimeout=240s)` that was NEVER
+/// cancelled when the load finished early (or ESC won the race) — so it lingered ~240s per prepare, accumulating idle
+/// tasks. The fix keeps the finisher handles and cancels the losers once the wait resolves. These tests drive the wait
+/// via the `_test_awaitPreloadBounded` seam (capturing the timeout `Task`) and assert it is cancelled on early resolve.
+@MainActor
+final class DictationCoordinatorPreloadTimeoutTests: XCTestCase {
+
+    private func makeConfig() -> AppConfig {
+        let suite = "test.coordinator.preload.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let config = AppConfig(defaults: defaults)
+        config.soundCuesEnabled = false
+        return config
+    }
+
+    private func makeCoordinator(config: AppConfig, modelLoadTimeout: Duration) -> DictationCoordinator {
+        let store = DictionaryStore(
+            baseDirectory: FileManager.default.temporaryDirectory
+                .appending(component: "sayit-preload-\(UUID().uuidString)"))
+        return DictationCoordinator(
+            config: config,
+            recorder: FakeAudioRecorder(),
+            panel: RecordingPanelController(headless: true),
+            injector: FakeTextInjector(),
+            dictionaryStore: store,
+            transcriberFactory: { FakeTranscriber(text: "x") },
+            accessibilityGate: { true },
+            modelReadiness: { _ in true },
+            modelState: { .downloaded },
+            transcribeTimeout: .seconds(5),
+            modelLoadTimeout: modelLoadTimeout,
+            soundCues: SilentSoundCues(),
+            cloudKeyReader: nil,
+            axReader: FakeFocusedTextReader(single: nil),
+            suggestionPanel: SuggestionPanelController(autoDismissAfter: .seconds(60), headless: true),
+            learnFreshness: .seconds(8),
+            learnIdleAfter: .milliseconds(1),
+            polishProviderFactory: nil,
+            learnProviderFactory: { throw ProviderError.missingAPIKey },
+            termExtractorFactory: nil,
+            frontmostPIDProvider: nil,
+            metricsSink: nil
+        )
+    }
+
+    /// When the load finishes (returns) early, the bounded wait resolves on Finisher 1 — and the orphaned timeout
+    /// finisher MUST be cancelled rather than left sleeping the full (here 240s) timeout. The whole call returns
+    /// promptly; the captured timeout `Task` reads `.isCancelled == true`.
+    func testEarlyLoadResolveCancelsTimeoutFinisher() async throws {
+        let config = makeConfig()
+        // A deliberately huge timeout: if the fix were absent, the timeout finisher would sleep ~240s. The test must
+        // finish well under that, and the captured task must be cancelled.
+        let coordinator = makeCoordinator(config: config, modelLoadTimeout: .seconds(240))
+
+        let box = TimeoutTaskBox()
+        try await coordinator._test_awaitPreloadBounded(onTimeoutTaskSpawned: { box.task = $0 }) {
+            // The "load" resolves immediately.
+            return
+        }
+        let task = try XCTUnwrap(box.task, "the timeout finisher task should have been spawned")
+        // It is reaped (cancelled) the moment the wait resolved on the early load.
+        await task.value
+        XCTAssertTrue(task.isCancelled, "the orphaned timeout finisher must be cancelled once the load resolves early")
+    }
+
+    /// Even when the load FAILS quickly (Finisher 1 with an error), the timeout finisher must still be cancelled (the
+    /// failure is rethrown to the caller, and the loser finisher is reaped).
+    func testFailedLoadAlsoCancelsTimeoutFinisher() async throws {
+        let config = makeConfig()
+        let coordinator = makeCoordinator(config: config, modelLoadTimeout: .seconds(240))
+
+        let box = TimeoutTaskBox()
+        do {
+            try await coordinator._test_awaitPreloadBounded(onTimeoutTaskSpawned: { box.task = $0 }) {
+                throw STTError.notReady
+            }
+            XCTFail("a failing load should rethrow")
+        } catch is STTError {
+            // expected: the load failure propagates
+        }
+        let task = try XCTUnwrap(box.task, "the timeout finisher task should have been spawned even for a failing load")
+        await task.value
+        XCTAssertTrue(task.isCancelled, "the timeout finisher must be cancelled after a fast load failure too")
+    }
+}
+
+/// A tiny @MainActor holder for the captured prepare-timeout finisher `Task`, so the report callback can stash the
+/// handle even when ``DictationCoordinator/_test_awaitPreloadBounded`` rethrows a load failure.
+@MainActor
+private final class TimeoutTaskBox {
+    var task: Task<Void, Never>?
+}
