@@ -318,7 +318,11 @@ public actor WhisperKitTranscriber: Transcriber {
             finishEngineLoad(error: nil)
             return created
         } catch {
-            let mapped = STTError.transcriptionFailed(reason: "模型加载失败：\(String(describing: error))")
+            // Route the user-facing reason through the same localized helper the rest of the codebase uses
+            // (ModelManager.localizedFailureReason -> UILanguageLocalizer, en + zh-Hans) instead of a hardcoded
+            // Chinese string, so it follows the chosen Display Language. Append the raw error for diagnostics.
+            let base = ModelManager.localizedFailureReason("model.loadFailed", fallback: "Failed to load the model")
+            let mapped = STTError.transcriptionFailed(reason: "\(base): \(String(describing: error))")
             finishEngineLoad(error: mapped)
             throw mapped
         }

@@ -274,7 +274,8 @@ final class SettingsViewModel {
     /// Whether the current Provider uses ChatGPT OAuth (rather than an API Key).
     var providerUsesOAuth: Bool { providerKind == .chatGPT }
 
-    /// Reloads each entry buffer and the login state from the keychain. Called on entering the panel or switching the Provider.
+    /// Reloads each entry buffer and the login state from the keychain. Called once on first entering the panel
+    /// (from `init`) and when switching the Provider — points where there is no in-progress user edit to lose.
     func reloadCredentials() {
         cloudSTTAPIKey = KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? ""
         if let account = polishKeychainAccount {
@@ -283,6 +284,31 @@ final class SettingsViewModel {
             polishAPIKey = ""
         }
         isChatGPTLoggedIn = KeychainStore.loadChatGPTTokens() != nil
+    }
+
+    /// The onAppear-safe credential refresh. Unlike ``reloadCredentials()`` it does NOT clobber a buffer that
+    /// holds an unsaved in-progress edit: a `SettingsView`-lifetime `@State` view model re-runs `onAppear`
+    /// whenever the pane re-appears (tab switch, window re-open), and a blind reload there wiped a key the user
+    /// had typed but not yet saved.
+    ///
+    /// A buffer is refreshed from the Keychain only when it is **blank** (the user has typed nothing, or cleared
+    /// it) — a non-blank buffer is treated as an in-progress edit and preserved verbatim. The login state has no
+    /// user-editable buffer, so it is always refreshed.
+    func reloadCredentialsIfClean() {
+        if cloudSTTAPIKey.isEmpty {
+            cloudSTTAPIKey = KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? ""
+        }
+        if polishAPIKey.isEmpty {
+            polishAPIKey = polishKeychainAccount.flatMap { KeychainStore.get(account: $0) } ?? ""
+        }
+        isChatGPTLoggedIn = KeychainStore.loadChatGPTTokens() != nil
+    }
+
+    /// Clears the transient per-pane status lines. Called on entering a pane so an old "saved"/"failed"/login
+    /// result from a previous visit does not linger (the view model lives for the whole `SettingsView`).
+    func clearStatusMessages() {
+        sttStatusMessage = nil
+        polishStatusMessage = nil
     }
 
     /// After switching the polish Provider: reload that Provider's API Key buffer (clearing the previous Provider's leftover).
@@ -296,6 +322,9 @@ final class SettingsViewModel {
 
     /// Saves the cloud STT API Key (writes OpenAI's account; an empty string is treated as no change, to avoid accidental clearing).
     func saveCloudSTTAPIKey() {
+        // Clear any previous result first, so a stale "saved"/"failed" line never lingers — including
+        // when this returns early below (empty field) without setting a fresh message.
+        sttStatusMessage = nil
         let trimmed = cloudSTTAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let ok = KeychainStore.set(trimmed, account: KeychainStore.Account.openAIAPIKey)
@@ -310,6 +339,9 @@ final class SettingsViewModel {
 
     /// Saves the current polish Provider's API Key. ChatGPT (OAuth) has no API Key, ignored directly.
     func savePolishAPIKey() {
+        // Clear any previous result first, so a stale "saved"/"failed" line never lingers — including
+        // when this returns early below (ChatGPT provider / empty field) without setting a fresh message.
+        polishStatusMessage = nil
         guard let account = polishKeychainAccount else { return }
         let trimmed = polishAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }

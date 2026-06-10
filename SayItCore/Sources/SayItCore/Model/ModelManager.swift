@@ -321,12 +321,16 @@ public final class ModelManager {
     }
 
     /// Whether `url` is an existing regular file with a size greater than zero.
+    ///
+    /// `FileAttributeKey.size` is bridged as an `NSNumber`, so it is read via `int64Value` rather than a
+    /// blind `as? Int` cast (which is fragile: a 64-bit size on some volumes may not bridge cleanly to `Int`
+    /// on every path, yielding a spurious `nil` and a false "empty"). `int64Value` reads the value robustly.
     nonisolated private static func isNonEmptyFile(at url: URL) -> Bool {
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { return false }
-        let size = (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
-        return (size ?? 0) > 0
+        guard let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? NSNumber else { return false }
+        return size.int64Value > 0
     }
 
     // MARK: - Download-speed estimation helpers

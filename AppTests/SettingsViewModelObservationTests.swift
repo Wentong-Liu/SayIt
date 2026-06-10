@@ -316,6 +316,120 @@ final class SettingsViewModelObservationTests: XCTestCase {
                        "switching to ChatGPT while signed out must surface the sign-in warning")
     }
 
+    // MARK: - Status message lifecycle (bug a: set-only status lingered across visits)
+
+    /// Seeds a non-nil `polishStatusMessage` non-destructively by saving a BYO (OpenAI) key, restoring the
+    /// runner's original Keychain value via the returned teardown. Skips if the sandboxed Keychain is unavailable.
+    private func seedPolishStatus(_ vm: SettingsViewModel) throws -> () -> Void {
+        let account = KeychainStore.Account.openAIAPIKey
+        let original = KeychainStore.get(account: account)
+        let restore: () -> Void = { _ = KeychainStore.set(original ?? "", account: account) }
+        vm.providerKind = .openAI
+        vm.polishAPIKey = "sk-seed-\(UUID().uuidString)"
+        vm.savePolishAPIKey()
+        if vm.polishStatusMessage == nil {
+            restore()
+            throw XCTSkip("Sandboxed Keychain write unavailable; cannot seed a status line.")
+        }
+        return restore
+    }
+
+    /// `clearStatusMessages()` must nil BOTH per-pane status lines. The view model lives for the whole
+    /// `SettingsView`, so without this an old "saved"/"failed"/login result lingered when re-entering a pane.
+    func testClearStatusMessagesResetsBoth() throws {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+        let restore = try seedPolishStatus(vm)
+        defer { restore() }
+        XCTAssertNotNil(vm.polishStatusMessage, "saving a BYO key should set a polish status line")
+
+        vm.clearStatusMessages()
+        XCTAssertNil(vm.sttStatusMessage, "STT status must be cleared")
+        XCTAssertNil(vm.polishStatusMessage, "polish status must be cleared")
+    }
+
+    /// An empty-field save must CLEAR a previously-set status line (it resets at the top before the early
+    /// return), so a stale "saved" line does not survive an attempt to save an empty key.
+    func testEmptySaveClearsPreviousStatusMessage() throws {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+        let restore = try seedPolishStatus(vm)
+        defer { restore() }
+        XCTAssertNotNil(vm.polishStatusMessage)
+
+        // An empty (blank) polish save → status must reset to nil at the top before the early return.
+        vm.polishAPIKey = "   "
+        vm.savePolishAPIKey()
+        XCTAssertNil(vm.polishStatusMessage,
+                     "an empty polish-key save must clear the prior status, not leave it stale")
+    }
+
+    /// The STT pane variant: a successful cloud-key save seeds `sttStatusMessage`, then an empty save must
+    /// reset it to nil (set-to-nil at the top before the early return).
+    func testEmptyCloudSaveClearsPreviousStatusMessage() throws {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+
+        let account = KeychainStore.Account.openAIAPIKey
+        let original = KeychainStore.get(account: account)
+        defer { _ = KeychainStore.set(original ?? "", account: account) }
+
+        vm.cloudSTTAPIKey = "sk-seed-\(UUID().uuidString)"
+        vm.saveCloudSTTAPIKey()
+        try XCTSkipUnless(vm.sttStatusMessage != nil,
+                          "Sandboxed Keychain write unavailable; cannot seed an STT status line.")
+
+        vm.cloudSTTAPIKey = ""
+        vm.saveCloudSTTAPIKey()
+        XCTAssertNil(vm.sttStatusMessage,
+                     "an empty cloud-key save must clear the prior status, not leave it stale")
+    }
+
+    // MARK: - onAppear credential refresh (bug b: reload clobbered an unsaved typed key)
+
+    /// `reloadCredentialsIfClean()` must PRESERVE a non-blank, unsaved buffer (a key the user typed but did not
+    /// save). A blind `reloadCredentials()` on pane re-appear wiped it; the clean variant keeps it verbatim.
+    func testReloadCredentialsIfCleanPreservesUnsavedPolishKey() {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+
+        let typed = "sk-unsaved-\(UUID().uuidString)"
+        vm.polishAPIKey = typed
+        vm.reloadCredentialsIfClean()
+        XCTAssertEqual(vm.polishAPIKey, typed,
+                       "an unsaved typed polish key must survive an onAppear refresh")
+    }
+
+    /// The cloud-STT buffer must likewise be preserved when it holds an unsaved typed value.
+    func testReloadCredentialsIfCleanPreservesUnsavedCloudKey() {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+
+        let typed = "sk-unsaved-cloud-\(UUID().uuidString)"
+        vm.cloudSTTAPIKey = typed
+        vm.reloadCredentialsIfClean()
+        XCTAssertEqual(vm.cloudSTTAPIKey, typed,
+                       "an unsaved typed cloud key must survive an onAppear refresh")
+    }
+
+    /// A blank buffer is NOT an edit, so `reloadCredentialsIfClean()` refreshes it from the Keychain. With an
+    /// empty Keychain (or whatever the runner has), a blank polish buffer ends up matching the persisted value.
+    func testReloadCredentialsIfCleanRefreshesBlankBuffer() {
+        let config = makeConfig()
+        let vm = SettingsViewModel(config: config)
+
+        vm.polishAPIKey = ""
+        vm.cloudSTTAPIKey = ""
+        vm.reloadCredentialsIfClean()
+        let storedPolish = SettingsViewModel.apiKeyAccount(for: vm.providerKind)
+            .flatMap { KeychainStore.get(account: $0) } ?? ""
+        let storedCloud = KeychainStore.get(account: KeychainStore.Account.openAIAPIKey) ?? ""
+        XCTAssertEqual(vm.polishAPIKey, storedPolish,
+                       "a blank polish buffer must be refreshed from the persisted value")
+        XCTAssertEqual(vm.cloudSTTAPIKey, storedCloud,
+                       "a blank cloud buffer must be refreshed from the persisted value")
+    }
+
     // MARK: - Tag identity guard
 
     /// Picker option `.tag()` identity must match the persisted value. The views tag enum options

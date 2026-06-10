@@ -141,12 +141,19 @@ public final class AppConfig {
     /// The model id used for polish. On read it is clamped back to the current `providerKind`'s selectable models:
     /// if the persisted model does not belong to the current Provider (e.g. the Provider was switched without touching the model dropdown),
     /// it falls back to that Provider's default model, avoiding sending a model id that does not belong to that Provider to the API.
+    ///
+    /// The clamp is **self-healing**: when an out-of-Provider (stale/legacy) id is served back, the valid default is
+    /// persisted to UserDefaults right then, so the invalid id is replaced on disk and never lingers across reads.
+    /// `setString` no-ops when the value is unchanged, so a valid stored id incurs no write.
     public var model: String {
         get {
             let stored = defaults.string(forKey: Key.model)
             let valid = providerKind.modelOptions.map(\.id)
             if let stored, valid.contains(stored) { return stored }
-            return providerKind.defaultModel
+            let clamped = providerKind.defaultModel
+            // Persist the clamp so the invalid id self-heals instead of being re-clamped on every read.
+            setString(clamped, forKey: Key.model)
+            return clamped
         }
         set { setString(newValue, forKey: Key.model) }
     }
