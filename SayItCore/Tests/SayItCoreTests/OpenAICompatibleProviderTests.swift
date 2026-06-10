@@ -28,9 +28,10 @@ final class OpenAICompatibleProviderTests: XCTestCase {
         return URLSession(configuration: config)
     }
 
-    /// A minimal mirror of the encoded request body, exposing only the field we assert.
+    /// A minimal mirror of the encoded request body, exposing only the fields we assert.
     private struct DecodedBody: Decodable {
         let reasoning_effort: String?
+        let temperature: Double
     }
 
     /// Drives one polish call through a stub that returns a minimal HTTP 200 chat/completions reply,
@@ -78,6 +79,15 @@ final class OpenAICompatibleProviderTests: XCTestCase {
         let decoded = try JSONDecoder().decode(DecodedBody.self, from: bodyData)
         XCTAssertEqual(decoded.reasoning_effort, "minimal",
                        "gpt-5-mini only goes down to \"minimal\" (it 400s on \"none\")")
+    }
+
+    /// Polish/extraction are deterministic cleanup ("never change meaning"), so the wire body must carry a LOW
+    /// sampling temperature for faithful, low-variance results — not the old 0.9 ("diverse conversational") value.
+    func testEncodesLowSamplingTemperature() async throws {
+        let bodyData = try await captureBody(config: .openAI(model: "gpt-5.4-mini"))
+        let decoded = try JSONDecoder().decode(DecodedBody.self, from: bodyData)
+        XCTAssertLessThanOrEqual(decoded.temperature, 0.2,
+                                 "deterministic cleanup must run at a low temperature, not the old 0.9")
     }
 
     func testDeepSeekOmitsReasoningEffort() async throws {
