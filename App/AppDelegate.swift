@@ -22,11 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         DictationCoordinator.shared.start()
 
-        // Intentionally NOT arming ModelDownloadNotifier: requesting notification authorization on the
-        // first-launch auto-download produced an unwanted permission prompt. The menu-bar "ready" badge
-        // (SayItApp.menuBarLabel, shown while sttMode == .local && !ModelManager.isDownloaded) is the
-        // readiness signal instead. Re-enable by restoring the call below:
-        // ModelDownloadNotifier.shared.start()
+        // Model-download readiness is surfaced by the menu-bar "ready" badge (SayItApp.menuBarLabel,
+        // shown while sttMode == .local && !ModelManager.isDownloaded); no separate notifier.
 
         // First-launch guidance, exactly once (gated on the persisted flag). Set the flag FIRST so the
         // body is idempotent even if it returns early, then run the guidance.

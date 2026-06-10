@@ -52,15 +52,6 @@ public struct PolishOutcome: Equatable, Sendable {
         self.text = text
         self.resolution = resolution
     }
-
-    /// Convenience constructor compatible with old call sites: infers ``resolution`` from `polished` / `usedFallback`.
-    /// - `polished == true` → `.polished`
-    /// - Otherwise -> `.skipped(.disabled)` (the generic fallback classification when there is no specific reason).
-    @available(*, deprecated, message: "改用 init(text:resolution:) 以携带明确的裁决/原因")
-    public init(text: String, polished: Bool, usedFallback: Bool) {
-        self.text = text
-        self.resolution = polished ? .polished : .skipped(.disabled)
-    }
 }
 
 /// The pipeline that polishes raw STT transcription text into a finished draft.
