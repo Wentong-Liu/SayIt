@@ -70,8 +70,14 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="build/Build/Products/Release/$APP.app"
-          codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_PATH"
+          # --entitlements is REQUIRED: the unsigned xcodebuild (CODE_SIGNING_ALLOWED=NO) embeds none, and under the
+          # hardened runtime (--options runtime) the app is denied microphone access without
+          # com.apple.security.device.audio-input. App/SayIt.entitlements carries that (+ sandbox off, apple-events).
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements App/SayIt.entitlements --sign "$SIGN_IDENTITY" "$APP_PATH"
           codesign --verify --strict --verbose=2 "$APP_PATH"
+          # Sanity-check the entitlement actually made it into the binary, so a regression fails the build here.
+          codesign -d --entitlements - "$APP_PATH" 2>/dev/null | grep -q "com.apple.security.device.audio-input"
 
       - name: Package DMG
         run: |
