@@ -85,6 +85,10 @@ public enum STTMode: String, CaseIterable, Identifiable, Sendable {
     case local
     /// Cloud transcription API (e.g. OpenAI transcribe), requires network and credentials.
     case cloud
+    /// Apple's on-device `SpeechAnalyzer`/`SpeechTranscriber` (macOS 26+). The speech model is a system-managed
+    /// asset (installed by the OS, no app download). Only offered in the UI on macOS 26+; below that the picker
+    /// filters this case out, so selecting it never leads to an unavailable engine.
+    case appleSpeech
 
     public var id: String { rawValue }
 
@@ -93,8 +97,9 @@ public enum STTMode: String, CaseIterable, Identifiable, Sendable {
 
     public var displayName: String {
         switch self {
-        case .local: return "本地模型"
-        case .cloud: return "云端 API"
+        case .local:       return "本地模型"
+        case .cloud:       return "云端 API"
+        case .appleSpeech: return "Apple 语音"
         }
     }
 
@@ -102,8 +107,9 @@ public enum STTMode: String, CaseIterable, Identifiable, Sendable {
     /// The view renders with `Text(LocalizedStringKey(localizationKey))`, switching language instantly with `uiLocale`.
     public var localizationKey: String {
         switch self {
-        case .local: return "stt.mode.local"
-        case .cloud: return "stt.mode.cloud"
+        case .local:       return "stt.mode.local"
+        case .cloud:       return "stt.mode.cloud"
+        case .appleSpeech: return "stt.mode.appleSpeech"
         }
     }
 }

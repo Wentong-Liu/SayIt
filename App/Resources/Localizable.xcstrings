@@ -688,6 +688,13 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "OpenAI" } }
       }
     },
+    "stt.appleSpeech.note" : {
+      "comment" : "Apple SpeechAnalyzer engine note: the speech model is system-managed (no app download)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Uses the system speech model — no download needed." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用系统语音模型，无需下载。" } }
+      }
+    },
     "stt.cancel" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
@@ -747,6 +754,13 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Model" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "模型" } }
+      }
+    },
+    "stt.mode.appleSpeech" : {
+      "comment" : "STT engine option: Apple's on-device SpeechAnalyzer (macOS 26+)",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple Speech" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Apple 语音" } }
       }
     },
     "stt.mode.cloud" : {

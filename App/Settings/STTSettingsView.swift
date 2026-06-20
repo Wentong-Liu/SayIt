@@ -9,7 +9,7 @@ struct STTSettingsView: View {
         Form {
             Section {
                 Picker("stt.engine", selection: $viewModel.sttMode) {
-                    ForEach(STTMode.allCases) { mode in
+                    ForEach(Self.availableModes) { mode in
                         Text(LocalizedStringKey(mode.localizationKey)).tag(mode)
                     }
                 }
@@ -18,9 +18,7 @@ struct STTSettingsView: View {
                 Text("stt.section.engine")
                     .settingsSectionHeader()
             } footer: {
-                Text(viewModel.sttMode == .local
-                     ? "stt.footer.local"
-                     : "stt.footer.cloud")
+                Text(LocalizedStringKey(Self.footerKey(for: viewModel.sttMode)))
                     .settingsCaption()
             }
 
@@ -63,6 +61,17 @@ struct STTSettingsView: View {
                     Text("stt.section.cloud")
                         .settingsSectionHeader()
                 }
+            case .appleSpeech:
+                // Apple's on-device engine uses a SYSTEM-managed speech model: there is no WhisperKit model
+                // download/status UI to show and no API key to enter. Just state that no download is needed.
+                Section {
+                    Label("stt.appleSpeech.note", systemImage: "apple.logo")
+                        .labelStyle(.titleAndIcon)
+                        .settingsCaption()
+                } header: {
+                    Text("stt.section.engine")
+                        .settingsSectionHeader()
+                }
             }
 
             if let message = viewModel.sttStatusMessage {
@@ -82,6 +91,27 @@ struct STTSettingsView: View {
             viewModel.reloadCredentialsIfClean()
             // On entering the page, refresh the download state per the current model's actual local cache.
             viewModel.refreshLocalModelState()
+        }
+    }
+
+    /// The STT engines offered in the picker. `.appleSpeech` (SpeechAnalyzer, macOS 26+) is included ONLY on
+    /// macOS 26+, so a user on an older OS never sees an engine that cannot be constructed; `.local`/`.cloud`
+    /// are always offered.
+    private static var availableModes: [STTMode] {
+        STTMode.allCases.filter { mode in
+            if mode == .appleSpeech {
+                if #available(macOS 26, *) { return true } else { return false }
+            }
+            return true
+        }
+    }
+
+    /// The localization key for the engine-section footer caption, per selected mode.
+    private static func footerKey(for mode: STTMode) -> String {
+        switch mode {
+        case .local:       return "stt.footer.local"
+        case .cloud:       return "stt.footer.cloud"
+        case .appleSpeech: return "stt.appleSpeech.note"
         }
     }
 

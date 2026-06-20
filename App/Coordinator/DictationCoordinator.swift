@@ -1303,7 +1303,10 @@ final class DictationCoordinator {
     /// Background prewarm the local transcriber (loading the CoreML engine). Does not block the UI; while this is running,
     /// hotkey presses show a short "still preparing" hint and do not open the microphone.
     private func preloadInBackground(_ transcriber: any Transcriber, replacingCurrent: Bool = true, signature: TranscriberSignature? = nil) {
-        guard config.sttMode == .local else { return }
+        // Both engines with a meaningful warm-up benefit from background preload: WhisperKit loads its CoreML
+        // engine; AppleSpeechTranscriber installs the system speech asset (a no-op once installed). Cloud has no
+        // in-memory engine, so it stays excluded.
+        guard config.sttMode == .local || config.sttMode == .appleSpeech else { return }
         if !replacingCurrent, preloadTask != nil { return }
         if replacingCurrent {
             preloadTask?.cancel()
@@ -1385,6 +1388,15 @@ final class DictationCoordinator {
             let key = KeychainStore.trimmedValue(account: KeychainStore.Account.openAIAPIKey)
             guard !key.isEmpty else { throw STTError.notReady }
             return CloudTranscriber(apiKey: key, model: config.cloudSTTModel)
+        case .appleSpeech:
+            // macOS 26+ only (the UI filters this case out below 26). Pass `nil` so the locale follows the same
+            // auto-detect intent as the rest of the pipeline (dictation passes `language=nil` per call; see
+            // `AppConfig.language` note). On older systems this is unreachable from the UI, but guard anyway.
+            if #available(macOS 26, *) {
+                return AppleSpeechTranscriber(language: nil)
+            } else {
+                throw STTError.notReady
+            }
         }
     }
 
