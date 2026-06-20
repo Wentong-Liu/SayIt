@@ -116,12 +116,12 @@ struct STTSettingsView: View {
         if #available(macOS 26, *) { return true } else { return false }
     }
 
-    /// The STT engines offered as selectable segments. `.appleSpeech` is offered ONLY on macOS 26+ (where it can
-    /// actually be constructed); on older systems it is filtered out of the segmented control and instead shown as
-    /// a non-selectable "requires macOS 26" caption (see the engine section), so `.local`/`.cloud` behave exactly
-    /// as before on macOS < 26.
+    /// The STT engines offered as selectable segments, in display order. On macOS 26+ `.appleSpeech` is offered
+    /// FIRST (it is the recommended default), followed by `.local` / `.cloud`. On older systems `.appleSpeech` is
+    /// filtered out of the segmented control entirely (and instead shown as a non-selectable "requires macOS 26"
+    /// caption below), so `.local` / `.cloud` behave exactly as before on macOS < 26.
     private static var availableModes: [STTMode] {
-        appleSpeechAvailable ? STTMode.allCases : STTMode.allCases.filter { $0 != .appleSpeech }
+        appleSpeechAvailable ? [.appleSpeech, .local, .cloud] : [.local, .cloud]
     }
 
     /// The localization key for the engine-section footer caption, per selected mode.
