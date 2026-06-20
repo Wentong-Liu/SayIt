@@ -695,6 +695,13 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用系统语音模型，无需下载。" } }
       }
     },
+    "stt.appleSpeech.requires26" : {
+      "comment" : "Shown on macOS < 26 where Apple's SpeechAnalyzer engine cannot run; states the OS requirement",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple Speech · requires macOS 26 or later" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Apple 语音 · 需要 macOS 26 及以上" } }
+      }
+    },
     "stt.cancel" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
@@ -761,6 +768,13 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple Speech" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Apple 语音" } }
+      }
+    },
+    "stt.mode.appleSpeech.recommended" : {
+      "comment" : "STT engine option label on macOS 26+, where Apple's engine is the recommended default",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Apple Speech (Recommended)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Apple 语音（推荐）" } }
       }
     },
     "stt.mode.cloud" : {

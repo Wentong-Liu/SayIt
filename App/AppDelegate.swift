@@ -35,31 +35,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// One-time first-launch guidance for a brand-new install: auto-download the local model (only when
-    /// it would actually help) and open Settings on the Speech tab so the user sees the progress.
+    /// One-time first-launch guidance for a brand-new install: pick the device-preferred STT engine, auto-download
+    /// the local model (only when it would actually help) and open Settings on the Speech tab so the user sees it.
     ///
-    /// Reuses the EXACT ``ModelManager/download()`` entry point the Settings "Download" button calls (via
-    /// the process-shared ``ModelManager/shared``), so the first-run download, the Settings button, and
-    /// the menu-bar indicator all drive/observe one state object — no duplicated download logic. A
-    /// no-network / failed download lands on the existing `.failed` + retry path (no crash). The download
-    /// is gated on ``ModelManager/shouldAutoDownloadOnFirstRun(firstRun:sttMode:isDownloaded:)`` so an
-    /// upgrading user (model already present) or a cloud-mode user gets no spurious download.
+    /// Device-preferred default: on hardware that actually supports Apple's system speech engine
+    /// (``AppleSpeechSupport/isSupported()`` — macOS 26+ AND a non-empty locale catalog) AND when the user has not
+    /// yet explicitly chosen an engine (``AppConfig/hasExplicitSTTMode`` is `false` on a fresh install), prefer
+    /// `.appleSpeech` and persist it. Apple's model is system-managed, so the ~1.6GB WhisperKit auto-download is
+    /// pointless and is skipped: the skip is automatic because the download gate
+    /// (``ModelManager/shouldAutoDownloadOnFirstRun(firstRun:sttMode:isDownloaded:)``) only fires for `.local`, and
+    /// we have just settled `sttMode` on `.appleSpeech`. On any unsupported device (or for a returning user with a
+    /// persisted choice) nothing changes: `sttMode` stays at its `.local` baseline and the local model auto-downloads
+    /// exactly as before. The probe is async, so the engine decision + download gate + Settings open run inside a
+    /// `Task { @MainActor }`; `AppConfig` / `ModelManager.shared` are `@MainActor`, so there is no cross-actor sharing.
+    ///
+    /// Reuses the EXACT ``ModelManager/download()`` entry point the Settings "Download" button calls (via the
+    /// process-shared ``ModelManager/shared``), so the first-run download, the Settings button, and the menu-bar
+    /// indicator all drive/observe one state object — no duplicated download logic. A no-network / failed download
+    /// lands on the existing `.failed` + retry path (no crash). The on-demand download in STT settings is untouched
+    /// (a user who later switches to local can still download there).
     private func runFirstRunGuidance(config: AppConfig) {
-        if ModelManager.shouldAutoDownloadOnFirstRun(
-            firstRun: true,
-            sttMode: config.sttMode,
-            isDownloaded: ModelManager.isDownloaded(model: config.localModel)
-        ) {
-            Task { await ModelManager.shared.download() }
-        }
+        Task { @MainActor in
+            // Apply the device-preferred default before deciding on the download: only when this is a truly fresh
+            // install (no engine persisted yet) AND the hardware supports Apple speech. Otherwise leave `sttMode`
+            // untouched (its `.local` baseline), preserving the exact prior behavior incl. the local auto-download.
+            if !config.hasExplicitSTTMode, await AppleSpeechSupport.isSupported() {
+                config.sttMode = .appleSpeech
+            }
 
-        // Open Settings on the Speech tab (not the default General) so the local-model section and the
-        // download progress are immediately visible. Routed through ``SettingsRouter`` so the SwiftUI
-        // scene calls the live `@Environment(\.openSettings)` action: for an accessory (menu-bar) SwiftUI
-        // app the legacy AppKit `NSApp.sendAction(showSettingsWindow:)` selector has no reliable responder
-        // target at launch, so it silently failed to open anything. SettingsView reads the requested tab
-        // (set here via `requestOpen`) in `.onAppear`; the scene activates the app after opening.
-        SettingsRouter.shared.requestOpen(tab: .stt)
+            // Now-gated: `shouldAutoDownloadOnFirstRun` requires `sttMode == .local`, so settling on `.appleSpeech`
+            // above makes this skip the WhisperKit download; on unsupported devices `sttMode` is still `.local`
+            // and the download fires exactly as before.
+            if ModelManager.shouldAutoDownloadOnFirstRun(
+                firstRun: true,
+                sttMode: config.sttMode,
+                isDownloaded: ModelManager.isDownloaded(model: config.localModel)
+            ) {
+                Task { await ModelManager.shared.download() }
+            }
+
+            // Open Settings on the Speech tab (not the default General) so the chosen engine and any download
+            // progress are immediately visible. Routed through ``SettingsRouter`` so the SwiftUI scene calls the
+            // live `@Environment(\.openSettings)` action: for an accessory (menu-bar) SwiftUI app the legacy AppKit
+            // `NSApp.sendAction(showSettingsWindow:)` selector has no reliable responder target at launch, so it
+            // silently failed to open anything. SettingsView reads the requested tab (set here via `requestOpen`)
+            // in `.onAppear`; the scene activates the app after opening.
+            SettingsRouter.shared.requestOpen(tab: .stt)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

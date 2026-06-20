@@ -10,10 +10,24 @@ struct STTSettingsView: View {
             Section {
                 Picker("stt.engine", selection: $viewModel.sttMode) {
                     ForEach(Self.availableModes) { mode in
-                        Text(LocalizedStringKey(mode.localizationKey)).tag(mode)
+                        // `.appleSpeech` is only present in `availableModes` on macOS 26+ (where it is usable), so it
+                        // carries the "(Recommended)" label; the other engines use their plain localized name.
+                        Text(LocalizedStringKey(mode == .appleSpeech ? "stt.mode.appleSpeech.recommended" : mode.localizationKey))
+                            .tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
+
+                // On macOS < 26 the Apple engine cannot run, so it is intentionally NOT a selectable segment above
+                // (the segmented control stays exactly as it was: local / cloud only). Still surface that the engine
+                // EXISTS and why it is unavailable, as a non-interactive greyed caption, so the feature is
+                // discoverable without misleading the user into thinking they can pick it on this OS.
+                if !Self.appleSpeechAvailable {
+                    Label("stt.appleSpeech.requires26", systemImage: "apple.logo")
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(.secondary)
+                        .settingsCaption()
+                }
             } header: {
                 Text("stt.section.engine")
                     .settingsSectionHeader()
@@ -94,16 +108,20 @@ struct STTSettingsView: View {
         }
     }
 
-    /// The STT engines offered in the picker. `.appleSpeech` (SpeechAnalyzer, macOS 26+) is included ONLY on
-    /// macOS 26+, so a user on an older OS never sees an engine that cannot be constructed; `.local`/`.cloud`
-    /// are always offered.
+    /// Whether Apple's SpeechAnalyzer engine can run on this OS — a pure macOS-version gate (26+). Used to decide
+    /// whether `.appleSpeech` is a selectable segment vs. a greyed "requires macOS 26" caption. This is the
+    /// version-only check the UI needs; the deeper runtime capability probe (`AppleSpeechSupport.isSupported()`,
+    /// which also checks the locale catalog) is used only for the first-run *default* decision, not the picker.
+    private static var appleSpeechAvailable: Bool {
+        if #available(macOS 26, *) { return true } else { return false }
+    }
+
+    /// The STT engines offered as selectable segments. `.appleSpeech` is offered ONLY on macOS 26+ (where it can
+    /// actually be constructed); on older systems it is filtered out of the segmented control and instead shown as
+    /// a non-selectable "requires macOS 26" caption (see the engine section), so `.local`/`.cloud` behave exactly
+    /// as before on macOS < 26.
     private static var availableModes: [STTMode] {
-        STTMode.allCases.filter { mode in
-            if mode == .appleSpeech {
-                if #available(macOS 26, *) { return true } else { return false }
-            }
-            return true
-        }
+        appleSpeechAvailable ? STTMode.allCases : STTMode.allCases.filter { $0 != .appleSpeech }
     }
 
     /// The localization key for the engine-section footer caption, per selected mode.

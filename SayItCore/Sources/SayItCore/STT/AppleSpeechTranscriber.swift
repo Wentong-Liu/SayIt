@@ -370,6 +370,28 @@ public actor AppleSpeechTranscriber: Transcriber {
     }
 }
 
+/// Device-capability probe for the Apple speech engine, callable on **any** macOS version.
+///
+/// This lives outside ``AppleSpeechTranscriber`` on purpose: that actor is `@available(macOS 26, *)`, so any
+/// member of it would itself be macOS-26-gated and therefore unreachable from the first-run code that must run
+/// (and answer "no") on older systems. This namespace is un-gated, performs the `#available` check internally,
+/// and returns `false` below macOS 26 — so callers can probe unconditionally.
+public enum AppleSpeechSupport {
+    /// Whether this device can actually run the Apple speech engine.
+    ///
+    /// Two conditions must hold: the OS is macOS 26+ (the `Speech` framework's `SpeechTranscriber` exists), AND
+    /// the device reports a non-empty `SpeechTranscriber.supportedLocales`. That catalog is empty on macOS 26
+    /// machines that lack the speech engine (e.g. unsupported hardware), so an empty list means the API is in
+    /// the SDK but not usable here. Returns `false` on macOS < 26.
+    ///
+    /// Used at first-run to decide whether to prefer `.appleSpeech` as the default engine (and thereby skip the
+    /// WhisperKit auto-download). `static` and stateless — it reads only framework state, no actor isolation.
+    public static func isSupported() async -> Bool {
+        guard #available(macOS 26, *) else { return false }
+        return !(await SpeechTranscriber.supportedLocales).isEmpty
+    }
+}
+
 /// Carries the single source buffer and a one-time "already consumed" flag for `AVAudioConverter`'s `@Sendable`
 /// input block.
 ///

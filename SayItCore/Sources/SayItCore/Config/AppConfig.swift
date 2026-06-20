@@ -86,6 +86,16 @@ public final class AppConfig {
         set { setEnum(newValue, forKey: Key.sttMode) }
     }
 
+    /// Whether the user (or first-run) has explicitly persisted an STT engine yet.
+    ///
+    /// `false` only on a brand-new install where the `stt.mode` key is still absent (``sttMode`` then reports
+    /// its synchronous baseline ``STTMode/default`` = `.local`). The first-run flow uses this to tell "fresh
+    /// install, no engine chosen" apart from "user already picked `.local`", so applying a device-preferred
+    /// default (`.appleSpeech` on supported hardware) never overrides a returning/upgrading user's choice.
+    public var hasExplicitSTTMode: Bool {
+        defaults.string(forKey: Key.sttMode) != nil
+    }
+
     /// The local STT model identifier (the WhisperKit model name). **Effectively fixed** to
     /// ``defaultLocalModel`` (`"large-v3-turbo"`) — the recommended sweet spot — and no longer
     /// user-selectable (the model picker was removed). The getter always returns the constant,

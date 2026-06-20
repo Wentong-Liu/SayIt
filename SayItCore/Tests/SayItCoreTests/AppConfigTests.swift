@@ -68,6 +68,27 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(AppConfig(defaults: defaults).sttMode, .cloud)
     }
 
+    func testHasExplicitSTTModeFalseOnFreshStore() {
+        // A brand-new install has no persisted engine: `sttMode` reports its `.local` baseline but the flag is false,
+        // so the first-run flow can tell "fresh install" from "user chose .local".
+        XCTAssertFalse(config.hasExplicitSTTMode)
+        XCTAssertEqual(config.sttMode, .local)
+    }
+
+    func testHasExplicitSTTModeTrueAfterWrite() {
+        for mode in STTMode.allCases {
+            let suite = "AppConfigTests.\(UUID().uuidString)"
+            let store = UserDefaults(suiteName: suite)!
+            defer { store.removePersistentDomain(forName: suite) }
+            let c = AppConfig(defaults: store)
+            XCTAssertFalse(c.hasExplicitSTTMode)
+            c.sttMode = mode
+            XCTAssertTrue(c.hasExplicitSTTMode)
+            // Persists across a fresh read of the same store.
+            XCTAssertTrue(AppConfig(defaults: store).hasExplicitSTTMode)
+        }
+    }
+
     func testPolishStyleRoundTrip() {
         for style in PolishStyle.allCases {
             config.polishStyle = style
