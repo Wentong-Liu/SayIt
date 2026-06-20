@@ -47,6 +47,12 @@ no matter how long you spoke: measured on an **Apple M4 Pro** with the recommend
 short phrase finishes just as fast. Exact speed depends on your Mac, but the work
 always runs on-device, fully offline, and your audio never leaves your machine.
 
+**On macOS 26 and later, SayIt defaults to Apple's built-in speech engine** — the new
+on-device SpeechAnalyzer model, with **nothing to download**. It's faster still:
+transcription is effectively instant, so quick that the "Transcribing…" indicator barely
+has time to appear before your words land at the cursor. Older macOS — or your own
+preference — falls back to the bundled WhisperKit model above.
+
 ### ♻️ Uses your Codex subscription to polish
 
 If you vibe-code, you almost certainly already pay for **ChatGPT / Codex** or
@@ -79,14 +85,15 @@ and microphone are all in **Settings**.
 ## Requirements
 
 - macOS 14 or later, Apple Silicon recommended.
-- About 1–2 GB of free disk for the local speech model, downloaded automatically
-  on first launch.
+- **macOS 26+**: nothing to download — the speech model is built into the system.
+- **macOS 14–15**: about 1–2 GB of free disk for the local WhisperKit model,
+  downloaded automatically on first launch.
 
 ## Install
 
 Download **[`SayIt.dmg`](https://github.com/Wentong-Liu/SayIt/releases/latest/download/SayIt.dmg)** from the [latest release](https://github.com/Wentong-Liu/SayIt/releases/latest), open it, and drag **SayIt** into **Applications**. It's Developer ID–signed and notarized, so it opens with no Gatekeeper warning.
 
-On first launch, SayIt **automatically downloads the local speech model** (~1–2 GB, one time) — you can watch the progress in Settings and the menu bar. After the download there's a **one-time preparation** — the model is compiled for the Apple Neural Engine, which can take a minute or two on that first run; once it's ready, dictation works and stays near-instant from then on. Also grant **Microphone** and **Accessibility** in System Settings → Privacy & Security — Accessibility lets SayIt listen for the global hotkey and insert text into other apps.
+On **macOS 26 and later**, SayIt is ready immediately: it uses Apple's built-in speech model, so there is **nothing to download** and dictation is near-instant from the very first try. On **macOS 14–15**, SayIt **automatically downloads the local WhisperKit model** (~1–2 GB, one time) on first launch — you can watch the progress in Settings and the menu bar — followed by a **one-time preparation** (the model is compiled for the Apple Neural Engine, a minute or two that first run); after that, dictation stays near-instant. Either way, grant **Microphone** and **Accessibility** in System Settings → Privacy & Security — Accessibility lets SayIt listen for the global hotkey and insert text into other apps (on macOS 26 you'll also be asked once for **Speech Recognition**).
 
 To turn on AI polish, **sign in to your ChatGPT account manually in Settings → Polish** — this is the default and uses your existing ChatGPT/Codex subscription (you can also switch to your own OpenAI, Anthropic, or DeepSeek API key). Until you sign in, SayIt still works and inserts the raw transcription, just without polishing.
 
