@@ -79,8 +79,8 @@ and microphone are all in **Settings**.
 
 |  |  |
 |:--:|:--:|
-| <img src="docs/settings-speech.png" width="410" alt="Speech settings — recognition engine and local model"> | <img src="docs/settings-polish.png" width="410" alt="Polish settings — provider, style, and credentials"> |
-| **Speech** — local model or cloud API, and which model | **Polish** — ChatGPT/Codex login or your own API key, plus style and model |
+| <img src="docs/settings-speech.png" width="410" alt="Speech settings — Apple Speech, local model, or cloud API"> | <img src="docs/settings-polish.png" width="410" alt="Polish settings — provider, style, and credentials"> |
+| **Speech** — Apple Speech (macOS 26+), local model, or cloud API | **Polish** — ChatGPT/Codex login or your own API key, plus style and model |
 
 ## Requirements
 

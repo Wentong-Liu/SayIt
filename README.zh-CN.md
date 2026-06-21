@@ -62,8 +62,8 @@
 
 |  |  |
 |:--:|:--:|
-| <img src="docs/settings-speech.png" width="410" alt="语音设置——识别引擎与本地模型"> | <img src="docs/settings-polish.png" width="410" alt="润色设置——服务方、风格与登录凭据"> |
-| **语音** —— 本地模型或云端 API，以及用哪个模型 | **润色** —— 登录 ChatGPT/Codex 或填你自己的 API Key，外加风格和模型 |
+| <img src="docs/settings-speech.png" width="410" alt="语音设置——Apple 语音、本地模型或云端 API"> | <img src="docs/settings-polish.png" width="410" alt="润色设置——服务方、风格与登录凭据"> |
+| **语音** —— Apple 语音（macOS 26+）、本地模型或云端 API | **润色** —— 登录 ChatGPT/Codex 或填你自己的 API Key，外加风格和模型 |
 
 ## 环境要求
 
